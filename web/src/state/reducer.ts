@@ -339,6 +339,22 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         rounds: [...state.rounds, createEmptyRound(action.taskId, action.userMessage)],
       };
 
+    case 'task.resume': {
+      // 抗刷新重连:把 activeTaskId 设回去,等 snapshot 回放
+      // 若 history 已带回该 round(后端 mongo 已落库),保留原 round 不动
+      // 若没有(很少见,但可能 history 还没写库就刷新了),塞个空占位防止 snapshot 落空
+      const exists = state.rounds.some((r) => r.taskId === action.taskId);
+      const rounds = exists
+        ? state.rounds
+        : [...state.rounds, createEmptyRound(action.taskId, '')];
+      return {
+        ...state,
+        activeTaskId: action.taskId,
+        taskState: action.taskState ?? 'PENDING',
+        rounds,
+      };
+    }
+
     case 'task.state':
       return { ...state, taskState: action.state };
 

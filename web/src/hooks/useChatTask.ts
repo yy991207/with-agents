@@ -1,5 +1,6 @@
 // 单轮任务 hook:封装 ask -> openSSE 的发起流程,并暴露决策、取消、重试 think
-import { useCallback, useRef } from 'react';
+// H1 改造:把 AbortController 通过 ChatContext 共享,stop / 抗刷新重连共用一份引用
+import { useCallback } from 'react';
 import { message } from 'antd';
 import { ask, cancel, decide, retryThink } from '../api/http';
 import { openTaskStream } from '../api/sse';
@@ -12,10 +13,14 @@ function describeError(err: unknown): string {
   return String(err);
 }
 
+// 判定是否是 SSE 致命错误(404 / 410 任务不存在或已清理)
+function isFatalSSEError(err: unknown): boolean {
+  const msg = describeError(err);
+  return msg.includes('404') || msg.includes('410');
+}
+
 export function useChatTask() {
-  const { state, dispatch } = useChat();
-  // 用 ref 持有 AbortController,便于外部停止 SSE
-  const abortRef = useRef<AbortController | null>(null);
+  const { state, dispatch, registerSSEController, closeSSEController } = useChat();
 
   // 发问入口
   const send = useCallback(
@@ -38,35 +43,37 @@ export function useChatTask() {
           userMessage: trimmed,
         });
 
-        // 3. 打开 SSE 流(失败由 sse.ts 内部处理)
-        abortRef.current?.abort();
+        // 3. 打开 SSE 流;controller 走 Context 共享
         const ctrl = new AbortController();
-        abortRef.current = ctrl;
+        registerSSEController(ctrl);
         // 不 await,避免阻塞 UI;Promise 在 SSE 关闭后才 resolve
         void openTaskStream(task_id, dispatch, {
           signal: ctrl.signal,
           onFatal: (err) => {
-            message.error(`SSE 异常:${describeError(err)}`);
+            // 致命错通常意味着 task hub 已清理,标 round 为 cancelled
+            dispatch({
+              type: 'sse.event',
+              event: { type: 'task.unrecoverable', data: { reason: describeError(err) } },
+            });
           },
         });
       } catch (e) {
         message.error(`提交失败:${describeError(e)}`);
       }
     },
-    [dispatch, state.sessionId],
+    [dispatch, registerSSEController, state.sessionId],
   );
 
   // 主动关闭当前流(全局停止按钮 + 通知后端取消任务)
   const stop = useCallback(async (): Promise<void> => {
-    abortRef.current?.abort();
-    abortRef.current = null;
+    closeSSEController();
     if (!state.activeTaskId) return;
     try {
       await cancel({ task_id: state.activeTaskId, scope: 'global' });
     } catch (e) {
       message.error(`取消失败:${describeError(e)}`);
     }
-  }, [state.activeTaskId]);
+  }, [closeSSEController, state.activeTaskId]);
 
   // 用户在 DecisionCard 里选了一个 agent / auto / regenerate
   const decideChoice = useCallback(
@@ -122,3 +129,6 @@ export function useChatTask() {
     retryAgent,
   };
 }
+
+// 内部使用的工具:仅在抗刷新流程内被 App.tsx 引用,集中导出便于复用
+export { isFatalSSEError };

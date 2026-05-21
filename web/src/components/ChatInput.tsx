@@ -2,20 +2,37 @@
 // 状态机:
 //   THINKING / REPLYING / DECIDED / THINK_DONE → 输入禁用,显示停止按钮
 //   PENDING / DONE / CANCELLED                 → 可输入并发送
+// H3 改造:
+//   1. 统一从 state/types 导入 isBusyState,避免重复定义
+//   2. placeholder 按 taskState 给更精准的文案
 import { Button, Input, Space, Tooltip } from 'antd';
 import { SendOutlined, StopOutlined } from '@ant-design/icons';
 import { useState } from 'react';
 import type { ChangeEvent, KeyboardEvent } from 'react';
 import { useChat } from '../state/ChatContext';
+import { isBusyState } from '../state/types';
+import type { TaskState } from '../state/types';
 
 export interface ChatInputProps {
   onSend: (message: string) => void | Promise<void>;
   onStop?: () => void | Promise<void>;
 }
 
-// task 状态归类:是否处于"任务正在跑/等用户决策"的状态
-function isBusyState(s: string): boolean {
-  return s === 'THINKING' || s === 'THINK_DONE' || s === 'DECIDED' || s === 'REPLYING';
+// 按当前 taskState 选择输入框的 placeholder 文案
+// busy 时给出更细粒度的提示,引导用户理解当前阶段
+function getPlaceholder(state: TaskState): string {
+  switch (state) {
+    case 'THINKING':
+      return '4 个 agent 正在思考';
+    case 'THINK_DONE':
+      return '等你选择回答的 agent';
+    case 'DECIDED':
+      return '已决策,等 agent 开始回答';
+    case 'REPLYING':
+      return 'agent 正在回答';
+    default:
+      return '输入问题,Enter 发送,Shift+Enter 换行';
+  }
 }
 
 export default function ChatInput({ onSend, onStop }: ChatInputProps) {
@@ -51,7 +68,7 @@ export default function ChatInput({ onSend, onStop }: ChatInputProps) {
       <Space.Compact style={{ width: '100%' }}>
         <Input.TextArea
           autoSize={{ minRows: 1, maxRows: 6 }}
-          placeholder={busy ? '任务进行中,请稍候' : '输入问题,Enter 发送,Shift+Enter 换行'}
+          placeholder={getPlaceholder(state.taskState)}
           value={value}
           disabled={busy}
           onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setValue(e.target.value)}

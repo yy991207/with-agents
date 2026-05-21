@@ -91,7 +91,7 @@ async def test_rounds_crud(storage: MotorMongoStorage) -> None:
     rounds = await storage.list_rounds(sid)
     assert [r.round_index for r in rounds] == [0, 1]
     assert rounds[1].user_mention == "@DeepSeek"
-    assert rounds[0].state == TaskState.CREATED
+    assert rounds[0].state == TaskState.PENDING
 
     await storage.update_round_state(task_id_a, TaskState.THINKING)
     a = await storage.get_round(task_id_a)
@@ -224,3 +224,146 @@ async def test_seed_does_not_overwrite_existing_judge(
     # 模拟二次启动
     await storage.seed_from_yaml(settings)
     assert await storage.get_judge_target() == "Kimi"
+
+
+@pytest.mark.asyncio
+async def test_cancel_orphan_rounds(storage: MotorMongoStorage) -> None:
+    """启动孤儿清理: 进行中状态 + 历史值 全部置 cancelled DONE 状态保持不变"""
+    sid = await storage.create_session(title="孤儿场景")
+
+    # 准备 3 条 round 状态分别为 thinking / done / replying
+    tid_thinking = await storage.create_round(sid, "q1", None)
+    tid_done = await storage.create_round(sid, "q2", None)
+    tid_replying = await storage.create_round(sid, "q3", None)
+    await storage.update_round_state(tid_thinking, TaskState.THINKING)
+    await storage.update_round_state(tid_done, TaskState.DONE)
+    await storage.update_round_state(tid_replying, TaskState.REPLYING)
+
+    # replying 状态额外塞一条嵌套 reply 验证 cancel_orphan_rounds 不会覆盖 content
+    await storage.update_round_field(
+        tid_replying,
+        "reply",
+        {"agent": "GLM", "state": "streaming", "content": "前缀"},
+    )
+
+    # 直接往 mongo 塞一条历史字面量 state="created" 的 round 模拟 H4 之前的存量
+    legacy_sid = await storage.create_session(title="历史会话")
+    legacy_tid = "legacy_task_id_0001"
+    # 用底层 _db 直接 insert 绕过 create_round 的新值默认
+    await storage._db["rounds"].insert_one(
+        {
+            "task_id": legacy_tid,
+            "session_id": legacy_sid,
+            "round_index": 0,
+            "question": "历史问句",
+            "user_mention": None,
+            "think_results": [],
+            "chosen_agent": None,
+            "reply_content": "",
+            "state": "created",
+            "created_at": _utcnow_for_test(),
+            "updated_at": _utcnow_for_test(),
+        }
+    )
+
+    affected = await storage.cancel_orphan_rounds(reason="server_restart")
+    # thinking + replying + legacy(created) 三条 done 不动
+    assert affected == 3
+
+    r_thinking = await storage.get_round(tid_thinking)
+    r_done = await storage.get_round(tid_done)
+    r_replying = await storage.get_round(tid_replying)
+    r_legacy = await storage.get_round(legacy_tid)
+
+    assert r_thinking is not None and r_thinking.state == TaskState.CANCELLED
+    assert r_replying is not None and r_replying.state == TaskState.CANCELLED
+    assert r_done is not None and r_done.state == TaskState.DONE
+    # legacy state="created" 已被 cancel_orphan_rounds 改成 cancelled
+    assert r_legacy is not None and r_legacy.state == TaskState.CANCELLED
+
+    # 校验嵌套 reply.state 也被改 而 reply.content 不能被吞掉
+    raw = await storage._db["rounds"].find_one({"task_id": tid_replying})
+    assert raw is not None
+    assert raw["state"] == "cancelled"
+    assert raw["reply"]["state"] == "cancelled"
+    assert raw["reply"]["content"] == "前缀"
+    assert raw["cancel_reason"] == "server_restart"
+    assert raw.get("cancelled_at") is not None
+
+    # 二次调用不应再有 round 命中 因为它们已经是 cancelled
+    again = await storage.cancel_orphan_rounds(reason="server_restart")
+    assert again == 0
+
+
+@pytest.mark.asyncio
+async def test_round_state_legacy_migration(storage: MotorMongoStorage) -> None:
+    """直接落库 state=created 时 get_round 应映射成 TaskState.PENDING"""
+    sid = await storage.create_session(title="legacy")
+    tid = "legacy_state_round_id"
+    await storage._db["rounds"].insert_one(
+        {
+            "task_id": tid,
+            "session_id": sid,
+            "round_index": 0,
+            "question": "你好",
+            "user_mention": None,
+            "think_results": [],
+            "chosen_agent": None,
+            "reply_content": "",
+            "state": "created",
+            "created_at": _utcnow_for_test(),
+            "updated_at": _utcnow_for_test(),
+        }
+    )
+    r = await storage.get_round(tid)
+    assert r is not None
+    assert r.state == TaskState.PENDING
+
+    # waiting_decision -> think_done
+    tid2 = "legacy_state_round_id_2"
+    await storage._db["rounds"].insert_one(
+        {
+            "task_id": tid2,
+            "session_id": sid,
+            "round_index": 1,
+            "question": "再问一句",
+            "user_mention": None,
+            "think_results": [],
+            "chosen_agent": None,
+            "reply_content": "",
+            "state": "waiting_decision",
+            "created_at": _utcnow_for_test(),
+            "updated_at": _utcnow_for_test(),
+        }
+    )
+    r2 = await storage.get_round(tid2)
+    assert r2 is not None
+    assert r2.state == TaskState.THINK_DONE
+
+    # failed -> cancelled
+    tid3 = "legacy_state_round_id_3"
+    await storage._db["rounds"].insert_one(
+        {
+            "task_id": tid3,
+            "session_id": sid,
+            "round_index": 2,
+            "question": "失败的轮",
+            "user_mention": None,
+            "think_results": [],
+            "chosen_agent": None,
+            "reply_content": "",
+            "state": "failed",
+            "created_at": _utcnow_for_test(),
+            "updated_at": _utcnow_for_test(),
+        }
+    )
+    r3 = await storage.get_round(tid3)
+    assert r3 is not None
+    assert r3.state == TaskState.CANCELLED
+
+
+def _utcnow_for_test():
+    """测试辅助 直接生成带时区的当前 UTC 时间 与 storage 一致"""
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc)

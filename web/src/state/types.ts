@@ -164,6 +164,8 @@ export type ChatAction =
   | { type: 'round.append'; round: RoundView }
   | { type: 'round.update'; taskId: string; patch: Partial<RoundView> }
   | { type: 'task.created'; sessionId: string; taskId: string; userMessage: string }
+  // 抗刷新重连场景:把 activeTaskId 重新挂回去,准备接收 snapshot 帧
+  | { type: 'task.resume'; taskId: string; taskState?: TaskState }
   | { type: 'task.state'; state: TaskState }
   | { type: 'sse.status'; status: SSEStatus }
   | { type: 'sse.event'; event: SSEEvent }
@@ -178,3 +180,16 @@ export type ChatAction =
   | { type: 'settings.saved'; name: string; version: number }
   | { type: 'settings.judge.set'; target: string }
   | { type: 'settings.error'; message: string };
+
+// 任务忙碌态判定:THINKING / THINK_DONE / DECIDED / REPLYING 视为忙
+// 不含 PENDING(刚创建瞬间,马上会进入 THINKING),也不含 DONE / CANCELLED
+// UI 锁(发送按钮、输入框)统一用这个 helper,保持一处定义
+export function isBusyState(state: TaskState | null | undefined): boolean {
+  if (!state) return false;
+  return (
+    state === 'THINKING' ||
+    state === 'THINK_DONE' ||
+    state === 'DECIDED' ||
+    state === 'REPLYING'
+  );
+}

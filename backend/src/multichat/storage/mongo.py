@@ -215,7 +215,7 @@ class MotorMongoStorage:
             "think_results": [],
             "chosen_agent": None,
             "reply_content": "",
-            "state": TaskState.CREATED.value,
+            "state": TaskState.PENDING.value,
             "created_at": now,
             "updated_at": now,
         }
@@ -296,6 +296,62 @@ class MotorMongoStorage:
         )
         if result.matched_count == 0:
             raise KeyError(f"round 不存在 task_id={task_id}")
+
+    async def cancel_orphan_rounds(self, reason: str = "server_restart") -> int:
+        """启动时清理孤儿 round 把"进行中"状态的 round 一律置为 cancelled
+
+        进行中状态既包含 spec 新值 也兼容历史字面量(created/waiting_decision):
+            - pending / thinking / think_done / decided / replying  当前在用
+            - created / waiting_decision  历史快照 H4 之前的写入
+        旧值 failed 已是终态 不再清理 避免反复改写
+
+        实现细节:
+            - 用 $set 精准更新 顶层 state 不要走 replace_one
+              否则 thinks/decision/reply 之前的 content 会被整体覆盖丢失
+            - 嵌套字段 reply.state 单独走第二步 update_many
+              用 $type:object 过滤掉 reply 为 null 的文档 避免 mongo 在非对象上写子字段报错
+            - cancel_reason / cancelled_at 同步落库 便于事后排查
+
+        返回受影响的 round 数 用于启动日志
+        """
+        in_progress = [
+            "pending",
+            "thinking",
+            "think_done",
+            "decided",
+            "replying",
+            # 历史值兼容 数据库实际存的还是这些字面量
+            "created",
+            "waiting_decision",
+        ]
+        now = _utcnow()
+
+        # 第一步 顶层字段一次性原子更新 这一步的 modified_count 即受影响 round 数
+        result = await self._db["rounds"].update_many(
+            {"state": {"$in": in_progress}},
+            {
+                "$set": {
+                    "state": "cancelled",
+                    "cancel_reason": reason,
+                    "cancelled_at": now,
+                    "updated_at": now,
+                }
+            },
+        )
+        modified = int(result.modified_count or 0)
+
+        # 第二步 仅对 reply 是对象的文档把 reply.state 也置为 cancelled
+        # 不能在第一步里直接 $set reply.state 因为 reply 为 null 时会报错
+        # reply 不存在 / 为 null 则保持原状 反正不会有残留 streaming 影响
+        await self._db["rounds"].update_many(
+            {
+                "cancel_reason": reason,
+                "cancelled_at": now,
+                "reply": {"$type": "object"},
+            },
+            {"$set": {"reply.state": "cancelled"}},
+        )
+        return modified
 
     # =============================================================== Agents CRUD
     async def list_agents(self) -> list[AgentRecord]:

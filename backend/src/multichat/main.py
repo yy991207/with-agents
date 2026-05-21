@@ -30,6 +30,7 @@ from .routes.decide import router as decide_router
 from .routes.history import router as history_router
 from .routes.retry_think import router as retry_think_router
 from .routes.sessions import router as sessions_router
+from .routes.static_spa import mount_spa
 from .routes.stream import router as stream_router
 from .storage.mongo import MotorMongoStorage
 
@@ -50,6 +51,14 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     records = await storage.list_agents()
     registry = build_registry(settings)
     await registry.initialize(records)
+
+    # H2 启动孤儿清理
+    # 上次进程未干净退出 可能在 mongo 中残留 state 处于"进行中"的 round
+    # 必须在 deep_agents 构建完成 实例化 TaskManager 之前清理
+    # 防止任务管理器拉起后 这些孤儿被误认成有效任务
+    orphans = await storage.cancel_orphan_rounds(reason="server_restart")
+    if orphans > 0:
+        _logger.info("启动时清理孤儿 task", orphan_count=orphans)
 
     # M2 任务管理器 注入 storage registry settings 三件套
     # 此处签名以 M2 实装的 TaskManager(storage registry settings) 为准
@@ -93,8 +102,9 @@ def create_app(config_path: str | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    @app.get("/")
+    @app.get("/healthz")
     async def health() -> dict[str, str]:
+        """健康检查端点 路径用 /healthz 留出 / 给 SPA 静态资源"""
         return {"status": "ok"}
 
     # 路由挂载
@@ -108,5 +118,10 @@ def create_app(config_path: str | None = None) -> FastAPI:
     app.include_router(stream_router)
     app.include_router(history_router)
     app.include_router(sessions_router)
+
+    # H5 生产模式静态资源
+    # 必须在所有 include_router 之后调用 否则 / 会被 SPA fallback 拦截
+    # web/dist 不存在时 mount_spa 内部静默跳过 不阻塞开发模式启动
+    mount_spa(app)
 
     return app

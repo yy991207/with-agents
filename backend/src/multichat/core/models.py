@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 def _utcnow() -> datetime:
@@ -24,20 +24,25 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-class TaskState(str, Enum):
-    """任务状态机 覆盖 think → 等待用户选择 → reply → 完成/取消/失败 全链路
+# 旧 TaskState 字面量到 spec 新值的映射 仅用于 Round 读取阶段兼容历史数据
+# 已落库的字面量保持不动 不主动回写 避免触发全文档覆盖丢失其它字段
+_LEGACY_STATE_MAP: dict[str, str] = {
+    "created": "pending",
+    "waiting_decision": "think_done",
+    "failed": "cancelled",
+}
 
-    历史值与 spec 值并存:
-        - 历史值 CREATED/WAITING_DECISION/FAILED 用于早期 storage 兼容 不再产生新记录
-        - spec 值 PENDING/THINKING/THINK_DONE/DECIDED/REPLYING/DONE/CANCELLED 由 task_manager 使用
+
+class TaskState(str, Enum):
+    """think-then-choose 状态机
+
+    枚举值与 spec §4 严格对齐 旧值通过 Round.state 的 field_validator 兼容映射:
+        - created          -> pending
+        - waiting_decision -> think_done
+        - failed           -> cancelled
+    实际写入 mongo 时一律使用下面 7 个 spec 值
     """
 
-    # 历史值 仍被 storage.create_round 默认写入 同时也是兼容老快照所必需
-    CREATED = "created"
-    WAITING_DECISION = "waiting_decision"
-    FAILED = "failed"
-
-    # 与 think-then-choose spec §4 状态机对齐
     PENDING = "pending"
     THINKING = "thinking"
     THINK_DONE = "think_done"
@@ -77,7 +82,7 @@ class Round(BaseModel):
     think_results: list[ThinkResult] = Field(default_factory=list)
     chosen_agent: str | None = None
     reply_content: str = ""
-    state: TaskState = TaskState.CREATED
+    state: TaskState = TaskState.PENDING
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
 
@@ -90,6 +95,14 @@ class Round(BaseModel):
     reply: dict[str, Any] | None = None
     # think_history 用于 regenerate 之后保留上一轮 think 结果
     think_history: list[dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator("state", mode="before")
+    @classmethod
+    def _migrate_legacy_state(cls, v: Any) -> Any:
+        """读取阶段把历史 state 字面量映射到新枚举 防止 ValidationError"""
+        if isinstance(v, str) and v in _LEGACY_STATE_MAP:
+            return _LEGACY_STATE_MAP[v]
+        return v
 
 
 class Session(BaseModel):

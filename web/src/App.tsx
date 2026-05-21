@@ -7,25 +7,31 @@ import Timeline from './components/Timeline';
 import ChatInput from './components/ChatInput';
 import { useChatTask } from './hooks/useChatTask';
 import { useSettings } from './hooks/useSettings';
-import { cancel, decide, retryThink } from './api/http';
 import type { AgentName } from './state/types';
 
 const { Sider, Content, Header } = Layout;
 
 export default function App() {
-  const { send, stop } = useChatTask();
+  const { send, stop, decideChoice, cancelAgent, retryAgent } = useChatTask();
   // 配置抽屉的开关入口由 useSettings 暴露
   const { openDrawer } = useSettings();
 
-  // 决策点击:转发到后端,真实状态会从 SSE 推回
-  const handleChoose = async (taskId: string, choice: AgentName | 'auto' | 'regenerate') => {
-    await decide({ taskId, choice });
+  // Timeline 给的回调签名都是 (taskId, ...) 形式;hook 里已经从 state 拿 activeTaskId
+  // 这里不再校验 taskId 是否一致,信任 Timeline 只在活跃轮上触发回调
+  const handleChoose = (
+    _taskId: string,
+    choice: AgentName | 'auto' | 'regenerate',
+  ) => {
+    void decideChoice(choice);
   };
-  const handleRetry = async (taskId: string, agent: AgentName) => {
-    await retryThink({ taskId, agent });
+  const handleRetry = (_taskId: string, agent: AgentName) => {
+    void retryAgent(agent);
   };
-  const handleCancel = async (taskId: string) => {
-    await cancel(taskId);
+  const handlePause = (_taskId: string, agent: AgentName) => {
+    void cancelAgent(agent);
+  };
+  const handleCancel = (_taskId: string) => {
+    void stop();
   };
 
   return (
@@ -60,6 +66,7 @@ export default function App() {
           <Timeline
             onChoose={handleChoose}
             onRetryThink={handleRetry}
+            onPauseThink={handlePause}
             onCancel={handleCancel}
           />
         </Content>

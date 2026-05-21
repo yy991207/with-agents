@@ -1,24 +1,51 @@
-"""POST /ask 路由骨架
+"""POST /ask 创建对话任务
 
-请求体:
-    - session_id: 可选 不传则新建会话
-    - question: 用户问题文本
+请求体
+    - session_id: 可选 不传则由 task_manager 内部新建会话
+    - user_message: 用户问题文本 1~5000 字
+响应
+    - session_id: 任务所在的会话 id 用于侧边栏归类
+    - task_id: 用于后续 SSE 订阅与 decide/cancel/retry 操作
 
-响应:
-    - task_id: 用于后续 SSE 订阅与 decide cancel 操作
-    - 立即返回 think 阶段在后台异步推进
-
-当前 M1 阶段仅给出 router 占位 真实实现在 M2 阶段补齐
+设计说明
+    - task_manager.create_task 当前签名只返回 task_id 没带 session_id
+      为了节省一次往返 这里写入后再用 storage.get_round 反查 session_id 一并返回
+    - 路由层不持有业务状态 创建后立刻把控制权交还给后台 think 协程
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field
 
-router = APIRouter(tags=["ask"])
+router = APIRouter(prefix="", tags=["chat"])
 
 
-@router.post("/ask")
-async def ask() -> dict[str, str]:
-    """创建任务并触发 think 阶段"""
-    raise NotImplementedError("M2 实施")
+class AskRequest(BaseModel):
+    """提问请求 携带可选 session_id 与必填 user_message"""
+
+    session_id: str | None = None
+    user_message: str = Field(min_length=1, max_length=5000)
+
+
+class AskResponse(BaseModel):
+    """提问响应 返回 session_id 与新任务 task_id"""
+
+    session_id: str
+    task_id: str
+
+
+@router.post("/ask", response_model=AskResponse)
+async def ask(body: AskRequest, request: Request) -> AskResponse:
+    """创建任务并触发 think 阶段 立刻返回 task_id"""
+    tm = request.app.state.task_manager
+    task_id = await tm.create_task(body.session_id, body.user_message)
+
+    # task_manager.create_task 仅返回 task_id 反查一次 round 拿 session_id
+    # 这一查是只读操作 不会阻塞后台 think 流程
+    storage = request.app.state.storage
+    round_obj = await storage.get_round(task_id)
+    if round_obj is None:
+        # 创建任务后立刻查不到 round 说明 task_manager 内部出了一致性问题
+        raise HTTPException(500, "round not found after create")
+    return AskResponse(session_id=round_obj.session_id, task_id=task_id)

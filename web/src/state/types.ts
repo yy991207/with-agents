@@ -1,4 +1,5 @@
 // 全局类型定义:任务状态、SSE 事件、会话与轮次视图模型
+// 注意:M4 阶段的扩展集中在 RoundView / ReplyView / ChatAction 三块
 
 // 单次任务的状态机
 export type TaskState =
@@ -10,8 +11,11 @@ export type TaskState =
   | 'DONE'
   | 'CANCELLED';
 
-// 受支持的模型名称(后端约定)
+// 受支持的模型名称(后端约定:M1 阶段四个固定 agent)
 export type AgentName = 'DeepSeek' | 'GLM' | 'Kimi' | 'Qwen';
+
+// 已知 agent 列表,组件循环渲染时使用
+export const KNOWN_AGENTS: AgentName[] = ['DeepSeek', 'GLM', 'Kimi', 'Qwen'];
 
 // SSE 事件统一外壳:具体字段由 type 决定,这里用宽松对象兜底
 export interface SSEEvent {
@@ -19,10 +23,13 @@ export interface SSEEvent {
   data: Record<string, unknown>;
 }
 
+// 单个 think 卡片的内部状态
+export type ThinkState = 'pending' | 'done' | 'failed' | 'cancelled' | 'skipped';
+
 // 单个 think 卡片视图模型
 export interface ThinkView {
   agent: AgentName;
-  state: 'pending' | 'done' | 'failed' | 'cancelled' | 'skipped';
+  state: ThinkState;
   content?: string;
   error?: string;
 }
@@ -33,11 +40,23 @@ export interface DecisionView {
   reason: string;
 }
 
+// reply 段中的工具调用事件:tool_call 与 tool_result 配对
+export interface ToolCallEvent {
+  tool: string;
+  input?: string;
+  result?: string;
+}
+
+// reply 视图状态
+export type ReplyState = 'pending' | 'streaming' | 'done' | 'failed' | 'cancelled';
+
 // 单次回答气泡视图
 export interface ReplyView {
   agent: AgentName;
+  state: ReplyState;
   content: string;
-  state: 'pending' | 'streaming' | 'done' | 'failed' | 'cancelled';
+  toolCalls: ToolCallEvent[];
+  error?: string;
 }
 
 // 一轮完整对话(用户消息 + 4 个 think + 决策 + 回答)
@@ -48,6 +67,12 @@ export interface RoundView {
   thinks: Record<AgentName, ThinkView>;
   decision?: DecisionView;
   reply?: ReplyView;
+  // think_done 时后端会推可用 agent 列表(失败/取消的会被剔除)
+  availableAgents?: AgentName[];
+  // judge 模式下后端建议或最终选择的 agent
+  judgePick?: AgentName;
+  // 任务被取消时,前端展示一个简短原因
+  cancelReason?: string;
 }
 
 // 会话元信息(列表用)
@@ -55,6 +80,12 @@ export interface SessionMeta {
   sessionId: string;
   title: string;
   updatedAt: string;
+}
+
+// /history 返回结构:M3 后端约定为 { session, rounds[] }
+export interface HistoryResponse {
+  session: SessionMeta;
+  rounds: RoundView[];
 }
 
 // SSE 连接状态
@@ -127,14 +158,16 @@ export interface ChatState {
 // reducer action 列表
 export type ChatAction =
   | { type: 'session.set'; sessionId: string | null }
+  | { type: 'session.switch'; sessionId: string | null }
   | { type: 'sessions.set'; sessions: SessionMeta[] }
   | { type: 'rounds.set'; rounds: RoundView[] }
   | { type: 'round.append'; round: RoundView }
   | { type: 'round.update'; taskId: string; patch: Partial<RoundView> }
-  | { type: 'task.created'; taskId: string; userMessage: string }
+  | { type: 'task.created'; sessionId: string; taskId: string; userMessage: string }
   | { type: 'task.state'; state: TaskState }
   | { type: 'sse.status'; status: SSEStatus }
   | { type: 'sse.event'; event: SSEEvent }
+  | { type: 'history.loaded'; sessionId: string; rounds: RoundView[] }
   // 配置抽屉相关 action
   | { type: 'settings.open' }
   | { type: 'settings.close' }

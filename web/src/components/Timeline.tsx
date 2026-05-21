@@ -1,4 +1,8 @@
-// 时间线:遍历所有 round,渲染用户气泡 + think 区域 + 决策 + 回答
+// 时间线:遍历所有 round,渲染用户气泡 + think 区域 + 决策 + 回答 + 状态摘要
+// 活跃 round = state.activeTaskId 指向且 state ∉ {DONE, CANCELLED}
+// 活跃 → 完整布局(ThinkPanel + DecisionCard + ReplyBubble)
+// 非活跃 → 折叠态 ThinkCardChip(可点开 Modal 看完整 think)
+import { Tag } from 'antd';
 import UserBubble from './UserBubble';
 import ThinkPanel from './ThinkPanel';
 import ThinkCardChip from './ThinkCardChip';
@@ -7,50 +11,94 @@ import ReplyBubble from './ReplyBubble';
 import { useChat } from '../state/ChatContext';
 import type { AgentName, RoundView } from '../state/types';
 
-// 判断这一轮是不是当前活跃轮(决定 think 是详细态还是 chip 折叠态)
+// 是否当前活跃轮:仍然指向 activeTaskId 且未结束
 function isActive(round: RoundView, activeTaskId: string | null): boolean {
-  return round.taskId === activeTaskId;
+  if (round.taskId !== activeTaskId) return false;
+  return round.state !== 'DONE' && round.state !== 'CANCELLED';
 }
 
 export interface TimelineProps {
   onChoose?: (taskId: string, choice: AgentName | 'auto' | 'regenerate') => void;
   onRetryThink?: (taskId: string, agent: AgentName) => void;
+  onPauseThink?: (taskId: string, agent: AgentName) => void;
   onCancel?: (taskId: string) => void;
 }
 
-export default function Timeline({ onChoose, onRetryThink, onCancel }: TimelineProps) {
+export default function Timeline({
+  onChoose,
+  onRetryThink,
+  onPauseThink,
+  onCancel,
+}: TimelineProps) {
   const { state } = useChat();
+
   return (
     <div style={{ padding: '16px 24px' }}>
       {state.rounds.length === 0 && (
-        <div style={{ color: 'rgba(0,0,0,0.45)', textAlign: 'center', marginTop: 64 }}>
+        <div
+          style={{
+            color: 'rgba(0,0,0,0.45)',
+            textAlign: 'center',
+            marginTop: 64,
+          }}
+        >
           还没有对话,从下方输入第一个问题吧
         </div>
       )}
+
       {state.rounds.map((round) => {
         const active = isActive(round, state.activeTaskId);
+        const showThinkPanel =
+          active &&
+          (round.state === 'PENDING' ||
+            round.state === 'THINKING' ||
+            round.state === 'THINK_DONE');
+        const showDecision = active && round.state === 'THINK_DONE' && onChoose;
+        const showReply = round.reply !== undefined;
+        const showCancelTag = round.state === 'CANCELLED';
+
         return (
           <div key={round.taskId} style={{ marginBottom: 24 }}>
             <UserBubble content={round.userMessage} />
-            {active ? (
+
+            {showThinkPanel ? (
               <ThinkPanel
                 round={round}
-                onRetry={onRetryThink ? (agent) => onRetryThink(round.taskId, agent) : undefined}
+                onRetry={
+                  onRetryThink
+                    ? (agent) => onRetryThink(round.taskId, agent)
+                    : undefined
+                }
+                onPause={
+                  onPauseThink
+                    ? (agent) => onPauseThink(round.taskId, agent)
+                    : undefined
+                }
               />
             ) : (
-              <div style={{ margin: '4px 0' }}>
-                {(['DeepSeek', 'GLM', 'Kimi', 'Qwen'] as AgentName[]).map((a) => (
-                  <ThinkCardChip key={a} think={round.thinks[a]} />
-                ))}
-              </div>
+              <ThinkCardChip round={round} />
             )}
-            {active && round.state === 'THINK_DONE' && onChoose && (
+
+            {showDecision && onChoose && (
               <DecisionCard
                 onChoose={(c) => onChoose(round.taskId, c)}
-                onCancel={onCancel ? () => onCancel(round.taskId) : undefined}
+                onCancel={
+                  onCancel ? () => onCancel(round.taskId) : undefined
+                }
+                availableAgents={round.availableAgents}
+                judgePick={round.judgePick}
               />
             )}
-            {round.reply && <ReplyBubble reply={round.reply} />}
+
+            {showReply && round.reply && <ReplyBubble reply={round.reply} />}
+
+            {showCancelTag && (
+              <div style={{ margin: '4px 0' }}>
+                <Tag color="default">
+                  已取消{round.cancelReason ? `:${round.cancelReason}` : ''}
+                </Tag>
+              </div>
+            )}
           </div>
         );
       })}

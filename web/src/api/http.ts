@@ -1,8 +1,9 @@
 // HTTP 客户端封装:统一前缀、统一 JSON、统一异常
+// 字段命名严格对齐后端 M3 契约(snake_case),保持类型在前端层面 camelCase
 import type {
   AgentName,
   AgentsListResponse,
-  RoundView,
+  HistoryResponse,
   SessionMeta,
   UpdateAgentRequest,
   UpdateAgentResponse,
@@ -49,7 +50,7 @@ async function request<T>(
   return (await resp.json()) as T;
 }
 
-// 不需要响应体的请求,如 PUT /api/judge 走 204
+// 不需要响应体的请求,如 PUT /api/judge / POST /decide / POST /cancel 走 204
 async function requestNoContent(
   path: string,
   init?: { method?: string; body?: unknown; signal?: AbortSignal },
@@ -66,15 +67,15 @@ async function requestNoContent(
   }
 }
 
-// /ask 请求体
+// /ask 请求体(后端要求 snake_case)
 export interface AskPayload {
-  sessionId: string | null;
-  message: string;
+  session_id?: string;
+  user_message: string;
 }
 
 export interface AskResponse {
-  taskId: string;
-  sessionId: string;
+  session_id: string;
+  task_id: string;
 }
 
 // 发起一次问答任务
@@ -84,33 +85,38 @@ export function ask(payload: AskPayload): Promise<AskResponse> {
 
 // /decide 请求体:用户在 4 个 think 中选一个,或要求 auto / regenerate
 export interface DecidePayload {
-  taskId: string;
+  task_id: string;
   choice: AgentName | 'auto' | 'regenerate';
-  reason?: string;
 }
 
-export function decide(payload: DecidePayload): Promise<{ ok: true }> {
-  return request<{ ok: true }>('/decide', { method: 'POST', body: payload });
+// /decide 后端返回 204
+export function decide(payload: DecidePayload): Promise<void> {
+  return requestNoContent('/decide', { method: 'POST', body: payload });
 }
 
-// /cancel:取消进行中的任务
-export function cancel(taskId: string): Promise<{ ok: true }> {
-  return request<{ ok: true }>('/cancel', { method: 'POST', body: { taskId } });
+// /cancel:取消任务,scope = 'global' | AgentName
+export interface CancelPayload {
+  task_id: string;
+  scope: 'global' | AgentName;
 }
 
-// /retry-think:针对某一个 agent 重试 think
+export function cancel(payload: CancelPayload): Promise<void> {
+  return requestNoContent('/cancel', { method: 'POST', body: payload });
+}
+
+// /retry-think:针对某一个 agent 重试 think(M2 暂未实装,后端会返回 501)
 export interface RetryThinkPayload {
-  taskId: string;
+  task_id: string;
   agent: AgentName;
 }
 
-export function retryThink(payload: RetryThinkPayload): Promise<{ ok: true }> {
-  return request<{ ok: true }>('/retry-think', { method: 'POST', body: payload });
+export function retryThink(payload: RetryThinkPayload): Promise<void> {
+  return requestNoContent('/retry-think', { method: 'POST', body: payload });
 }
 
-// /history/:sessionId:拉取某会话历史
-export function getHistory(sessionId: string): Promise<RoundView[]> {
-  return request<RoundView[]>(`/history/${encodeURIComponent(sessionId)}`);
+// /history/:sessionId:拉取某会话历史,返回 { session, rounds[] }
+export function getHistory(sessionId: string): Promise<HistoryResponse> {
+  return request<HistoryResponse>(`/history/${encodeURIComponent(sessionId)}`);
 }
 
 // /sessions:会话列表

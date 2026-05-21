@@ -5,7 +5,8 @@
     2. MotorMongoStorage.connect 建立 motor 客户端 并 ensure_indexes
     3. seed_from_yaml 首次注入 agents 与 judge 指针 已存在则跳过
     4. 从 DB 列出 agents 用 settings 构造 DeepAgentRegistry 并 initialize 8 个实例
-    5. 把 storage settings registry 挂到 app.state 路由层共享
+    5. 实例化 TaskManager(storage registry settings) 挂到 app.state
+    6. 把 storage settings registry task_manager 挂到 app.state 路由层共享
 关闭阶段释放 motor 客户端
 deep_agents 没有外部资源 langchain client 内部 httpx 池随进程退出 不需要单独 shutdown
 """
@@ -17,10 +18,19 @@ from typing import AsyncIterator
 
 import structlog
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from .config import Settings, load_settings
+from .core.task_manager import TaskManager
 from .llm.deep_agents import build_registry
 from .routes.agents import router as agents_router
+from .routes.ask import router as ask_router
+from .routes.cancel import router as cancel_router
+from .routes.decide import router as decide_router
+from .routes.history import router as history_router
+from .routes.retry_think import router as retry_think_router
+from .routes.sessions import router as sessions_router
+from .routes.stream import router as stream_router
 from .storage.mongo import MotorMongoStorage
 
 _logger = structlog.get_logger(__name__)
@@ -41,9 +51,15 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     registry = build_registry(settings)
     await registry.initialize(records)
 
+    # M2 任务管理器 注入 storage registry settings 三件套
+    # 此处签名以 M2 实装的 TaskManager(storage registry settings) 为准
+    # 若 M2 当前骨架仍为零参 启动时会抛 TypeError 这是预期 整合阶段统一对齐
+    task_manager = TaskManager(storage, registry, settings)
+
     app.state.settings = settings
     app.state.storage = storage
     app.state.deep_agents = registry
+    app.state.task_manager = task_manager
     try:
         yield
     finally:
@@ -65,11 +81,32 @@ def create_app(config_path: str | None = None) -> FastAPI:
     # 把配置路径暂存到 app.state 让 lifespan 启动时读到
     app.state._config_path = config_path
 
+    # 跨域中间件 必须在 app 创建后立即添加 不能放进 lifespan
+    # 这里为了兼容前端 dev 模式(5173/5175 等任意端口) 写死宽容策略
+    # allow_credentials 设为 False 是因为 allow_origins=["*"] 与 credentials=True 互斥
+    # 真生产环境再收紧成可配置白名单
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     @app.get("/")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    # 路由挂载 当前仅 M1.C 的 agents/judge CRUD 其余 ask/decide 等 M2 再接
+    # 路由挂载
+    # M1: agents/judge CRUD
     app.include_router(agents_router)
+    # M3: 对话核心 + 历史
+    app.include_router(ask_router)
+    app.include_router(decide_router)
+    app.include_router(cancel_router)
+    app.include_router(retry_think_router)
+    app.include_router(stream_router)
+    app.include_router(history_router)
+    app.include_router(sessions_router)
 
     return app

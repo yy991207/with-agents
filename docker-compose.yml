@@ -1,0 +1,13 @@
+# multi-chat 本地依赖
+# 只跑 MongoDB 后端开发期裸跑 uvicorn --reload 不容器化后端
+# 用法 docker compose up -d mongo
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: multi-chat-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - ./docker/mongo-data:/data/db
+    restart: unless-stopped

@@ -5,7 +5,7 @@ import react from '@vitejs/plugin-react';
 const BACKEND = 'http://localhost:8002';
 
 // 需要转发到后端的 JSON 接口路径前缀
-const apiPaths = ['/ask', '/decide', '/cancel', '/retry-think', '/history', '/sessions'];
+const apiPaths = ['/ask', '/decide', '/cancel', '/retry-think', '/history', '/sessions', '/api'];
 
 // 构造 dev proxy 表
 const buildProxy = (): Record<string, ProxyOptions> => {

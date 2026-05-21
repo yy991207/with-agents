@@ -179,6 +179,9 @@ CANCELLED      用户全局停止
                     │   collections:      │
                     │   - sessions        │
                     │   - rounds          │
+                    │   - agents (含 4    │
+                    │       agent + judge │
+                    │       指针 见 §7.4) │
                     │   - tasks(可选 用于 │
                     │        恢复中断 task│
                     └─────────────────────┘
@@ -219,6 +222,17 @@ CANCELLED      用户全局停止
 3. SSE handler 读 MongoDB 拼当前快照,发完一帧"snapshot"事件,然后挂接当前正在跑的 task 的事件流(in-memory 广播)继续推增量
 
 这样实现简单,且**单进程多 worker 不冲突**——每个 task 只在创建它的那个进程里跑,前端刷新后必须重连到同一个进程才能续推。**不解决跨进程恢复**(需要那种就要引入 task queue 服务,过度工程)。
+
+**决策 7:agents 配置存 MongoDB 不存 yaml**
+
+之前的设计把 4 个 agent 的 model 和 prompt 写在 `config.yaml` 里 前端只能看不能改。本轮收到产品需求 想让用户在前端 SettingsDrawer 直接调整 prompt 和切换模型 实时生效 因此把 agents 配置整体下沉到 MongoDB。
+
+- **动机**:前端要能直接改 model 和 prompt 不用改文件 不用重启服务
+- **落地**:`config.yaml` 的 `agents` 段和 `judge` 段降级为**首次启动种子默认值** 启动时若 DB 中 agents collection 为空则从 yaml 注入 之后运行时一律以 DB 为准 yaml 不再被读取
+- **热替换**:前端 PUT 后 后端在 storage 层把新文档写进 DB(version + 1) 然后**原子重建**该 agent 对应的 think + reply 两个 deep_agent 实例 加锁 swap 进 `app.state.deep_agents` 字典 整个过程不重启服务
+- **代价**:启动顺序多一步 seed 必须 `连 mongo → ensure_indexes → seed_from_yaml → build deep_agents` DB 不可达直接拒绝服务(早暴露) 排查问题时配置真实值要去查 DB 而不是源码
+
+并发安全的边界(具体流程见 §5.8):replace 瞬间正在跑的 reply 用的是旧实例(已 closure 引用) 不会被打断 之后的新 reply 才用新实例 不做"取消已跑 reply 让它用新版"的强一致语义。
 
 ---
 
@@ -634,6 +648,28 @@ export function openTaskStream(taskId: string, dispatch: Dispatch<Action>) {
              前端弹提示"该任务无法恢复 是否重新提问"
 ```
 
+### 5.8 配置变更流程(agents 热替换)
+
+```
+[场景] 用户在前端 SettingsDrawer 改了 GLM 的 prompt 点保存
+
+       前端: PUT /api/agents/GLM { prompt: "新提示词" }
+
+       服务端:
+       1. storage.upsert_agent("GLM", model=旧, prompt=新) → version +1 → 拿到新记录
+       2. 后台异步:重建 GLM 的 think + reply 两个 deep_agent 实例
+       3. 加锁 swap app.state.deep_agents["GLM-think"] 和 ["GLM-reply"]
+       4. 返回 { ok, version } 给前端
+       5. 前端弹 toast "已生效 当前版本 N"
+
+       并发安全:
+       - 替换瞬间正在跑的 reply 用的是旧实例(已 closure 引用) 不受影响
+       - 之后的新 reply 用新实例
+       - 不做"取消已跑 reply 让它用新版"
+```
+
+首版只支持改 model 和 prompt 不支持新增/删除 agent(4 个固定)。判定 agent 名是否存在用 §7.4 中 `agents` collection 的 name 唯一索引兜底。
+
 ---
 
 ## 6. 接口契约
@@ -649,6 +685,8 @@ export function openTaskStream(taskId: string, dispatch: Dispatch<Action>) {
 | `GET`  | `/sse/{task_id}` | - | `text/event-stream` |
 | `GET`  | `/history/{session_id}` | - | `{session, rounds: []}` |
 | `GET`  | `/sessions` | - | `[{session_id, last_message, updated_at}]` |
+| `GET`  | `/api/agents` | - | 列出所有 agent 配置(返回数组,不含 key) |
+| `PUT`  | `/api/agents/{name}` | `{model?, prompt?}` | 更新某个 agent,服务端原子热替换实例,返回 `{ok, version}` |
 | `GET`  | `/` 及 `/assets/*` | - | 由 `StaticFiles(directory="web/dist", html=True)` 挂载,提供 React SPA 入口与构建产物 |
 
 ### 6.2 SSE 事件 schema
@@ -672,18 +710,19 @@ export function openTaskStream(taskId: string, dispatch: Dispatch<Action>) {
 
 ### 6.3 config.yaml 扩展
 
-在现有结构上增加 `judge` 字段,**复用现有 4 个 agent 之一**做裁判,不引入第 5 个模型:
+> **重要**:从本轮起 `agents` 段和 `judge` 段降级为**首次启动种子默认值**(seed) 服务**运行时不再读取这两段** 一律以 MongoDB `agents` collection 为准。yaml 仅在 DB 中 agents 为空时被读一次注入 DB 之后再改 yaml 不生效(必须通过 `PUT /api/agents/{name}` 改 DB)。
 
 ```yaml
 key: ...
 base_url: ...
+# agents 段:首次启动种子默认值 运行时不读 以 DB 为准
 agents:
   DeepSeek: { model: ..., prompt: ... }
   GLM:      { model: ..., prompt: ... }
   Kimi:     { model: ..., prompt: ... }
   Qwen:     { model: ..., prompt: ... }
-# judge 字段:用于"帮我选"的裁判 agent 名
-# 必须是 agents 段中已存在的某一个名字
+# judge 段:首次启动种子默认值 运行时不读 以 DB 为准
+# 用于"帮我选"的裁判 agent 必须是 agents 段中已存在的某一个名字
 judge:
   agent: GLM   # 默认复用 GLM
   prompt: >-
@@ -692,7 +731,9 @@ judge:
     可选:DeepSeek / GLM / Kimi / Qwen
 ```
 
-启动时校验:`config.yaml` 的 `judge.agent` 必须在 `agents` 段中存在。
+启动时校验:
+- yaml 中 `judge.agent` 必须在 `agents` 段中存在(seed 自洽)
+- 若 DB 已有 agents 数据 yaml 中两段忽略 不再校验
 
 ---
 
@@ -701,11 +742,12 @@ judge:
 ### 7.1 数据库与集合
 
 - 数据库:`multi_chat`
-- 集合:`sessions`、`rounds`
+- 集合:`sessions`、`rounds`、`agents`(以及可能的 `settings`,具体存储方式见实现章节)
 
-理由:**两个集合**而非一个:
+理由:
 - `sessions` 文档小,查询频繁(列出对话列表)
 - `rounds` 文档大(含完整 think + reply 内容),按 session 拉,但**不全量加载到 sessions 文档里**——MongoDB 单文档 16MB 限制下,长会话容易撑爆
+- `agents` 持久化运行时配置(model + prompt) 取代 yaml 中静态 agents 段(yaml 降级为种子默认值 见 §3.2 决策 7 与 §6.3)
 
 ### 7.2 sessions 集合
 
@@ -772,14 +814,44 @@ judge:
 - `{session_id: 1, round_index: 1}` 用于按 session 顺序拉历史
 - `{session_id: 1, updated_at: -1}` 用于增量同步
 
-### 7.4 写入策略
+### 7.4 agents 集合
+
+持久化 4 个 agent 的运行时配置 替代 yaml 中静态 agents 段。前端通过 `PUT /api/agents/{name}` 改完后服务端原子热替换 deep_agent 实例(见 §5.8)。
+
+```js
+{
+  _id: ObjectId,
+  name: "DeepSeek",   // 唯一 业务主键
+  model: "deepseek-v4-pro",
+  prompt: "你是一个深度思考型AI助手...",
+  kind: "agent",      // "agent" 或 "judge_target"
+  version: 1,         // 改一次 +1 前端用来比对
+  updated_at: ISODate
+}
+```
+
+**索引**:`{name: 1}` 唯一。
+
+**首次启动 seed 流程**:
+1. 启动时连 mongo → ensure_indexes
+2. count agents collection 文档数 若为 0 → 读 `config.yaml` 的 `agents` 段 + `judge` 段 一次性 insertMany 进 DB(每条初始 version = 1)
+3. 之后任何运行时配置改动一律走 PUT API 不再回头看 yaml
+
+**关于 judge 指针的存储**:
+"哪个 agent 当裁判"的存储方式由实施阶段决定 候选两种:
+- 方案 A:在 `agents` 集合中追加一条 `name="__judge__"` `kind="judge_target"` 的特殊文档 value 字段指向某个 agent 名
+- 方案 B:新增 `settings` 集合存通用键值对 judge 指针为其中一条
+
+无论选哪种 都不影响 §6.1 路由表和 §5.8 热替换流程。
+
+### 7.5 写入策略
 
 - **节流**:reply 流式 chunk 不每个都写 Mongo,**累积 200ms 或 500 字符** flush 一次
 - **最终写入**:think.done / reply.done 等关键节点必落盘
 - **批量更新**:用 `$set` 精确更新嵌套字段(如 `thinks.DeepSeek.state`),避免整文档替换
 - **失败处理**:Mongo 写入失败不阻塞 SSE 推送(用户体验优先),记错误日志,任务结束时再补一次完整快照
 
-### 7.5 历史会话上下文裁剪
+### 7.6 历史会话上下文裁剪
 
 `run_reply` 时给 LLM 的 history 不能直接全量塞——长会话会把 context 撑爆:
 
@@ -915,6 +987,8 @@ runtime:
   http_timeout_seconds: 10      # LLM HTTP 超时
 ```
 
+**启动序列必须严格按此顺序**:`连 mongo → ensure_indexes → seed_from_yaml → build deep_agents`。顺序错了启动失败:索引没建好就 seed 会出现重复 name 的脏数据;seed 没跑完就 build deep_agents 会读到空的 agents collection 拿不到配置。
+
 `run.sh` 增加前端相关子命令:
 
 | 子命令 | 行为 |
@@ -943,6 +1017,7 @@ runtime:
 | Vite dev server 与 FastAPI 跨端口的 CORS / cookie | 开发期登录态缺失 | dev 模式用 Vite proxy 把所有 API 转给 8002,前端永远 same-origin 调用 |
 | antd 5 默认 CSS-in-JS 体积偏大 | 首屏稍慢 | 先不优化;若实测慢,后续按需引入 `babel-plugin-import` 或切到 antd 的静态主题 |
 | React StrictMode 下 SSE 双连接 | 开发期重复请求,服务端 task 多副本 | `useEffect` 返回 cleanup 主动 abort,生产模式不受影响 |
+| 用户改坏 prompt 把 agent 搞瘫 | reply 报错 | 前端编辑器加最小长度校验 + 后端保留版本历史允许回滚(M5 待做) |
 
 ---
 
@@ -952,7 +1027,7 @@ runtime:
 
 按依赖关系拆分 5 个里程碑,每个里程碑独立可测:
 
-1. **M1 基础设施**:MongoDB 连通、`storage.py` + 测试、config.yaml 扩展、`run.sh` 改造
+1. **M1 基础设施 + agents 持久化**:MongoDB 连通、`storage.py` 含 sessions/rounds/agents CRUD、`config.py` 实装、首次启动 seed_from_yaml 注入 4 agent + judge 指针、`GET /api/agents` 与 `PUT /api/agents/{name}` 路由、deep_agent 实例热替换 swap、前端 SettingsDrawer 抽屉用于编辑 4 个 agent 配置、`run.sh` 改造
 2. **M2 核心流程**:`models.py` + `task_manager.py` + `agent_runner.py` + 假 LLM 的 e2e 测试通过
 3. **M3 路由与 SSE**:`routes/*` + `sse.py`,curl/httpie 能完整跑通流程
 4. **M4 前端**:在 `web/` 下用 Vite 脚手架建 React+TS+antd 工程
@@ -983,6 +1058,7 @@ runtime:
 7. 前端是否做 i18n(默认中文硬编码,后续若需多语言再上 antd locale)
 8. 前端 markdown 是否支持代码高亮(react-markdown + rehype-highlight,默认不开,实施时按需)
 9. 前端测试方案(Vitest + React Testing Library 或先不做单测,e2e 用后端真 SSE 跑)
+10. agents 配置历史版本回滚(改坏了能恢复) M5 阶段实现
 
 这些不影响整体架构,实现时按需要选最简单的做法即可。
 

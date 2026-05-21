@@ -60,6 +60,58 @@ export interface SessionMeta {
 // SSE 连接状态
 export type SSEStatus = 'idle' | 'open' | 'closed' | 'reconnecting';
 
+// 4 个 agent 的配置视图(M1.D 配置抽屉用)
+export interface AgentView {
+  name: string; // DeepSeek / GLM / Kimi / Qwen
+  model: string; // 如 deepseek-v4-pro
+  prompt: string; // system_prompt
+  version: number; // 改一次 +1
+  updated_at: string; // ISO 字符串
+}
+
+// /api/agents 列表响应
+export interface AgentsListResponse {
+  agents: AgentView[];
+  judge_target: string; // 当前 judge 指向哪个 agent
+}
+
+// PUT /api/agents/{name} 请求体:model 与 prompt 至少传一项
+export interface UpdateAgentRequest {
+  model?: string;
+  prompt?: string;
+  expected_version?: number; // 可选乐观锁
+}
+
+// PUT /api/agents/{name} 响应
+export interface UpdateAgentResponse {
+  name: string;
+  version: number;
+  reloaded: boolean;
+}
+
+// PUT /api/judge 请求体
+export interface UpdateJudgeRequest {
+  target: string;
+}
+
+// 单个 agent 的本地编辑稿
+export interface AgentEditDraft {
+  name: string;
+  model: string;
+  prompt: string;
+  version: number; // 服务端版本 用于乐观锁
+  dirty: boolean; // 用户有未保存改动
+}
+
+// Settings 抽屉的子状态
+export interface SettingsState {
+  open: boolean; // SettingsDrawer 是否打开
+  loading: boolean; // 拉取中
+  saving: boolean; // 保存中
+  drafts: Record<string, AgentEditDraft>; // 4 个 agent 的编辑稿 按 name 索引
+  judgeTarget: string | null;
+}
+
 // 全局 Chat 状态
 export interface ChatState {
   sessionId: string | null;
@@ -68,6 +120,8 @@ export interface ChatState {
   activeTaskId: string | null;
   taskState: TaskState;
   sseStatus: SSEStatus;
+  // M1.D:配置抽屉
+  settings: SettingsState;
 }
 
 // reducer action 列表
@@ -80,4 +134,14 @@ export type ChatAction =
   | { type: 'task.created'; taskId: string; userMessage: string }
   | { type: 'task.state'; state: TaskState }
   | { type: 'sse.status'; status: SSEStatus }
-  | { type: 'sse.event'; event: SSEEvent };
+  | { type: 'sse.event'; event: SSEEvent }
+  // 配置抽屉相关 action
+  | { type: 'settings.open' }
+  | { type: 'settings.close' }
+  | { type: 'settings.loading.start' }
+  | { type: 'settings.loaded'; agents: AgentView[]; judgeTarget: string }
+  | { type: 'settings.draft.update'; name: string; field: 'model' | 'prompt'; value: string }
+  | { type: 'settings.saving.start' }
+  | { type: 'settings.saved'; name: string; version: number }
+  | { type: 'settings.judge.set'; target: string }
+  | { type: 'settings.error'; message: string };

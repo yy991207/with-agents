@@ -1,9 +1,9 @@
-// think 卡片折叠态(历史/非活跃轮):一个小条,点击展开 Modal 查看完整 4 卡片
+// think 卡片折叠态(历史/非活跃轮):一个小条 点击展开 Modal 查看完整 think
+// 数字员工模型重构后:agent 数量动态 用 round.thinks 的 keys 渲染
 import { useState } from 'react';
 import { Modal, Space, Tag, Typography } from 'antd';
-import { agentColors } from '../theme/tokens';
+import { getAgentColor } from '../theme/tokens';
 import type { RoundView } from '../state/types';
-import { KNOWN_AGENTS } from '../state/types';
 import ThinkPanel from './ThinkPanel';
 
 export interface ThinkCardChipProps {
@@ -13,8 +13,10 @@ export interface ThinkCardChipProps {
 export default function ThinkCardChip({ round }: ThinkCardChipProps) {
   const [open, setOpen] = useState(false);
 
+  const agents = Object.keys(round.thinks);
+
   // 简单统计:done / failed / cancelled / skipped 的数量
-  const summary = KNOWN_AGENTS.reduce(
+  const summary = agents.reduce(
     (acc, a) => {
       const t = round.thinks[a];
       if (!t) return acc;
@@ -45,17 +47,17 @@ export default function ThinkCardChip({ round }: ThinkCardChipProps) {
         }}
       >
         <Typography.Text style={{ fontSize: 12 }}>
-          {KNOWN_AGENTS.length} 个 agent 的思考
+          {agents.length} 个 agent 的思考
         </Typography.Text>
         <Space size={4}>
-          {KNOWN_AGENTS.map((a) => (
+          {agents.map((a) => (
             <span
               key={a}
               style={{
                 width: 8,
                 height: 8,
                 borderRadius: '50%',
-                background: agentColors[a],
+                background: getAgentColor(a),
                 opacity: round.thinks[a]?.state === 'done' ? 1 : 0.35,
                 display: 'inline-block',
               }}

@@ -4,8 +4,9 @@
     - sessions CRUD
     - rounds CRUD 包含 round_index 自增 与 dot path 局部更新 reply 流式追加
     - agents seed_from_yaml 首次注入 + 二次跳过
-    - upsert_agent 改 prompt 后 version +1
+    - create_agent / delete_agent / upsert_agent 数字员工增删改
     - judge 指针 get/set 往返
+    - 历史 profile_name 数据迁移
     - ensure_indexes 不报错
 """
 
@@ -17,7 +18,7 @@ import pytest
 from mongomock_motor import AsyncMongoMockClient
 
 from multichat.config import AgentConfig, JudgeConfig, MongoConfig, Settings
-from multichat.core.models import TaskState
+from multichat.core.models import ModelCatalogEntry, TaskState
 from multichat.storage.mongo import MotorMongoStorage
 
 
@@ -131,7 +132,7 @@ async def test_rounds_crud(storage: MotorMongoStorage) -> None:
 
 @pytest.mark.asyncio
 async def test_seed_from_yaml_first_then_skip(storage: MotorMongoStorage) -> None:
-    """首次 seed 注入 4 条 二次直接跳过 返回 0"""
+    """首次 seed 注入 4 条 二次直接跳过 返回 0  agent 字段含完整数字员工"""
     settings = _build_settings()
 
     written = await storage.seed_from_yaml(settings)
@@ -139,7 +140,17 @@ async def test_seed_from_yaml_first_then_skip(storage: MotorMongoStorage) -> Non
 
     agents = await storage.list_agents()
     assert {a.name for a in agents} == {"DeepSeek", "GLM", "Kimi", "Qwen"}
-    assert all(a.kind == "agent" and a.version == 1 for a in agents)
+    # seed 后所有 agent 都有 base_url/api_key/model/prompt
+    for a in agents:
+        assert a.base_url == settings.base_url
+        assert a.api_key == settings.key
+        assert a.display_name == a.name
+        assert a.version == 1
+        # available_models 池含 yaml 中的 model 与扩展模型
+        ids = {m.model_id for m in a.available_models}
+        for cfg in settings.agents.values():
+            assert cfg.model in ids
+        assert {"deepseek-v3", "glm-4.5", "kimi-k2", "qwen-max"} <= ids
 
     # 二次调用应跳过
     written2 = await storage.seed_from_yaml(settings)
@@ -160,31 +171,25 @@ async def test_upsert_agent_bumps_version(storage: MotorMongoStorage) -> None:
     assert before is not None and before.version == 1
 
     updated = await storage.upsert_agent(
-        name="GLM",
-        model="glm-new",
-        prompt="活泼但更专业",
+        "GLM", model="glm-new", prompt="活泼但更专业"
     )
     assert updated.version == 2
     assert updated.model == "glm-new"
     assert updated.prompt == "活泼但更专业"
+    # 没传的字段保持旧值
+    assert updated.base_url == before.base_url
+    assert updated.api_key == before.api_key
 
     # 再次 upsert 继续 +1
-    updated2 = await storage.upsert_agent(
-        name="GLM",
-        model="glm-new2",
-        prompt="再改一次",
-    )
+    updated2 = await storage.upsert_agent("GLM", model="glm-new2", prompt="再改一次")
     assert updated2.version == 3
 
-    # 新 agent 通过 upsert 也能进 version 从 1 起
-    fresh = await storage.upsert_agent(
-        name="LocalLLM",
-        model="local-1",
-        prompt="本地模型",
-    )
-    assert fresh.version == 1
-    assert fresh.kind == "agent"
-    assert (await storage.get_agent("LocalLLM")) is not None
+
+@pytest.mark.asyncio
+async def test_upsert_unknown_agent_raises(storage: MotorMongoStorage) -> None:
+    """upsert 不存在的 agent 抛 KeyError 由路由层映射 404"""
+    with pytest.raises(KeyError):
+        await storage.upsert_agent("NoSuch", display_name="x")
 
 
 @pytest.mark.asyncio
@@ -369,8 +374,8 @@ async def test_upsert_archives_old_version(storage: MotorMongoStorage) -> None:
     settings = _build_settings()
     await storage.seed_from_yaml(settings)
     # seed 写入 v1 不归档(首次插入无前值)
-    await storage.upsert_agent("GLM", "glm-1", "活泼一点点")  # v2 归档 v1
-    await storage.upsert_agent("GLM", "glm-2", "活泼专业一点")  # v3 归档 v2
+    await storage.upsert_agent("GLM", model="glm-1", prompt="活泼一点点")  # v2 归档 v1
+    await storage.upsert_agent("GLM", model="glm-2", prompt="活泼专业一点")  # v3 归档 v2
 
     cur = await storage.get_agent("GLM")
     assert cur is not None and cur.version == 3 and cur.model == "glm-2"
@@ -391,7 +396,7 @@ async def test_list_agent_history_descending(storage: MotorMongoStorage) -> None
     settings = _build_settings()
     await storage.seed_from_yaml(settings)
     for i in range(5):
-        await storage.upsert_agent("Kimi", f"kimi-{i}", f"prompt-{i}-长一点")
+        await storage.upsert_agent("Kimi", model=f"kimi-{i}", prompt=f"prompt-{i}-长一点")
     history = await storage.list_agent_history("Kimi", limit=10)
     versions = [int(h["version"]) for h in history]
     assert versions == sorted(versions, reverse=True)
@@ -403,7 +408,7 @@ async def test_get_agent_history_by_version(storage: MotorMongoStorage) -> None:
     """精确按 version 查 取不到返 None"""
     settings = _build_settings()
     await storage.seed_from_yaml(settings)
-    await storage.upsert_agent("Qwen", "qwen-2", "百科加详细")
+    await storage.upsert_agent("Qwen", model="qwen-2", prompt="百科加详细")
     h1 = await storage.get_agent_history("Qwen", 1)
     assert h1 is not None
     assert h1["model"] == "qwen-test"  # seed 时模型
@@ -488,124 +493,183 @@ async def test_delete_session_active_round_raises_valueerror(
     assert deleted2 == 1
 
 
-# =============================================================== Profiles 测试
+# =============================================================== Agent CRUD 测试
 @pytest.mark.asyncio
-async def test_seed_creates_default_profile(storage: MotorMongoStorage) -> None:
-    """seed 第一次跑应自动注入名为'默认'的 profile 含 yaml key/base_url + 模型池"""
-    settings = _build_settings()
-    await storage.seed_from_yaml(settings)
-
-    profiles = await storage.list_profiles()
-    assert len(profiles) == 1
-    p = profiles[0]
-    assert p.name == "默认"
-    assert p.provider_type == "openai_compatible"
-    assert p.base_url == settings.base_url
-    assert p.api_key == settings.key
-    # 模型池 = yaml.agents 中所有 model + 4 条扩展
-    model_ids = {m.model_id for m in p.models}
-    for cfg in settings.agents.values():
-        assert cfg.model in model_ids
-    assert {"deepseek-v3", "glm-4.5", "kimi-k2", "qwen-max"} <= model_ids
-
-
-@pytest.mark.asyncio
-async def test_agent_record_has_profile_name(storage: MotorMongoStorage) -> None:
-    """seed 后每条 agent 都有 profile_name='默认'"""
-    settings = _build_settings()
-    await storage.seed_from_yaml(settings)
-    agents = await storage.list_agents()
-    assert all(a.profile_name == "默认" for a in agents)
-
-
-@pytest.mark.asyncio
-async def test_upsert_agent_with_profile_name(storage: MotorMongoStorage) -> None:
-    """upsert_agent 显式传 profile_name 应覆盖落库"""
-    settings = _build_settings()
-    await storage.seed_from_yaml(settings)
-
-    # 先建一个新 profile 然后 upsert agent 切到该 profile
-    from multichat.core.models import ProviderProfile
-
-    new_profile = ProviderProfile(
-        name="claude-paid",
-        base_url="https://api.anthropic-proxy.example.com/v1",
-        api_key="sk-claude-tail-1234",
+async def test_create_agent_with_explicit_name(storage: MotorMongoStorage) -> None:
+    """显式传 name 时 应按指定 name 创建"""
+    rec = await storage.create_agent(
+        name="custom_name",
+        display_name="自定义员工",
+        base_url="https://api.example.com/v1",
+        api_key="sk-tail-9999",
+        model="gpt-4",
+        prompt="你是一个测试员工",
     )
-    await storage.create_profile(new_profile)
+    assert rec.name == "custom_name"
+    assert rec.display_name == "自定义员工"
+    assert rec.api_key == "sk-tail-9999"
+    assert rec.version == 1
+
+
+@pytest.mark.asyncio
+async def test_create_agent_auto_id(storage: MotorMongoStorage) -> None:
+    """name 不传时应自动生成 agent_<8位hex>"""
+    rec = await storage.create_agent(
+        name=None,
+        display_name="自动 ID 员工",
+        base_url="https://api.example.com/v1",
+        api_key="sk-auto-tail",
+        model="gpt-4",
+        prompt="你是一个测试员工",
+    )
+    assert rec.name.startswith("agent_")
+    assert len(rec.name) == len("agent_") + 8
+    # 再创建一个 应该 name 不同
+    rec2 = await storage.create_agent(
+        name=None,
+        display_name="员工2",
+        base_url="https://api.example.com/v1",
+        api_key="sk-auto-tail",
+        model="gpt-4",
+        prompt="你是一个测试员工",
+    )
+    assert rec.name != rec2.name
+
+
+@pytest.mark.asyncio
+async def test_create_agent_duplicate_name_raises(
+    storage: MotorMongoStorage,
+) -> None:
+    """显式 name 重复抛 ValueError 路由层映射 409"""
+    await storage.create_agent(
+        name="dup",
+        display_name="原",
+        base_url="https://x.example.com/v1",
+        api_key="sk-dup-tail",
+        model="m1",
+        prompt="原 prompt",
+    )
+    with pytest.raises(ValueError):
+        await storage.create_agent(
+            name="dup",
+            display_name="后",
+            base_url="https://y.example.com/v1",
+            api_key="sk-dup-tail2",
+            model="m2",
+            prompt="后 prompt",
+        )
+
+
+@pytest.mark.asyncio
+async def test_delete_agent_judge_referenced_raises(
+    storage: MotorMongoStorage,
+) -> None:
+    """删 judge target 抛 ValueError 路由层映射 409"""
+    settings = _build_settings()
+    await storage.seed_from_yaml(settings)
+    # judge target 默认 GLM
+    with pytest.raises(ValueError):
+        await storage.delete_agent("GLM")
+    # 切换 judge 后 应可删
+    await storage.set_judge_target("DeepSeek")
+    await storage.delete_agent("GLM")
+    assert await storage.get_agent("GLM") is None
+
+
+@pytest.mark.asyncio
+async def test_delete_agent_unknown_raises_keyerror(
+    storage: MotorMongoStorage,
+) -> None:
+    """删除不存在的 agent 抛 KeyError 路由层映射 404"""
+    with pytest.raises(KeyError):
+        await storage.delete_agent("not-exist")
+
+
+@pytest.mark.asyncio
+async def test_upsert_partial_keeps_other_fields(storage: MotorMongoStorage) -> None:
+    """upsert 仅传 display_name 时 base_url/api_key/model 等保留"""
+    settings = _build_settings()
+    await storage.seed_from_yaml(settings)
+    before = await storage.get_agent("GLM")
+    assert before is not None
+
+    upd = await storage.upsert_agent("GLM", display_name="可爱小G")
+    assert upd.display_name == "可爱小G"
+    assert upd.base_url == before.base_url
+    assert upd.api_key == before.api_key
+    assert upd.model == before.model
+    assert upd.prompt == before.prompt
+    assert upd.version == 2
+
+
+@pytest.mark.asyncio
+async def test_upsert_available_models(storage: MotorMongoStorage) -> None:
+    """upsert 修改 available_models 应替换列表 接受 dict 或 ModelCatalogEntry"""
+    settings = _build_settings()
+    await storage.seed_from_yaml(settings)
 
     upd = await storage.upsert_agent(
-        name="GLM",
-        model="glm-test",
-        prompt="保持原样的活泼调调",
-        profile_name="claude-paid",
+        "GLM",
+        available_models=[
+            ModelCatalogEntry(model_id="m-A", label="模型A"),
+            {"model_id": "m-B", "label": "模型B"},
+        ],
     )
-    assert upd.profile_name == "claude-paid"
-    fresh = await storage.get_agent("GLM")
-    assert fresh is not None and fresh.profile_name == "claude-paid"
+    assert {m.model_id for m in upd.available_models} == {"m-A", "m-B"}
 
-    # 不传 profile_name 时保留旧值
-    upd2 = await storage.upsert_agent(
-        name="GLM", model="glm-v3", prompt="再改一次活泼度"
+
+@pytest.mark.asyncio
+async def test_migrate_legacy_agents(storage: MotorMongoStorage) -> None:
+    """老结构 agents 含 profile_name + provider_profiles 集合的数据 启动迁移后
+
+    1. agents 文档不再有 profile_name
+    2. agents 字段含 base_url / api_key / available_models
+    3. provider_profiles 集合被清空
+    """
+    # 手工塞入 1 条老 agent 文档
+    await storage._db["agents"].insert_one(
+        {
+            "name": "OldAgent",
+            "profile_name": "默认",
+            "model": "old-model",
+            "prompt": "老 prompt",
+            "kind": "agent",
+            "version": 1,
+        }
     )
-    assert upd2.profile_name == "claude-paid"
-
-
-@pytest.mark.asyncio
-async def test_create_profile_duplicate_raises(storage: MotorMongoStorage) -> None:
-    """同名 profile 重复创建抛 ValueError"""
-    from multichat.core.models import ProviderProfile
-
-    p = ProviderProfile(name="dup", base_url="https://x.example.com/v1", api_key="sk-dup-tail")
-    await storage.create_profile(p)
-    with pytest.raises(ValueError):
-        await storage.create_profile(p)
-
-
-@pytest.mark.asyncio
-async def test_update_profile_partial_fields(storage: MotorMongoStorage) -> None:
-    """update_profile 仅传 base_url 时其他字段保留 version+1"""
-    from multichat.core.models import ModelCatalogEntry, ProviderProfile
-
-    await storage.create_profile(
-        ProviderProfile(
-            name="p1",
-            base_url="https://old.example.com/v1",
-            api_key="sk-old-tail",
-            models=[ModelCatalogEntry(model_id="m-1", label="m-1")],
-        )
+    # 同步塞一条 provider_profiles 老数据
+    await storage._db["provider_profiles"].insert_one(
+        {
+            "name": "默认",
+            "provider_type": "openai_compatible",
+            "base_url": "https://legacy.example.com/v1",
+            "api_key": "sk-legacy-tail",
+            "models": [{"model_id": "old-model", "label": "old-model"}],
+            "version": 1,
+        }
     )
-    upd = await storage.update_profile("p1", base_url="https://new.example.com/v1")
-    assert upd.base_url == "https://new.example.com/v1"
-    assert upd.api_key == "sk-old-tail"
-    assert upd.version == 2
-    assert len(upd.models) == 1
 
-
-@pytest.mark.asyncio
-async def test_update_profile_unknown_raises_keyerror(storage: MotorMongoStorage) -> None:
-    """update_profile 不存在抛 KeyError 让路由层映射 404"""
-    with pytest.raises(KeyError):
-        await storage.update_profile("not-exist", base_url="https://x.example.com/v1")
-
-
-@pytest.mark.asyncio
-async def test_delete_profile_referenced_raises(storage: MotorMongoStorage) -> None:
-    """删除仍被 agent 引用的 profile 抛 ValueError"""
     settings = _build_settings()
+    # seed_from_yaml 内部会先迁移 然后因为 agents 已有数据 跳过 seed
     await storage.seed_from_yaml(settings)
-    # 4 个 agent 都引用'默认'
-    with pytest.raises(ValueError):
-        await storage.delete_profile("默认")
 
+    # 1. agents 文档已无 profile_name 字段 含 base_url / api_key / available_models
+    raw = await storage._db["agents"].find_one({"name": "OldAgent"})
+    assert raw is not None
+    assert "profile_name" not in raw
+    assert raw["base_url"] == "https://legacy.example.com/v1"
+    assert raw["api_key"] == "sk-legacy-tail"
+    assert raw.get("available_models") == [
+        {"model_id": "old-model", "label": "old-model"}
+    ]
+    assert raw.get("display_name") == "OldAgent"
 
-@pytest.mark.asyncio
-async def test_delete_orphan_profile_ok(storage: MotorMongoStorage) -> None:
-    """删除没人引用的 profile 应直接成功"""
-    from multichat.core.models import ProviderProfile
+    # 2. provider_profiles 集合已被清空
+    cnt = await storage._db["provider_profiles"].count_documents({})
+    assert cnt == 0
 
-    await storage.create_profile(
-        ProviderProfile(name="orphan", base_url="https://x.example.com/v1", api_key="sk-orphan-tail")
-    )
-    await storage.delete_profile("orphan")
-    assert await storage.get_profile("orphan") is None
+    # 3. 通过 list_agents 也可以读出来 字段完整
+    rec = await storage.get_agent("OldAgent")
+    assert rec is not None
+    assert rec.base_url == "https://legacy.example.com/v1"
+    assert rec.display_name == "OldAgent"

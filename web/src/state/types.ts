@@ -1,5 +1,5 @@
 // 全局类型定义:任务状态、SSE 事件、会话与轮次视图模型
-// 注意:M4 阶段的扩展集中在 RoundView / ReplyView / ChatAction 三块
+// 数字员工模型重构后:agent 数量与名称完全由后端返回 不再固定四个
 
 // 单次任务的状态机
 export type TaskState =
@@ -11,13 +11,10 @@ export type TaskState =
   | 'DONE'
   | 'CANCELLED';
 
-// 受支持的模型名称(后端约定:M1 阶段四个固定 agent)
-export type AgentName = 'DeepSeek' | 'GLM' | 'Kimi' | 'Qwen';
+// agent 名称:不再写死成 union 由后端动态返回 各 agent 的内部 ID
+export type AgentName = string;
 
-// 已知 agent 列表,组件循环渲染时使用
-export const KNOWN_AGENTS: AgentName[] = ['DeepSeek', 'GLM', 'Kimi', 'Qwen'];
-
-// SSE 事件统一外壳:具体字段由 type 决定,这里用宽松对象兜底
+// SSE 事件统一外壳:具体字段由 type 决定 这里用宽松对象兜底
 export interface SSEEvent {
   type: string;
   data: Record<string, unknown>;
@@ -34,7 +31,7 @@ export interface ThinkView {
   error?: string;
 }
 
-// 决策结果:四选一 / 让后端帮选 / 重新 think
+// 决策结果:某个 agent / 让后端帮选 / 重新 think
 export interface DecisionView {
   choice: AgentName | 'auto' | 'regenerate';
   reason: string;
@@ -59,19 +56,20 @@ export interface ReplyView {
   error?: string;
 }
 
-// 一轮完整对话(用户消息 + 4 个 think + 决策 + 回答)
+// 一轮完整对话(用户消息 + N 个 think + 决策 + 回答)
+// thinks 改成普通 Record key 由后端返回的 agent.name 决定
 export interface RoundView {
   taskId: string;
   state: TaskState;
   userMessage: string;
-  thinks: Record<AgentName, ThinkView>;
+  thinks: Record<string, ThinkView>;
   decision?: DecisionView;
   reply?: ReplyView;
   // think_done 时后端会推可用 agent 列表(失败/取消的会被剔除)
   availableAgents?: AgentName[];
   // judge 模式下后端建议或最终选择的 agent
   judgePick?: AgentName;
-  // 任务被取消时,前端展示一个简短原因
+  // 任务被取消时 前端展示一个简短原因
   cancelReason?: string;
 }
 
@@ -82,7 +80,7 @@ export interface SessionMeta {
   updatedAt: string;
 }
 
-// /history 返回结构:M3 后端约定为 { session, rounds[] }
+// /history 返回结构
 export interface HistoryResponse {
   session: SessionMeta;
   rounds: RoundView[];
@@ -91,68 +89,55 @@ export interface HistoryResponse {
 // SSE 连接状态
 export type SSEStatus = 'idle' | 'open' | 'closed' | 'reconnecting';
 
-// 4 个 agent 的配置视图(M1.D 配置抽屉用)
-export interface AgentView {
-  name: string; // DeepSeek / GLM / Kimi / Qwen
-  model: string; // 如 deepseek-v4-pro
-  prompt: string; // system_prompt
-  profileName: string; // 关联的 provider profile 名称(后端字段 profile_name)
-  version: number; // 改一次 +1
-  updatedAt: string; // ISO 字符串
-}
-
-// /api/agents 列表响应
-export interface AgentsListResponse {
-  agents: AgentView[];
-  judge_target: string; // 当前 judge 指向哪个 agent
-}
-
-// PUT /api/agents/{name} 请求体:model / prompt / profile_name 至少传一项
-export interface UpdateAgentRequest {
-  model?: string;
-  prompt?: string;
-  profile_name?: string; // 切换 provider profile
-  expected_version?: number; // 可选乐观锁
-}
-
-// provider profile 子模型视图
+// agent 子模型视图(provider 候选模型 也用同一结构)
 export interface ModelView {
   model_id: string;
   label: string;
 }
 
-// provider profile 视图(GET 时 api_key 是 mask 形式 "sk-...xxxx")
-export interface ProfileView {
-  name: string;
-  provider_type: string; // 当前固定 "openai_compatible"
+// 单个 agent 完整配置视图
+// 注意:GET 时 api_key 是 mask 形式 "sk-...xxxx" PUT 时不传或空字符串保留旧值
+export interface AgentView {
+  name: string;                // 内部 ID 不可变
+  display_name: string;        // 用户可改的展示名
+  provider_type: string;       // 当前固定 "openai_compatible"
   base_url: string;
-  api_key: string; // 注意:GET 返回 mask 形式  POST/PUT 时传明文
-  models: ModelView[];
+  api_key: string;             // mask
+  model: string;
+  available_models: ModelView[];
+  prompt: string;
   version: number;
   updated_at: string;
 }
 
-// 创建 profile 请求体
-export interface CreateProfileRequest {
-  name: string; // 1-64 字符
-  provider_type?: string; // 默认 "openai_compatible"
-  base_url: string; // ≥8 字符
-  api_key: string; // ≥4 字符
-  models?: ModelView[];
+// /api/agents 列表响应
+export interface AgentsListResponse {
+  agents: AgentView[];
+  judge_target: string;        // 当前 judge 指向哪个 agent.name
 }
 
-// 更新 profile 请求体:不传 api_key 表示保留旧值 传空字符串当作清空
-export interface UpdateProfileRequest {
+// POST /api/agents 创建一个新 agent
+export interface CreateAgentRequest {
+  display_name: string;        // 1-64 字符
+  base_url: string;            // ≥8 字符
+  api_key: string;             // ≥4 字符 明文
+  model: string;               // ≥1 字符
+  prompt: string;              // ≥5 字符
+  available_models?: ModelView[];
+  provider_type?: string;      // 默认 openai_compatible
+}
+
+// PUT /api/agents/{name} 更新 agent
+// 不传 api_key 表示保留旧 传空字符串也保留旧 仅当 dirty 时才会被写入
+export interface UpdateAgentRequest {
+  display_name?: string;
   base_url?: string;
   api_key?: string;
-  models?: ModelView[];
-}
-
-// PUT /api/agents/{name} 响应
-export interface UpdateAgentResponse {
-  name: string;
-  version: number;
-  reloaded: boolean;
+  model?: string;
+  available_models?: ModelView[];
+  prompt?: string;
+  provider_type?: string;
+  expected_version?: number;
 }
 
 // PUT /api/judge 请求体
@@ -162,23 +147,28 @@ export interface UpdateJudgeRequest {
 
 // 单个 agent 的本地编辑稿
 export interface AgentEditDraft {
-  name: string;
+  name: string;                // 不可改 内部 ID
+  displayName: string;
+  providerType: string;
+  baseUrl: string;
+  apiKey: string;              // 仅当用户主动改才有意义 否则提交时不写入 body
+  apiKeyDirty: boolean;        // 用户是否主动改过 api_key
+  apiKeyMask: string;          // 服务端返回的 mask 形式 仅用于 UI placeholder 提示
   model: string;
+  availableModels: ModelView[];
   prompt: string;
-  profileName: string; // 关联的 provider profile  保存时一并 PUT
-  version: number; // 服务端版本 用于乐观锁
-  dirty: boolean; // 用户有未保存改动
+  version: number;             // 服务端版本 用于乐观锁
+  dirty: boolean;              // 是否有未保存改动
 }
 
 // Settings 抽屉的子状态
 export interface SettingsState {
-  open: boolean; // SettingsDrawer 是否打开
-  loading: boolean; // 拉取中
-  saving: boolean; // 保存中
-  drafts: Record<string, AgentEditDraft>; // 4 个 agent 的编辑稿 按 name 索引
+  open: boolean;
+  loading: boolean;
+  saving: boolean;
+  drafts: Record<string, AgentEditDraft>;   // key = agent.name (内部 ID)
   judgeTarget: string | null;
-  profiles: ProfileView[]; // 所有 provider profile  抽屉打开时同步拉取
-  profilesLoading: boolean; // profile 列表拉取中
+  activeAgentName: string | null;            // 当前选中 tab 对应的 agent.name
 }
 
 // 全局 Chat 状态
@@ -189,7 +179,6 @@ export interface ChatState {
   activeTaskId: string | null;
   taskState: TaskState;
   sseStatus: SSEStatus;
-  // M1.D:配置抽屉
   settings: SettingsState;
 }
 
@@ -203,7 +192,7 @@ export type ChatAction =
   | { type: 'round.append'; round: RoundView }
   | { type: 'round.update'; taskId: string; patch: Partial<RoundView> }
   | { type: 'task.created'; sessionId: string; taskId: string; userMessage: string }
-  // 抗刷新重连场景:把 activeTaskId 重新挂回去,准备接收 snapshot 帧
+  // 抗刷新重连场景:把 activeTaskId 重新挂回去 准备接收 snapshot 帧
   | { type: 'task.resume'; taskId: string; taskState?: TaskState }
   | { type: 'task.state'; state: TaskState }
   | { type: 'sse.status'; status: SSEStatus }
@@ -214,20 +203,17 @@ export type ChatAction =
   | { type: 'settings.close' }
   | { type: 'settings.loading.start' }
   | { type: 'settings.loaded'; agents: AgentView[]; judgeTarget: string }
-  | { type: 'settings.draft.update'; name: string; field: 'model' | 'prompt'; value: string }
-  | { type: 'settings.draft.profile'; name: string; profileName: string }
+  | { type: 'settings.draft.field'; agentName: string; patch: Partial<AgentEditDraft> }
   | { type: 'settings.saving.start' }
-  | { type: 'settings.saved'; name: string; version: number }
+  | { type: 'settings.saved'; agent: AgentView }
   | { type: 'settings.judge.set'; target: string }
-  | { type: 'settings.profiles.loading.start' }
-  | { type: 'settings.profiles.loaded'; profiles: ProfileView[] }
-  | { type: 'settings.profiles.upserted'; profile: ProfileView }
-  | { type: 'settings.profiles.deleted'; name: string }
+  | { type: 'settings.agent.created'; agent: AgentView }
+  | { type: 'settings.agent.deleted'; name: string }
+  | { type: 'settings.agent.tab.switch'; name: string }
   | { type: 'settings.error'; message: string };
 
 // 任务忙碌态判定:THINKING / THINK_DONE / DECIDED / REPLYING 视为忙
-// 不含 PENDING(刚创建瞬间,马上会进入 THINKING),也不含 DONE / CANCELLED
-// UI 锁(发送按钮、输入框)统一用这个 helper,保持一处定义
+// 不含 PENDING 不含 DONE / CANCELLED
 export function isBusyState(state: TaskState | null | undefined): boolean {
   if (!state) return false;
   return (

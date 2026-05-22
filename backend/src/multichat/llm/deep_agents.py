@@ -4,7 +4,8 @@
     每个 agent 同时构造两个 deep_agent 实例
     - {agent_name}-think: system_prompt 强约束 50 字以内 不调用任何工具
     - {agent_name}-reply: 完整能力 鼓励规划+工具调用 流式回复
-    4 个 agent 共 8 个实例 启动时 initialize 一次 之后改 agent 配置走 reload
+    任意数量 agent 都允许 启动时 initialize 一次 之后改 agent 配置走 reload
+    新增 agent 也走 reload 追加 删除 agent 走 unregister 移除
 
 并发安全:
     - 读端不加锁 dict.get 是 GIL 内原子操作 替换字典 value 也是原子的
@@ -25,7 +26,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph.state import CompiledStateGraph
 
 from ..config import Settings
-from ..core.models import AgentRecord, ProviderProfile
+from ..core.models import AgentRecord
 
 _logger = structlog.get_logger(__name__)
 
@@ -62,15 +63,14 @@ REPLY_SYSTEM_SUFFIX = """
 def _build_one(
     agent_record: AgentRecord,
     kind: DeepAgentKind,
-    profile: ProviderProfile,
     settings: Settings,
 ) -> CompiledStateGraph:
-    """根据 agent 配置 + 关联 profile 构造一个 deep_agent 实例
+    """根据 agent 配置构造一个 deep_agent 实例
 
     think 模式 system_prompt 强约束 不能调工具
     reply 模式 system_prompt 鼓励规划 + 工具调用 同时打开 streaming
 
-    base_url + api_key 不再来自 settings 顶层 而来自 record 引用的 profile
+    base_url + api_key 直接来自 agent_record  不再依赖外部 profile
     settings 仅提供 runtime.http_timeout_seconds 等运行时参数
     """
     suffix = THINK_SYSTEM_SUFFIX if kind == "think" else REPLY_SYSTEM_SUFFIX
@@ -79,8 +79,8 @@ def _build_one(
     # 因此这里多次重建实例不会发起网络请求 测试可以放心调用
     model = ChatOpenAI(
         model=agent_record.model,
-        api_key=profile.api_key,
-        base_url=profile.base_url,
+        api_key=agent_record.api_key,
+        base_url=agent_record.base_url,
         streaming=(kind == "reply"),
         timeout=settings.runtime.http_timeout_seconds,
         max_retries=1,
@@ -105,9 +105,10 @@ def _build_one(
 
 
 class DeepAgentRegistry:
-    """4 个 agent 各自 think + reply 共 8 个实例的注册表
+    """每个 agent 各自 think + reply 两实例的注册表
 
-    支持热替换 改了某个 agent 配置后调 reload(record, profile) 原子 swap 进字典
+    支持热替换 改了某个 agent 配置后调 reload(record) 原子 swap 进字典
+    新增 agent 也走 reload 追加 删除 agent 走 unregister 移除
     读端不加锁 写端用 asyncio.Lock 串行化
     """
 
@@ -117,45 +118,44 @@ class DeepAgentRegistry:
         self._instances: dict[str, CompiledStateGraph] = {}
         self._lock = asyncio.Lock()
 
-    async def initialize(
-        self,
-        records: list[AgentRecord],
-        profiles_by_name: dict[str, ProviderProfile],
-    ) -> None:
-        """启动时一次性 build 全部 8 个实例
+    async def initialize(self, records: list[AgentRecord]) -> None:
+        """启动时一次性 build 所有实例 任意数量都接受 包含 0 条
 
-        records 必须恰好 4 条 不允许半启动状态 直接抛 ValueError
-        profiles_by_name 必须包含每条 record.profile_name 对应的 profile
-            缺则抛 KeyError 让启动早暴露
+        records 为空 names() 返回空列表 后续可通过 reload 动态新增
         """
-        if len(records) != 4:
-            raise ValueError(f"expected 4 agents got {len(records)}")
         new_inst: dict[str, CompiledStateGraph] = {}
         for r in records:
-            profile = profiles_by_name.get(r.profile_name)
-            if profile is None:
-                raise KeyError(
-                    f"agent {r.name} 引用的 profile {r.profile_name} 不存在 请先创建 profile"
-                )
-            new_inst[f"{r.name}-think"] = _build_one(r, "think", profile, self._settings)
-            new_inst[f"{r.name}-reply"] = _build_one(r, "reply", profile, self._settings)
+            new_inst[f"{r.name}-think"] = _build_one(r, "think", self._settings)
+            new_inst[f"{r.name}-reply"] = _build_one(r, "reply", self._settings)
         # 替换整张表 锁内只做指针赋值 持锁时间极短
         async with self._lock:
             self._instances = new_inst
         _logger.info("deep_agents 初始化完成", count=len(new_inst))
 
-    async def reload(self, record: AgentRecord, profile: ProviderProfile) -> None:
-        """热替换某个 agent 的 2 个实例
+    async def reload(self, record: AgentRecord) -> None:
+        """热替换 / 新增某个 agent 的 2 个实例
 
         先在锁外 build 失败也不影响现有实例 只在最终 swap 时持锁
-        必须传入对应的 profile 由调用方保证 profile.name == record.profile_name
+        若该 agent 此前不在表中 等同于追加新数字员工
         """
-        new_think = _build_one(record, "think", profile, self._settings)
-        new_reply = _build_one(record, "reply", profile, self._settings)
+        new_think = _build_one(record, "think", self._settings)
+        new_reply = _build_one(record, "reply", self._settings)
         async with self._lock:
             self._instances[f"{record.name}-think"] = new_think
             self._instances[f"{record.name}-reply"] = new_reply
         _logger.info("deep_agents 热替换", name=record.name, version=record.version)
+
+    def unregister(self, name: str) -> None:
+        """删除 agent 时同步移除其 think+reply 实例
+
+        说明:
+            - 这是同步方法 因为 dict.pop 在 GIL 下原子 不需要 lock 来保证一致性
+            - 后续如有并发 reload(name) 与 unregister(name) 竞态 由调用方串行
+              路由层 delete 与 update 互斥 不会触发该竞态
+        """
+        self._instances.pop(f"{name}-think", None)
+        self._instances.pop(f"{name}-reply", None)
+        _logger.info("deep_agents 注销", name=name)
 
     def get(self, agent_name: str, kind: DeepAgentKind) -> CompiledStateGraph:
         """读端 不加锁 dict.get 在 CPython GIL 下是原子的"""

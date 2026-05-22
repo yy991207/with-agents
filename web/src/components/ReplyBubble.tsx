@@ -10,7 +10,7 @@ import {
 import type { ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
-import { agentColors } from '../theme/tokens';
+import { getAgentColor } from '../theme/tokens';
 import type { ReplyView } from '../state/types';
 
 export interface ReplyBubbleProps {
@@ -36,7 +36,7 @@ function stateBadge(s: ReplyView['state']): { icon: ReactNode; text: string; col
 }
 
 export default function ReplyBubble({ reply }: ReplyBubbleProps) {
-  const color = agentColors[reply.agent];
+  const color = getAgentColor(reply.agent);
   const badge = stateBadge(reply.state);
 
   // streaming 时在结尾追加一个软光标提示用户文本还在长

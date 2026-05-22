@@ -5,7 +5,6 @@ import type {
   AgentName,
   AgentView,
   ModelView,
-  ProfileView,
   RoundView,
   SessionMeta,
   TaskState,
@@ -33,10 +32,10 @@ export function convertRound(raw: unknown): RoundView {
 
   // thinks 是 dict {agent_name: {state, content, error}}
   const thinksRaw = (r.thinks as Record<string, unknown> | undefined) ?? {};
-  const thinks = {} as Record<AgentName, ThinkView>;
+  const thinks: Record<string, ThinkView> = {};
   for (const [agent, t] of Object.entries(thinksRaw)) {
     const tv = (t ?? {}) as Record<string, unknown>;
-    (thinks as Record<string, ThinkView>)[agent] = {
+    thinks[agent] = {
       agent: agent as AgentName,
       state: (tv.state as ThinkState) ?? 'pending',
       content: tv.content as string | undefined,
@@ -82,25 +81,11 @@ export function convertRound(raw: unknown): RoundView {
 }
 
 // /api/agents 响应里单个 agent → AgentView
-// 后端字段是 snake_case  前端用 camelCase  这里集中适配
+// 后端字段是 snake_case  这里做兼容性提取
 export function convertAgentView(raw: unknown): AgentView {
   const r = (raw ?? {}) as Record<string, unknown>;
-  return {
-    name: (r.name as string) ?? '',
-    model: (r.model as string) ?? '',
-    prompt: (r.prompt as string) ?? '',
-    profileName: (r.profile_name as string) ?? '默认',
-    version: (r.version as number) ?? 1,
-    updatedAt: (r.updated_at as string) ?? '',
-  };
-}
-
-// /api/profiles 响应里单个 profile → ProfileView
-// 注意:GET 时 api_key 是 mask 形式 "sk-...xxxx"
-export function convertProfile(raw: unknown): ProfileView {
-  const r = (raw ?? {}) as Record<string, unknown>;
-  const modelsRaw = (r.models as unknown[]) ?? [];
-  const models: ModelView[] = modelsRaw.map((m) => {
+  const ams = (r.available_models as unknown[]) ?? [];
+  const available_models: ModelView[] = ams.map((m) => {
     const mr = (m ?? {}) as Record<string, unknown>;
     return {
       model_id: (mr.model_id as string) ?? '',
@@ -109,10 +94,14 @@ export function convertProfile(raw: unknown): ProfileView {
   });
   return {
     name: (r.name as string) ?? '',
+    display_name:
+      (r.display_name as string) ?? (r.name as string) ?? '',
     provider_type: (r.provider_type as string) ?? 'openai_compatible',
     base_url: (r.base_url as string) ?? '',
     api_key: (r.api_key as string) ?? '',
-    models,
+    model: (r.model as string) ?? '',
+    available_models,
+    prompt: (r.prompt as string) ?? '',
     version: (r.version as number) ?? 1,
     updated_at: (r.updated_at as string) ?? '',
   };

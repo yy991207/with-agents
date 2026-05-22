@@ -1,5 +1,5 @@
 // Chat 状态 reducer:集中处理所有 action
-// M4 扩展:把 SSE 事件分发到 round 视图;支持 history 加载、session 切换
+// 数字员工模型重构:agent 数量动态 settings 子树砍掉 profile 池
 
 import type {
   AgentEditDraft,
@@ -8,7 +8,6 @@ import type {
   ChatAction,
   ChatState,
   DecisionView,
-  ProfileView,
   ReplyView,
   RoundView,
   SettingsState,
@@ -18,17 +17,15 @@ import type {
   ThinkView,
   ToolCallEvent,
 } from './types';
-import { KNOWN_AGENTS } from './types';
 
-// Settings 子树初始值:抽屉关闭、无草稿
+// Settings 子树初始值:抽屉关闭 无草稿
 const initialSettings: SettingsState = {
   open: false,
   loading: false,
   saving: false,
   drafts: {},
   judgeTarget: null,
-  profiles: [],
-  profilesLoading: false,
+  activeAgentName: null,
 };
 
 // 初始状态
@@ -51,34 +48,37 @@ function patchRound(
   return rounds.map((r) => (r.taskId === taskId ? { ...r, ...patch } : r));
 }
 
-// 工具:把后端返回的 agent 列表展平成 drafts 字典,初始 dirty=false
+// 工具:把后端返回的 agent 视图展平成本地 draft
+function viewToDraft(a: AgentView): AgentEditDraft {
+  return {
+    name: a.name,
+    displayName: a.display_name || a.name,
+    providerType: a.provider_type || 'openai_compatible',
+    baseUrl: a.base_url,
+    // 编辑时显示空 让用户感知"留空保留旧" 占位说明会显示 mask
+    apiKey: '',
+    apiKeyDirty: false,
+    apiKeyMask: a.api_key || '',
+    model: a.model,
+    availableModels: a.available_models ?? [],
+    prompt: a.prompt,
+    version: a.version,
+    dirty: false,
+  };
+}
+
+// 工具:把后端返回的 agent 列表展平成 drafts 字典 初始 dirty=false
 function buildDrafts(agents: AgentView[]): Record<string, AgentEditDraft> {
   const out: Record<string, AgentEditDraft> = {};
   for (const a of agents) {
-    out[a.name] = {
-      name: a.name,
-      model: a.model,
-      prompt: a.prompt,
-      profileName: a.profileName ?? '默认',
-      version: a.version,
-      dirty: false,
-    };
+    out[a.name] = viewToDraft(a);
   }
-  return out;
-}
-
-// 工具:在已有 profile 列表里 upsert 一项 同名替换 否则追加
-function upsertProfile(profiles: ProfileView[], next: ProfileView): ProfileView[] {
-  const idx = profiles.findIndex((p) => p.name === next.name);
-  if (idx < 0) return [...profiles, next];
-  const out = [...profiles];
-  out[idx] = next;
   return out;
 }
 
 // ====== SSE 事件分发辅助 ======
 
-// 安全读取 data 中的字段(后端 snake_case,这里把常用字段都尝试一遍)
+// 安全读取 data 中的字段(后端 snake_case 这里把常用字段都尝试一遍)
 function readString(data: Record<string, unknown>, ...keys: string[]): string | undefined {
   for (const k of keys) {
     const v = data[k];
@@ -87,17 +87,16 @@ function readString(data: Record<string, unknown>, ...keys: string[]): string | 
   return undefined;
 }
 
+// agent 字段不再校验固定 union 仅取字符串
 function readAgent(data: Record<string, unknown>, ...keys: string[]): AgentName | undefined {
-  const s = readString(data, ...keys);
-  if (s && (KNOWN_AGENTS as string[]).includes(s)) return s as AgentName;
-  return undefined;
+  return readString(data, ...keys);
 }
 
 function readAgentList(data: Record<string, unknown>, ...keys: string[]): AgentName[] | undefined {
   for (const k of keys) {
     const v = data[k];
     if (Array.isArray(v)) {
-      const list = v.filter((x): x is AgentName => typeof x === 'string' && (KNOWN_AGENTS as string[]).includes(x));
+      const list = v.filter((x): x is AgentName => typeof x === 'string');
       return list;
     }
   }
@@ -117,7 +116,6 @@ function updateThink(round: RoundView, agent: AgentName, patch: Partial<ThinkVie
 }
 
 // 把单条 SSE 事件应用到当前活跃 round 上
-// 注意:这里假设 activeTaskId 指向的 round 一定存在;不存在则原样返回
 function applySSEEvent(state: ChatState, event: SSEEvent): ChatState {
   const taskId = state.activeTaskId;
   if (!taskId) return state;
@@ -126,7 +124,7 @@ function applySSEEvent(state: ChatState, event: SSEEvent): ChatState {
   const round = state.rounds[idx];
   const data = event.data ?? {};
 
-  // 工具:把变更后的 round 写回 rounds,并可附带顶层 taskState 修改
+  // 工具:把变更后的 round 写回 rounds 并可附带顶层 taskState 修改
   const apply = (next: RoundView, taskState?: TaskState): ChatState => {
     const rounds = [...state.rounds];
     rounds[idx] = next;
@@ -153,7 +151,6 @@ function applySSEEvent(state: ChatState, event: SSEEvent): ChatState {
         const choice = readString(dr, 'choice');
         const reason = readString(dr, 'reason') ?? '';
         if (choice) {
-          // choice 可能是 'auto' / 'regenerate' / AgentName,这里统一断言
           patch.decision = {
             choice: choice as DecisionView['choice'],
             reason,
@@ -192,7 +189,7 @@ function applySSEEvent(state: ChatState, event: SSEEvent): ChatState {
     }
 
     case 'judge.start': {
-      // judge 进行中暂不持久化;可由 UI 用临时态展示
+      // judge 进行中暂不持久化 可由 UI 用临时态展示
       return state;
     }
 
@@ -257,7 +254,6 @@ function applySSEEvent(state: ChatState, event: SSEEvent): ChatState {
 
     case 'reply.done': {
       if (!round.reply) return state;
-      // 后端会给完整 content,优先采用;没给就保留累积值
       const content = readString(data, 'content');
       const reply: ReplyView = {
         ...round.reply,
@@ -307,7 +303,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return { ...state, sessionId: action.sessionId };
 
     case 'session.switch':
-      // 切换会话时清空 rounds 与活跃任务,等 history.loaded 重新填回
+      // 切换会话时清空 rounds 与活跃任务 等 history.loaded 重新填回
       return {
         ...state,
         sessionId: action.sessionId,
@@ -318,7 +314,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       };
 
     case 'session.deleted': {
-      // 删除会话:从 sessions 列表移除;若删的就是当前会话,清空对话视图
+      // 删除会话:从 sessions 列表移除 若删的就是当前会话 清空对话视图
       const sessions = state.sessions.filter((s) => s.sessionId !== action.sessionId);
       const isCurrent = state.sessionId === action.sessionId;
       if (isCurrent) {
@@ -342,7 +338,6 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return { ...state, rounds: action.rounds };
 
     case 'history.loaded':
-      // 历史落地后:rounds 替换;若新会话有未结束任务,activeTaskId 保留为最后一轮
       return {
         ...state,
         sessionId: action.sessionId,
@@ -361,8 +356,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       };
 
     case 'task.created': {
-      // 创建新任务时同时落 sessionId 与 activeTaskId,塞一个空 round 占位
-      // 同时在 sessions 列表头补一条占位项,免得用户看不到刚发起的会话
+      // 创建新任务时同时落 sessionId 与 activeTaskId 塞一个空 round 占位
       const isNewSession = !state.sessions.some(
         (s) => s.sessionId === action.sessionId,
       );
@@ -381,19 +375,17 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         sessionId: action.sessionId,
         activeTaskId: action.taskId,
         taskState: 'PENDING',
-        rounds: [...state.rounds, createEmptyRound(action.taskId, action.userMessage)],
+        rounds: [...state.rounds, createEmptyRound(action.taskId, action.userMessage, state.settings.drafts)],
         sessions: updatedSessions,
       };
     }
 
     case 'task.resume': {
-      // 抗刷新重连:把 activeTaskId 设回去,等 snapshot 回放
-      // 若 history 已带回该 round(后端 mongo 已落库),保留原 round 不动
-      // 若没有(很少见,但可能 history 还没写库就刷新了),塞个空占位防止 snapshot 落空
+      // 抗刷新重连:把 activeTaskId 设回去 等 snapshot 回放
       const exists = state.rounds.some((r) => r.taskId === action.taskId);
       const rounds = exists
         ? state.rounds
-        : [...state.rounds, createEmptyRound(action.taskId, '')];
+        : [...state.rounds, createEmptyRound(action.taskId, '', state.settings.drafts)];
       return {
         ...state,
         activeTaskId: action.taskId,
@@ -425,49 +417,43 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case 'settings.loading.start':
       return { ...state, settings: { ...state.settings, loading: true } };
 
-    case 'settings.loaded':
+    case 'settings.loaded': {
+      const drafts = buildDrafts(action.agents);
+      // 默认选中第一个 agent 作为 active tab 若已有 active 且仍存在 则保留
+      const keys = Object.keys(drafts);
+      let activeAgentName = state.settings.activeAgentName;
+      if (!activeAgentName || !drafts[activeAgentName]) {
+        activeAgentName = keys[0] ?? null;
+      }
       return {
         ...state,
         settings: {
           ...state.settings,
           loading: false,
-          drafts: buildDrafts(action.agents),
+          drafts,
           judgeTarget: action.judgeTarget,
-        },
-      };
-
-    case 'settings.draft.update': {
-      const cur = state.settings.drafts[action.name];
-      if (!cur) return state;
-      const next: AgentEditDraft = {
-        ...cur,
-        [action.field]: action.value,
-        dirty: true,
-      };
-      return {
-        ...state,
-        settings: {
-          ...state.settings,
-          drafts: { ...state.settings.drafts, [action.name]: next },
+          activeAgentName,
         },
       };
     }
 
-    case 'settings.draft.profile': {
-      // 切换 agent 关联的 provider profile  纯本地草稿改动 直到 save 才落盘
-      const cur = state.settings.drafts[action.name];
+    case 'settings.draft.field': {
+      const cur = state.settings.drafts[action.agentName];
       if (!cur) return state;
-      if (cur.profileName === action.profileName) return state;
-      const next: AgentEditDraft = {
+      // patch 中如果包含 apiKey 同步把 apiKeyDirty 标 true
+      const merged: AgentEditDraft = {
         ...cur,
-        profileName: action.profileName,
+        ...action.patch,
+        // dirty 永远拉成 true 避免外部 patch 误覆盖成 false
         dirty: true,
+        apiKeyDirty:
+          'apiKey' in action.patch ? true : cur.apiKeyDirty,
       };
       return {
         ...state,
         settings: {
           ...state.settings,
-          drafts: { ...state.settings.drafts, [action.name]: next },
+          drafts: { ...state.settings.drafts, [action.agentName]: merged },
         },
       };
     }
@@ -476,21 +462,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return { ...state, settings: { ...state.settings, saving: true } };
 
     case 'settings.saved': {
-      const cur = state.settings.drafts[action.name];
-      if (!cur) {
-        return { ...state, settings: { ...state.settings, saving: false } };
-      }
-      const next: AgentEditDraft = {
-        ...cur,
-        version: action.version,
-        dirty: false,
-      };
+      // 用服务端返回的最新 agent 重置该 draft
+      const next = viewToDraft(action.agent);
       return {
         ...state,
         settings: {
           ...state.settings,
           saving: false,
-          drafts: { ...state.settings.drafts, [action.name]: next },
+          drafts: { ...state.settings.drafts, [action.agent.name]: next },
         },
       };
     }
@@ -501,44 +480,54 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         settings: { ...state.settings, judgeTarget: action.target },
       };
 
-    case 'settings.profiles.loading.start':
-      return {
-        ...state,
-        settings: { ...state.settings, profilesLoading: true },
-      };
-
-    case 'settings.profiles.loaded':
+    case 'settings.agent.created': {
+      // 新增 agent 转 draft 并自动切到该 tab
+      const next = viewToDraft(action.agent);
       return {
         ...state,
         settings: {
           ...state.settings,
-          profiles: action.profiles,
-          profilesLoading: false,
+          drafts: { ...state.settings.drafts, [action.agent.name]: next },
+          activeAgentName: action.agent.name,
         },
       };
+    }
 
-    case 'settings.profiles.upserted':
+    case 'settings.agent.deleted': {
+      const drafts = { ...state.settings.drafts };
+      delete drafts[action.name];
+      const keys = Object.keys(drafts);
+      // 若被删的是当前 active 自动切到第一个剩余
+      const activeAgentName =
+        state.settings.activeAgentName === action.name
+          ? keys[0] ?? null
+          : state.settings.activeAgentName;
+      // 若被删的是当前 judge 清空 由后端配合切换 这里仅做本地展示兜底
+      const judgeTarget =
+        state.settings.judgeTarget === action.name
+          ? null
+          : state.settings.judgeTarget;
       return {
         ...state,
         settings: {
           ...state.settings,
-          profiles: upsertProfile(state.settings.profiles, action.profile),
+          drafts,
+          activeAgentName,
+          judgeTarget,
         },
       };
+    }
 
-    case 'settings.profiles.deleted':
+    case 'settings.agent.tab.switch':
       return {
         ...state,
-        settings: {
-          ...state.settings,
-          profiles: state.settings.profiles.filter((p) => p.name !== action.name),
-        },
+        settings: { ...state.settings, activeAgentName: action.name },
       };
 
     case 'settings.error':
       return {
         ...state,
-        settings: { ...state.settings, loading: false, saving: false, profilesLoading: false },
+        settings: { ...state.settings, loading: false, saving: false },
       };
 
     default:
@@ -546,14 +535,19 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   }
 }
 
-// 创建一个空 round,4 个 think 都是 pending(供 task.created 与外部使用)
-export function createEmptyRound(taskId: string, userMessage: string): RoundView {
-  const empty: Record<AgentName, ThinkView> = {
-    DeepSeek: { agent: 'DeepSeek', state: 'pending' },
-    GLM: { agent: 'GLM', state: 'pending' },
-    Kimi: { agent: 'Kimi', state: 'pending' },
-    Qwen: { agent: 'Qwen', state: 'pending' },
-  };
+// 创建一个空 round 所有已知 agent 的 think 都是 pending
+// drafts 用于决定初始 thinks 的 key 集合 没有 drafts 也允许返回空 thinks
+export function createEmptyRound(
+  taskId: string,
+  userMessage: string,
+  drafts?: Record<string, AgentEditDraft>,
+): RoundView {
+  const empty: Record<string, ThinkView> = {};
+  if (drafts) {
+    for (const name of Object.keys(drafts)) {
+      empty[name] = { agent: name, state: 'pending' };
+    }
+  }
   return {
     taskId,
     state: 'PENDING',

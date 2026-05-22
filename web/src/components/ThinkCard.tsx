@@ -2,7 +2,7 @@
 // 支持暂停(取消单 agent)与重试(M2 暂未实装,UI 仅触发提示)
 import { Alert, Button, Card, Space, Spin, Tag, Tooltip } from 'antd';
 import { PauseOutlined, ReloadOutlined } from '@ant-design/icons';
-import { agentColors } from '../theme/tokens';
+import { getAgentColor } from '../theme/tokens';
 import type { ThinkView } from '../state/types';
 
 export interface ThinkCardProps {
@@ -30,7 +30,7 @@ function stateMeta(s: ThinkView['state']): { text: string; color: string } {
 }
 
 export default function ThinkCard({ think, onRetry, onPause }: ThinkCardProps) {
-  const color = agentColors[think.agent];
+  const color = getAgentColor(think.agent);
   const meta = stateMeta(think.state);
 
   return (

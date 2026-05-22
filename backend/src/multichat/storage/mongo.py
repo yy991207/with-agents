@@ -25,7 +25,6 @@ from pymongo import ASCENDING, DESCENDING
 from ..core.models import (
     AgentRecord,
     ModelCatalogEntry,
-    ProviderProfile,
     Round,
     Session,
     SessionMeta,
@@ -49,12 +48,61 @@ def _new_id() -> str:
     return uuid.uuid4().hex
 
 
+def _new_agent_name() -> str:
+    """生成内部稳定 agent name 形如 agent_<8 位 hex>
+
+    碰撞概率约 1/4 亿 由 create_agent 调用方在 collision 时直接抛 ValueError 让前端重试
+    """
+    return f"agent_{uuid.uuid4().hex[:8]}"
+
+
 def _strip_internal(doc: dict[str, Any] | None) -> dict[str, Any] | None:
     """剥离 mongo 内部 _id 字段 业务层不消费"""
     if doc is None:
         return None
     doc.pop("_id", None)
     return doc
+
+
+def _normalize_models(models: list | None) -> list[dict[str, Any]] | None:
+    """把 ModelCatalogEntry / dict 混合列表统一转成 dict 列表
+
+    None 直接透传 表示"不更新此字段"
+    """
+    if models is None:
+        return None
+    out: list[dict[str, Any]] = []
+    for m in models:
+        if isinstance(m, ModelCatalogEntry):
+            out.append(m.model_dump(mode="json"))
+        elif isinstance(m, dict):
+            out.append(
+                {
+                    "model_id": str(m.get("model_id", "")),
+                    "label": str(m.get("label", "")),
+                }
+            )
+        else:
+            raise TypeError(f"available_models 项类型不支持 {type(m).__name__}")
+    return out
+
+
+def _agent_doc_to_record(doc: dict[str, Any]) -> AgentRecord:
+    """把数据库文档转成 AgentRecord  补默认值兜底老数据"""
+    return AgentRecord.model_validate(
+        {
+            "name": doc["name"],
+            "display_name": doc.get("display_name") or doc["name"],
+            "provider_type": doc.get("provider_type", "openai_compatible"),
+            "base_url": doc.get("base_url", ""),
+            "api_key": doc.get("api_key", ""),
+            "model": doc.get("model", ""),
+            "available_models": doc.get("available_models", []),
+            "prompt": doc.get("prompt", ""),
+            "version": int(doc.get("version", 1)),
+            "updated_at": doc.get("updated_at", _utcnow()),
+        }
+    )
 
 
 class MotorMongoStorage:
@@ -141,11 +189,6 @@ class MotorMongoStorage:
         await self._db["agent_history"].create_index(
             [("name", ASCENDING), ("version", DESCENDING)],
             name="idx_agent_history_name_version_desc",
-        )
-
-        # provider_profiles 集合  name 唯一  支持运行时切换 base_url + api_key
-        await self._db["provider_profiles"].create_index(
-            [("name", ASCENDING)], unique=True, name="uniq_profile_name"
         )
 
     # ============================================================ Sessions CRUD
@@ -411,59 +454,103 @@ class MotorMongoStorage:
         cursor = self._db["agents"].find({}, {"_id": 0}).sort("name", ASCENDING)
         out: list[AgentRecord] = []
         async for doc in cursor:
-            out.append(AgentRecord.model_validate(doc))
+            out.append(_agent_doc_to_record(doc))
         return out
 
     async def get_agent(self, name: str) -> AgentRecord | None:
         doc = await self._db["agents"].find_one({"name": name}, {"_id": 0})
         if doc is None:
             return None
-        return AgentRecord.model_validate(doc)
+        return _agent_doc_to_record(doc)
+
+    async def create_agent(
+        self,
+        name: str | None,
+        display_name: str,
+        base_url: str,
+        api_key: str,
+        model: str,
+        prompt: str,
+        available_models: list[ModelCatalogEntry] | None = None,
+        provider_type: str = "openai_compatible",
+    ) -> AgentRecord:
+        """新建 agent  name 不传则自动生成 agent_<8位hex>  name 重复抛 ValueError
+
+        display_name 若为空字符串 则回落用 name 充当显示名 避免前端列表显示空白
+        """
+        # 生成 / 校验内部稳定 name
+        final_name = (name or "").strip() or _new_agent_name()
+
+        existing = await self._db["agents"].find_one({"name": final_name}, {"_id": 0})
+        if existing is not None:
+            raise ValueError(f"agent 已存在 name={final_name}")
+
+        now = _utcnow()
+        models_list = _normalize_models(available_models) or []
+        doc: dict[str, Any] = {
+            "name": final_name,
+            "display_name": display_name.strip() or final_name,
+            "provider_type": provider_type or "openai_compatible",
+            "base_url": base_url,
+            "api_key": api_key,
+            "model": model,
+            "available_models": models_list,
+            "prompt": prompt,
+            "version": 1,
+            "updated_at": now,
+        }
+        await self._db["agents"].insert_one(dict(doc))
+        return _agent_doc_to_record(doc)
+
+    async def delete_agent(self, name: str) -> None:
+        """删除 agent  若该 name 是当前 judge_target 抛 ValueError 路由层映射 409
+
+        不存在抛 KeyError 路由层映射 404
+        """
+        existing = await self._db["agents"].find_one({"name": name}, {"_id": 0})
+        if existing is None:
+            raise KeyError(f"agent 不存在 name={name}")
+
+        # 校验是否被 judge 指针引用
+        judge_doc = await self._db["settings"].find_one({"_id": _JUDGE_POINTER_DOC_ID})
+        if judge_doc is not None and judge_doc.get(_JUDGE_POINTER_FIELD) == name:
+            raise ValueError(f"agent {name} 仍是当前 judge target 无法删除 请先切换 judge")
+
+        await self._db["agents"].delete_one({"name": name})
 
     async def upsert_agent(
         self,
         name: str,
-        model: str,
-        prompt: str,
-        kind: str = "agent",
-        profile_name: str | None = None,
+        *,
+        display_name: str | None = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        model: str | None = None,
+        available_models: list | None = None,
+        prompt: str | None = None,
+        provider_type: str | None = None,
     ) -> AgentRecord:
-        """新增或更新 agent 已存在则 version +1 反之初始化 version=1
-
-        kind 字段固定为 agent 这里不开放第二个枚举值 保持集合纯净
-
-        profile_name 可选传入语义:
-            - None 旧记录已有则保留旧值 否则取默认值"默认"
-            - 显式传字符串则覆盖落库 由路由层在调用前做存在性校验
+        """部分更新 agent  None 表示保留旧值  version 自增  不存在抛 KeyError
 
         新增 H7 配置回滚:
             - 写新值前 先把当前值整体归档到 agent_history 集合
-            - 归档文档保留 name model prompt version + archived_at archived_reason
-              (含 profile_name 便于历史回滚也能回到旧 profile)
-            - 仅当存在 current 才归档 首次插入不留历史(没有"上一版"可回滚)
+            - 归档文档保留 完整字段 + archived_at archived_reason
         """
         existing = await self._db["agents"].find_one({"name": name}, {"_id": 0})
-        now = _utcnow()
         if existing is None:
-            # 新建路径 profile_name 缺省回落"默认"
-            doc = {
-                "name": name,
-                "profile_name": profile_name or "默认",
-                "model": model,
-                "prompt": prompt,
-                "kind": "agent",
-                "version": 1,
-                "updated_at": now,
-            }
-            await self._db["agents"].insert_one(dict(doc))
-            return AgentRecord.model_validate(doc)
+            raise KeyError(f"agent 不存在 name={name}")
 
+        now = _utcnow()
         # 归档旧值 让历史可追溯 reason 默认 upsert 由 routes 层调 revert 时传 revert
-        archive_doc = {
+        archive_doc: dict[str, Any] = {
             "name": existing["name"],
-            "profile_name": existing.get("profile_name", "默认"),
-            "model": existing["model"],
-            "prompt": existing["prompt"],
+            "display_name": existing.get("display_name") or existing["name"],
+            "provider_type": existing.get("provider_type", "openai_compatible"),
+            "base_url": existing.get("base_url", ""),
+            "api_key": existing.get("api_key", ""),
+            "model": existing.get("model", ""),
+            "available_models": existing.get("available_models", []),
+            "prompt": existing.get("prompt", ""),
             "version": int(existing.get("version", 1)),
             "archived_at": now,
             "archived_reason": "upsert",
@@ -471,30 +558,30 @@ class MotorMongoStorage:
         await self._db["agent_history"].insert_one(archive_doc)
 
         new_version = int(existing.get("version", 1)) + 1
-        # profile_name 处理: 传了用新值 没传保留旧值 旧值缺失兜底"默认"
-        new_profile_name = profile_name if profile_name is not None else existing.get("profile_name", "默认")
-        updates = {
-            "profile_name": new_profile_name,
-            "model": model,
-            "prompt": prompt,
-            "kind": "agent",
+        updates: dict[str, Any] = {
             "version": new_version,
             "updated_at": now,
         }
+        if display_name is not None:
+            updates["display_name"] = display_name.strip() or existing["name"]
+        if base_url is not None:
+            updates["base_url"] = base_url
+        if api_key is not None:
+            updates["api_key"] = api_key
+        if model is not None:
+            updates["model"] = model
+        if prompt is not None:
+            updates["prompt"] = prompt
+        if provider_type is not None:
+            updates["provider_type"] = provider_type
+        if available_models is not None:
+            normalized = _normalize_models(available_models)
+            if normalized is not None:
+                updates["available_models"] = normalized
+
         await self._db["agents"].update_one({"name": name}, {"$set": updates})
         merged = {**existing, **updates}
-        # 仅保留模型字段 防多余键漏到 pydantic 校验
-        return AgentRecord.model_validate(
-            {
-                "name": name,
-                "profile_name": merged["profile_name"],
-                "model": merged["model"],
-                "prompt": merged["prompt"],
-                "kind": "agent",
-                "version": merged["version"],
-                "updated_at": merged["updated_at"],
-            }
-        )
+        return _agent_doc_to_record(merged)
 
     # --------------------------------------------------------- Agent History
     async def list_agent_history(
@@ -502,7 +589,7 @@ class MotorMongoStorage:
     ) -> list[dict]:
         """列出 agent 历史版本 按 version 降序 默认 20 条
 
-        返回字典列表 字段为 name model prompt version archived_at archived_reason
+        返回字典列表 字段含完整 agent 配置 + archived_at archived_reason
         """
         cursor = (
             self._db["agent_history"]
@@ -543,6 +630,75 @@ class MotorMongoStorage:
             upsert=True,
         )
 
+    # --------------------------------------------------------------- 数据迁移
+    async def _migrate_legacy_agents(self) -> int:
+        """老版本 agents 文档可能含 profile_name 字段 而 base_url/api_key 在
+        provider_profiles 集合里 这里在启动时一次性迁移成新结构
+
+        步骤:
+            1. 找出所有含 profile_name 字段的 agent 文档
+            2. 加载 provider_profiles 集合内全部 profile (按 name 索引)
+            3. 把 profile 的 base_url/api_key/models 拷到对应 agent 文档
+            4. 给 agent 文档补 display_name(缺失时用 name)
+            5. 清空 provider_profiles 集合
+            6. $unset profile_name 字段
+
+        返回迁移条数 0 表示无历史数据需要处理
+        """
+        legacy_agents = await self._db["agents"].count_documents(
+            {"profile_name": {"$exists": True}}
+        )
+        if legacy_agents == 0:
+            return 0
+
+        # 加载 profile 集合到内存 形成 name -> profile_doc 索引
+        profiles_by_name: dict[str, dict[str, Any]] = {}
+        async for p in self._db["provider_profiles"].find({}, {"_id": 0}):
+            profiles_by_name[str(p.get("name", ""))] = p
+
+        migrated = 0
+        cursor = self._db["agents"].find(
+            {"profile_name": {"$exists": True}}, {"_id": 0}
+        )
+        async for doc in cursor:
+            agent_name = doc["name"]
+            profile_name = doc.get("profile_name", "")
+            profile = profiles_by_name.get(profile_name) or profiles_by_name.get("默认") or {}
+
+            updates: dict[str, Any] = {}
+            # 仅当 agent 文档自己缺这些字段时才用 profile 的值填充
+            if "base_url" not in doc:
+                updates["base_url"] = profile.get("base_url", "")
+            if "api_key" not in doc:
+                updates["api_key"] = profile.get("api_key", "")
+            if "available_models" not in doc:
+                updates["available_models"] = profile.get("models", []) or []
+            if "provider_type" not in doc:
+                updates["provider_type"] = profile.get(
+                    "provider_type", "openai_compatible"
+                )
+            if not doc.get("display_name"):
+                updates["display_name"] = agent_name
+
+            await self._db["agents"].update_one(
+                {"name": agent_name},
+                {
+                    "$set": updates,
+                    "$unset": {"profile_name": "", "kind": ""},
+                },
+            )
+            migrated += 1
+
+        # 迁移后清空 provider_profiles 集合 后续运行不再依赖
+        try:
+            await self._db["provider_profiles"].delete_many({})
+        except Exception:
+            # mongomock 极端情况下集合不存在 忽略
+            _logger.exception("清空 provider_profiles 失败 忽略")
+
+        _logger.info("迁移历史 agents 完成", migrated=migrated)
+        return migrated
+
     # --------------------------------------------------------------- Seed 注入
     async def seed_from_yaml(self, settings: Any) -> int:
         """首次启动从 yaml 注入种子 agents collection 已有数据时直接跳过
@@ -550,60 +706,34 @@ class MotorMongoStorage:
         参数 settings 形如 multichat.config.Settings 含 agents 字典与 judge 指针
         返回值是写入的 agent 条数 0 表示已 seed 过
 
-        新增逻辑:
-            - 若 provider_profiles 集合为空 把 yaml 顶层 key/base_url 注入名为"默认" profile
-            - 默认 profile 的 models 池 = yaml.agents 段中所有 agent.model 去重 + 几条常用扩展
-            - agents seed 时给每条 record 写 profile_name="默认"
+        逻辑:
+            1. 启动先跑数据迁移 把老 profile_name 模型升级到新数字员工模型
+            2. 已存在 agents 文档则跳过 seed
+            3. 否则按 yaml.agents 段每条注入完整字段 base_url/api_key 来自 yaml 顶层
+            4. available_models 默认池 = yaml.agents 中所有 model 去重 + 4 条扩展
 
         注意:
             judge 指针即便已经存在也不在这里覆盖 完全由用户后续通过 set_judge_target 调
             首次种子默认值用 settings.judge.agent
         """
-        # 默认 profile 注入: 仅当 provider_profiles 集合为空时执行
-        # 已存在则视为运行时已经管理过 不再回写以免覆盖用户改动
-        profile_existing = await self._db["provider_profiles"].count_documents({})
-        if profile_existing == 0:
-            now0 = _utcnow()
-            # 默认模型池 = yaml.agents 中出现的所有 model 去重 + 常用扩展模型
-            yaml_models: list[str] = []
-            for cfg in settings.agents.values():
-                if cfg.model and cfg.model not in yaml_models:
-                    yaml_models.append(cfg.model)
-            extra_models = ["deepseek-v3", "glm-4.5", "kimi-k2", "qwen-max"]
-            for m in extra_models:
-                if m not in yaml_models:
-                    yaml_models.append(m)
-            default_profile_doc = {
-                "name": "默认",
-                "provider_type": "openai_compatible",
-                "base_url": settings.base_url,
-                "api_key": settings.key,
-                "models": [{"model_id": m, "label": m} for m in yaml_models],
-                "version": 1,
-                "updated_at": now0,
-            }
-            await self._db["provider_profiles"].insert_one(default_profile_doc)
-            _logger.info(
-                "seed 注入默认 profile",
-                base_url=settings.base_url,
-                models_count=len(yaml_models),
-            )
+        # 数据迁移 仅对老 profile_name 数据生效 不影响新数据
+        await self._migrate_legacy_agents()
 
         existing = await self._db["agents"].count_documents({})
         if existing > 0:
-            # 数据迁移 老版本 agents 文档可能缺 profile_name 字段
-            # 启动时一次性补齐为 "默认" 防止 delete_profile 引用 count 漏算
-            missing = await self._db["agents"].update_many(
-                {"profile_name": {"$exists": False}},
-                {"$set": {"profile_name": "默认"}},
-            )
-            if missing.modified_count > 0:
-                _logger.info(
-                    "迁移 agents 补齐 profile_name 字段",
-                    modified=missing.modified_count,
-                )
             _logger.info("agents 已存在 跳过 seed", existing=existing)
             return 0
+
+        # 默认模型池 = yaml.agents 中出现的所有 model 去重 + 常用扩展模型
+        yaml_models: list[str] = []
+        for cfg in settings.agents.values():
+            if cfg.model and cfg.model not in yaml_models:
+                yaml_models.append(cfg.model)
+        extra_models = ["deepseek-v3", "glm-4.5", "kimi-k2", "qwen-max"]
+        for m in extra_models:
+            if m not in yaml_models:
+                yaml_models.append(m)
+        models_pool = [{"model_id": m, "label": m} for m in yaml_models]
 
         now = _utcnow()
         docs: list[dict[str, Any]] = []
@@ -611,10 +741,13 @@ class MotorMongoStorage:
             docs.append(
                 {
                     "name": agent_name,
-                    "profile_name": "默认",
+                    "display_name": agent_name,
+                    "provider_type": "openai_compatible",
+                    "base_url": settings.base_url,
+                    "api_key": settings.key,
                     "model": agent_cfg.model,
+                    "available_models": list(models_pool),
                     "prompt": agent_cfg.prompt,
-                    "kind": "agent",
                     "version": 1,
                     "updated_at": now,
                 }
@@ -638,94 +771,3 @@ class MotorMongoStorage:
 
         _logger.info("seed 注入完成", agents_written=len(docs), judge=settings.judge.agent)
         return len(docs)
-
-    # ============================================================ Profiles CRUD
-    async def list_profiles(self) -> list[ProviderProfile]:
-        """按 name 升序列出所有 profile"""
-        cursor = self._db["provider_profiles"].find({}, {"_id": 0}).sort("name", ASCENDING)
-        out: list[ProviderProfile] = []
-        async for doc in cursor:
-            out.append(ProviderProfile.model_validate(doc))
-        return out
-
-    async def get_profile(self, name: str) -> ProviderProfile | None:
-        doc = await self._db["provider_profiles"].find_one({"name": name}, {"_id": 0})
-        if doc is None:
-            return None
-        return ProviderProfile.model_validate(doc)
-
-    async def create_profile(self, profile: ProviderProfile) -> ProviderProfile:
-        """新建 profile 同名已存在抛 ValueError"""
-        existing = await self._db["provider_profiles"].find_one({"name": profile.name}, {"_id": 0})
-        if existing is not None:
-            raise ValueError(f"profile {profile.name} 已存在")
-        now = _utcnow()
-        doc = {
-            "name": profile.name,
-            "provider_type": profile.provider_type,
-            "base_url": profile.base_url,
-            "api_key": profile.api_key,
-            "models": [m.model_dump(mode="json") for m in profile.models],
-            "version": 1,
-            "updated_at": now,
-        }
-        await self._db["provider_profiles"].insert_one(dict(doc))
-        return ProviderProfile.model_validate(doc)
-
-    async def update_profile(
-        self,
-        name: str,
-        *,
-        base_url: str | None = None,
-        api_key: str | None = None,
-        models: list | None = None,
-        provider_type: str | None = None,
-    ) -> ProviderProfile:
-        """局部更新 profile  仅更新非 None 字段  不存在抛 KeyError  version+1"""
-        existing = await self._db["provider_profiles"].find_one({"name": name}, {"_id": 0})
-        if existing is None:
-            raise KeyError(f"profile 不存在 name={name}")
-
-        now = _utcnow()
-        updates: dict[str, Any] = {
-            "version": int(existing.get("version", 1)) + 1,
-            "updated_at": now,
-        }
-        if base_url is not None:
-            updates["base_url"] = base_url
-        if api_key is not None:
-            updates["api_key"] = api_key
-        if provider_type is not None:
-            updates["provider_type"] = provider_type
-        if models is not None:
-            # 接收 ModelCatalogEntry 列表或 dict 列表 统一序列化
-            normalized: list[dict[str, Any]] = []
-            for m in models:
-                if isinstance(m, ModelCatalogEntry):
-                    normalized.append(m.model_dump(mode="json"))
-                elif isinstance(m, dict):
-                    normalized.append({"model_id": str(m.get("model_id", "")), "label": str(m.get("label", ""))})
-                else:
-                    raise TypeError(f"models 项类型不支持 {type(m).__name__}")
-            updates["models"] = normalized
-
-        await self._db["provider_profiles"].update_one({"name": name}, {"$set": updates})
-        merged = {**existing, **updates}
-        return ProviderProfile.model_validate(
-            {
-                "name": name,
-                "provider_type": merged.get("provider_type", "openai_compatible"),
-                "base_url": merged["base_url"],
-                "api_key": merged["api_key"],
-                "models": merged.get("models", []),
-                "version": merged["version"],
-                "updated_at": merged["updated_at"],
-            }
-        )
-
-    async def delete_profile(self, name: str) -> None:
-        """删除 profile  仍被任意 agent 引用时抛 ValueError 路由层映射 409"""
-        ref_cnt = await self._db["agents"].count_documents({"profile_name": name})
-        if ref_cnt > 0:
-            raise ValueError(f"profile {name} 仍被 {ref_cnt} 个 agent 引用 无法删除")
-        await self._db["provider_profiles"].delete_one({"name": name})

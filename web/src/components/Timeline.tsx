@@ -94,6 +94,7 @@ export default function Timeline({
 
             {showDecision && onChoose && (
               <DecisionCard
+                agentCandidates={Object.keys(round.thinks)}
                 onChoose={(c) => onChoose(round.taskId, c)}
                 onCancel={
                   onCancel ? () => onCancel(round.taskId) : undefined

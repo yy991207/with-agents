@@ -1,15 +1,18 @@
-// 决策卡:让用户在 4 个 agent / auto / regenerate 之间选择
-// availableAgents 表示哪些 agent 的 think 成功 可被选;失败/取消的会灰着不可点
+// 决策卡:让用户在动态 agent 列表 / auto / regenerate 之间选择
+// availableAgents 表示哪些 agent 的 think 成功 可被选 失败/取消的灰着不可点
+// agent 候选来源:优先 availableAgents 再退化到 round.thinks 的 keys
 import { Button, Card, Space, Tag } from 'antd';
 import { ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
-import { agentColors } from '../theme/tokens';
+import { getAgentColor } from '../theme/tokens';
+import { useChat } from '../state/ChatContext';
 import type { AgentName } from '../state/types';
-import { KNOWN_AGENTS } from '../state/types';
 
 export interface DecisionCardProps {
+  // 可用的 agent 候选(后端 think_done 时下发) 用于决定按钮排列与可点状态
+  agentCandidates: AgentName[];
   onChoose: (choice: AgentName | 'auto' | 'regenerate') => void;
   onCancel?: () => void;
-  // 可选:仅这些 agent 可点击;为空/未传则全部可点
+  // 仅这些 agent 可点击 为空/未传则全部可点
   availableAgents?: AgentName[];
   // 判官推荐(judge.done 后端给的)
   judgePick?: AgentName;
@@ -17,13 +20,22 @@ export interface DecisionCardProps {
 }
 
 export default function DecisionCard({
+  agentCandidates,
   onChoose,
   onCancel,
   availableAgents,
   judgePick,
   disabled,
 }: DecisionCardProps) {
-  // 没传 availableAgents 视为全部可点,M2 后端会推过来
+  const { state } = useChat();
+
+  // 取 agent 的展示名:优先用 settings.drafts 里的 displayName 没有就退到 name
+  const labelOf = (name: string): string => {
+    const d = state.settings.drafts[name];
+    return d?.displayName || name;
+  };
+
+  // 没传 availableAgents 视为全部可点
   const allow = (a: AgentName): boolean =>
     !availableAgents || availableAgents.includes(a);
 
@@ -34,24 +46,25 @@ export default function DecisionCard({
       style={{ margin: '8px 0' }}
       extra={
         judgePick ? (
-          <Tag color={agentColors[judgePick]}>判官推荐 {judgePick}</Tag>
+          <Tag color={getAgentColor(judgePick)}>判官推荐 {labelOf(judgePick)}</Tag>
         ) : null
       }
     >
       <Space wrap>
-        {KNOWN_AGENTS.map((agent) => {
+        {agentCandidates.map((agent) => {
           const ok = allow(agent);
+          const color = getAgentColor(agent);
           return (
             <Button
               key={agent}
               disabled={disabled || !ok}
               onClick={() => onChoose(agent)}
               style={{
-                borderColor: ok ? agentColors[agent] : undefined,
-                color: ok ? agentColors[agent] : undefined,
+                borderColor: ok ? color : undefined,
+                color: ok ? color : undefined,
               }}
             >
-              选 {agent}
+              选 {labelOf(agent)}
               {!ok && <Tag style={{ marginLeft: 6, marginRight: 0 }}>不可用</Tag>}
             </Button>
           );

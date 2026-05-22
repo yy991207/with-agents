@@ -6,11 +6,21 @@ import { useCallback, useEffect } from 'react';
 import { message } from 'antd';
 import { getHistory, listSessions } from '../api/http';
 import { useChat } from '../state/ChatContext';
-import type { AgentName, RoundView, TaskState, ThinkState, ThinkView } from '../state/types';
+import type { AgentName, RoundView, SessionMeta, TaskState, ThinkState, ThinkView } from '../state/types';
 
 function describeError(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
+}
+
+// 把后端 /sessions 返回的 snake_case dict 转成前端 SessionMeta camelCase
+function convertSession(raw: unknown): SessionMeta {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  return {
+    sessionId: (r.session_id as string) ?? (r.sessionId as string) ?? '',
+    title: (r.title as string) ?? '',
+    updatedAt: (r.updated_at as string) ?? (r.updatedAt as string) ?? '',
+  };
 }
 
 // 把后端 mongo round 文档转成前端 RoundView
@@ -76,7 +86,9 @@ export function useSession() {
   const refreshSessions = useCallback(async (): Promise<void> => {
     try {
       const list = await listSessions();
-      dispatch({ type: 'sessions.set', sessions: list });
+      // 后端返回 snake_case  必须转成 SessionMeta 否则 sessionId 是 undefined
+      const sessions = (list as unknown as unknown[]).map(convertSession);
+      dispatch({ type: 'sessions.set', sessions });
     } catch (e) {
       // 列表拉失败不影响主流程,仅提示
       message.warning(`会话列表加载失败:${describeError(e)}`);

@@ -159,6 +159,7 @@ export interface ChatState {
 export type ChatAction =
   | { type: 'session.set'; sessionId: string | null }
   | { type: 'session.switch'; sessionId: string | null }
+  | { type: 'session.deleted'; sessionId: string }
   | { type: 'sessions.set'; sessions: SessionMeta[] }
   | { type: 'rounds.set'; rounds: RoundView[] }
   | { type: 'round.append'; round: RoundView }

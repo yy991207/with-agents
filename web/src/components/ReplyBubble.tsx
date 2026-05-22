@@ -9,6 +9,7 @@ import {
 } from '@ant-design/icons';
 import type { ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
+import rehypeHighlight from 'rehype-highlight';
 import { agentColors } from '../theme/tokens';
 import type { ReplyView } from '../state/types';
 
@@ -59,7 +60,9 @@ export default function ReplyBubble({ reply }: ReplyBubbleProps) {
     }
     return (
       <div className="reply-markdown" style={{ lineHeight: 1.7, fontSize: 14 }}>
-        <ReactMarkdown>{reply.content}</ReactMarkdown>
+        <ReactMarkdown rehypePlugins={[rehypeHighlight]}>
+          {reply.content}
+        </ReactMarkdown>
         {reply.state === 'streaming' && (
           <span
             style={{

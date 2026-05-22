@@ -51,9 +51,13 @@ export function useChatTask() {
           signal: ctrl.signal,
           onFatal: (err) => {
             // 致命错通常意味着 task hub 已清理,标 round 为 cancelled
+            // reason 用统一中文兜底,避免英文堆栈直接打到 UI
+            const reason = isFatalSSEError(err)
+              ? '任务在服务端不可恢复'
+              : `连接异常 ${describeError(err)}`;
             dispatch({
               type: 'sse.event',
-              event: { type: 'task.unrecoverable', data: { reason: describeError(err) } },
+              event: { type: 'task.unrecoverable', data: { reason } },
             });
           },
         });

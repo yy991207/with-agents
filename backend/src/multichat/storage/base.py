@@ -34,6 +34,16 @@ class MongoStorage(Protocol):
         self, session_id: str, *, title: str | None = None
     ) -> None: ...
 
+    async def delete_session(self, session_id: str) -> int:
+        """删除 session 与其下所有 rounds  返回删除的 round 数
+
+        约束:
+            - session 不存在抛 KeyError
+            - 若 session 下还有进行中的 round (state ∈ pending/thinking/think_done/decided/replying)
+              抛 ValueError 防止误删活动会话
+        """
+        ...
+
     # -------------------------------------------------------------------- Rounds
     async def create_round(
         self,
@@ -65,6 +75,22 @@ class MongoStorage(Protocol):
         model: str,
         prompt: str,
     ) -> AgentRecord: ...
+
+    async def list_agent_history(
+        self, name: str, limit: int = 20
+    ) -> list[dict]:
+        """列出某个 agent 的历史版本 按 version 降序
+
+        返回字典列表 字段含 name model prompt version archived_at archived_reason
+        路由层负责再序列化为对外 schema  storage 这层不强制 AgentRecord 类型
+        """
+        ...
+
+    async def get_agent_history(
+        self, name: str, version: int
+    ) -> dict | None:
+        """取指定 agent 的指定历史版本字典 不存在返回 None"""
+        ...
 
     async def get_judge_target(self) -> str: ...
 

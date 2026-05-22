@@ -63,6 +63,23 @@ class UpdateJudgeRequest(BaseModel):
     target: str
 
 
+class AgentHistoryItem(BaseModel):
+    """历史版本展示用 view  字段直接来自 agent_history 集合"""
+
+    name: str
+    model: str
+    prompt: str
+    version: int
+    archived_at: str
+    archived_reason: str
+
+
+class RevertAgentRequest(BaseModel):
+    """POST /api/agents/{name}/revert 请求体 指定要回滚到的历史版本号"""
+
+    target_version: int
+
+
 @router.get("/agents", response_model=AgentsListResponse)
 async def list_agents(request: Request) -> AgentsListResponse:
     """列出全部 agent 配置与当前 judge 指针 给前端 SettingsDrawer 初始化用"""
@@ -152,3 +169,83 @@ async def update_judge(body: UpdateJudgeRequest, request: Request) -> None:
     if existing is None:
         raise HTTPException(400, f"unknown agent: {body.target}")
     await storage.set_judge_target(body.target)
+
+
+# ============================================================ 配置历史/回滚
+@router.get("/agents/{name}/history", response_model=list[AgentHistoryItem])
+async def list_agent_history(
+    name: str, request: Request, limit: int = 20
+) -> list[AgentHistoryItem]:
+    """列出指定 agent 的历史版本 按 version 降序
+
+    错误码:
+        404 agent 不存在(连当前都没 必然没历史)
+    返回:
+        列表项含 name model prompt version archived_at archived_reason
+        前端可据此预览每个历史版本的 prompt/model 再选择 revert
+    """
+    storage = request.app.state.storage
+    if await storage.get_agent(name) is None:
+        raise HTTPException(404, f"agent not found: {name}")
+    history = await storage.list_agent_history(name, limit=limit)
+    out: list[AgentHistoryItem] = []
+    for h in history:
+        archived_at = h.get("archived_at")
+        archived_iso = (
+            archived_at.isoformat() if hasattr(archived_at, "isoformat") else str(archived_at or "")
+        )
+        out.append(
+            AgentHistoryItem(
+                name=h["name"],
+                model=h["model"],
+                prompt=h["prompt"],
+                version=int(h["version"]),
+                archived_at=archived_iso,
+                archived_reason=str(h.get("archived_reason", "upsert")),
+            )
+        )
+    return out
+
+
+@router.post("/agents/{name}/revert", response_model=UpdateAgentResponse)
+async def revert_agent(
+    name: str, body: RevertAgentRequest, request: Request
+) -> UpdateAgentResponse:
+    """把 agent 回滚到指定历史版本 内部走 upsert 让 version 继续 +1
+
+    流程:
+        1. 取目标历史版本 不存在抛 404
+        2. 当前 agent 不存在抛 404
+        3. 调 upsert_agent(target.model, target.prompt) 自然把当前值再归档一条
+           此处 archived_reason 仍记 upsert  revert 语义由前端通过新 version 的来源推断
+        4. 调 registry.reload 失败则回滚 重新写回旧当前值
+
+    返回新 version 与 reloaded 标志 与 update_agent 行为对齐
+    """
+    storage = request.app.state.storage
+    registry = request.app.state.deep_agents
+
+    current = await storage.get_agent(name)
+    if current is None:
+        raise HTTPException(404, f"agent not found: {name}")
+    target = await storage.get_agent_history(name, body.target_version)
+    if target is None:
+        raise HTTPException(
+            404, f"history not found: {name} v{body.target_version}"
+        )
+
+    new_record = await storage.upsert_agent(
+        name, str(target["model"]), str(target["prompt"])
+    )
+    try:
+        await registry.reload(new_record)
+        reloaded = True
+    except Exception as exc:
+        _logger.error("revert reload 失败 回滚到原值", name=name, err=str(exc))
+        # reload 失败 把当前值再写回 让 DB 与内存一致
+        # 这里复用 upsert 仍会让 version 再 +1 但 model/prompt 是回滚前的旧值
+        await storage.upsert_agent(name, current.model, current.prompt)
+        raise HTTPException(500, f"reload failed reverted: {exc}") from exc
+    return UpdateAgentResponse(
+        name=new_record.name, version=new_record.version, reloaded=reloaded
+    )

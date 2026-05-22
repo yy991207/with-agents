@@ -25,6 +25,7 @@ import structlog
 
 from ..llm.agent_runner import run_judge, run_reply, run_think
 from ..llm.deep_agents import DeepAgentRegistry
+from .errors import humanize_llm_error
 from .events import TaskEvent, TaskEventHub
 from .mention_parser import parse_single_mention
 from .models import TaskState
@@ -126,14 +127,38 @@ class TaskManager:
             sub.cancel()
 
     async def retry_think(self, task_id: str, agent_name: str) -> None:
-        """单卡 think 重试 当前未实装 路由层降级用 regenerate
+        """单卡 think 重试 在 THINK_DONE 状态下重启某 agent 的 think 子任务
 
-        实现复杂度在于: 外层 _run_task_loop 已 await gather 完 4 路 think
-        要再起新的子任务并把结果合并回事件流 需要重构状态机
-        留 TODO M5 实装
+        约束
+            - task 必须仍在活动 hub 中 否则抛 KeyError(路由层 -> 404)
+            - task 当前 state 必须是 THINK_DONE 否则抛 ValueError(路由层 -> 409)
+            - agent_name 必须是已注册 agent 否则抛 ValueError(路由层 -> 409)
+
+        实现思路
+            主循环处于 _wait_decision 阻塞 不会 await 新协程
+            这里 fire-and-forget 起一个 _retry_one_think 子任务
+            子任务复用 storage update + hub publish 两条侧边路径
+            完成后 publish task.state THINK_DONE 让前端 available_agents 同步刷新
         """
-        raise NotImplementedError(
-            "retry 单卡 think 暂未实现 路由层降级用 regenerate"
+        # 校验 hub 还在
+        if task_id not in self._hubs:
+            raise KeyError(f"task not active: {task_id}")
+
+        # 校验状态在 THINK_DONE 仅此状态允许 retry
+        round_obj = await self._storage.get_round(task_id)
+        if round_obj is None or round_obj.state != TaskState.THINK_DONE:
+            current = round_obj.state if round_obj else None
+            raise ValueError(
+                f"task must be in THINK_DONE state to retry  current: {current}"
+            )
+
+        # 校验 agent 名 防误传
+        if agent_name not in self._registry.names():
+            raise ValueError(f"unknown agent: {agent_name}")
+
+        # 起独立子任务 不阻塞路由响应 子任务自身完整捕获异常
+        asyncio.create_task(
+            self._retry_one_think(task_id, agent_name, round_obj.question)
         )
 
     def get_hub(self, task_id: str) -> TaskEventHub | None:
@@ -298,18 +323,20 @@ class TaskManager:
             # 这里不再 raise 让 finally 段做 cleanup
         except Exception as e:
             _logger.exception("task failed unrecoverable", task_id=task_id)
+            # 顶层兜底也走 humanize 让 task.unrecoverable 事件中的 error 可读
+            friendly = humanize_llm_error(e)
             try:
                 await self._set_state(task_id, TaskState.CANCELLED)
                 await hub.publish(
                     TaskEvent(
                         type="task.unrecoverable",
-                        data={"error": str(e)},
+                        data={"error": friendly},
                     )
                 )
                 await hub.publish(
                     TaskEvent(
                         type="task.state",
-                        data={"state": "CANCELLED", "reason": f"error: {e}"},
+                        data={"state": "CANCELLED", "reason": f"error: {friendly}"},
                     )
                 )
             except Exception:
@@ -384,17 +411,26 @@ class TaskManager:
                     )
                 raise
             except Exception as e:
-                err = str(e) or e.__class__.__name__
-                results[name] = {"state": "failed", "error": err}
+                # 把底层 httpx/超时/限流等英文异常转成中文用户提示
+                # raw 用 logger 留底 落库与事件 payload 用 friendly 展示
+                friendly = humanize_llm_error(e)
+                _logger.warning(
+                    "think 失败",
+                    task_id=task_id,
+                    agent=name,
+                    raw_error=str(e),
+                    friendly=friendly,
+                )
+                results[name] = {"state": "failed", "error": friendly}
                 await self._storage.update_round_field(
                     task_id,
                     f"thinks.{name}",
-                    {"state": "failed", "error": err},
+                    {"state": "failed", "error": friendly},
                 )
                 await hub.publish(
                     TaskEvent(
                         type="think.failed",
-                        data={"agent": name, "error": err},
+                        data={"agent": name, "error": friendly},
                     )
                 )
 
@@ -406,6 +442,102 @@ class TaskManager:
         await asyncio.gather(*subtasks.values(), return_exceptions=True)
         self._think_subtasks.pop(task_id, None)
         return results
+
+    # ============================================================ 单 agent retry
+    async def _retry_one_think(
+        self,
+        task_id: str,
+        agent_name: str,
+        user_message: str,
+    ) -> None:
+        """重启单个 agent 的 think 子任务 fire-and-forget 由 retry_think 拉起
+
+        与 _run_thinks._one 行为一致 但区别在于
+            - 不进 4 路 gather 单独跑一次
+            - 完成后再 publish 一次 task.state THINK_DONE 让前端刷新 available_agents
+            - storage 与 hub 不存在时静默退出 防 cleanup 后再触发空指针
+        """
+        hub = self._hubs.get(task_id)
+        if hub is None:
+            return
+
+        # 重置该 agent 字段为 pending 让前端先看到 spinner
+        try:
+            await self._storage.update_round_field(
+                task_id, f"thinks.{agent_name}", {"state": "pending"}
+            )
+        except Exception:
+            _logger.exception(
+                "retry_think 重置 pending 失败 忽略",
+                task_id=task_id,
+                agent=agent_name,
+            )
+            return
+
+        await hub.publish(TaskEvent(type="think.start", data={"agent": agent_name}))
+
+        # 拼上下文 与首次 think 一致
+        round_obj = await self._storage.get_round(task_id)
+        if round_obj is None:
+            return
+        history = await self._build_history(
+            round_obj.session_id, current_task_id=task_id
+        )
+
+        try:
+            content = await run_think(
+                agent_name=agent_name,
+                user_message=user_message,
+                history=history,
+                registry=self._registry,
+                timeout_s=self._settings.runtime.http_timeout_seconds,
+            )
+            if len(content) > 80:
+                content = content[:80]
+            await self._storage.update_round_field(
+                task_id, f"thinks.{agent_name}", {"state": "done", "content": content}
+            )
+            await hub.publish(
+                TaskEvent(
+                    type="think.done",
+                    data={"agent": agent_name, "content": content},
+                )
+            )
+        except asyncio.CancelledError:
+            await self._storage.update_round_field(
+                task_id, f"thinks.{agent_name}", {"state": "cancelled"}
+            )
+            await hub.publish(
+                TaskEvent(type="think.cancelled", data={"agent": agent_name})
+            )
+            raise
+        except Exception as e:
+            err = str(e) or e.__class__.__name__
+            await self._storage.update_round_field(
+                task_id, f"thinks.{agent_name}", {"state": "failed", "error": err}
+            )
+            await hub.publish(
+                TaskEvent(
+                    type="think.failed",
+                    data={"agent": agent_name, "error": err},
+                )
+            )
+
+        # 不论成功失败 重新计算 available_agents 让前端可选项与最新一致
+        round_obj = await self._storage.get_round(task_id)
+        if round_obj is None:
+            return
+        available = [
+            n
+            for n, t in (round_obj.thinks or {}).items()
+            if isinstance(t, dict) and t.get("state") == "done"
+        ]
+        await hub.publish(
+            TaskEvent(
+                type="task.state",
+                data={"state": "THINK_DONE", "available_agents": available},
+            )
+        )
 
     # ============================================================ reply 阶段
     async def _do_reply(
@@ -499,13 +631,17 @@ class TaskManager:
             # reply 阶段被全局取消 由外层 _run_task_loop except 段处理
             raise
         except Exception as e:
-            err = str(e) or e.__class__.__name__
+            # reply 阶段失败 同样走 humanize 把英文转中文 让前端可读
+            friendly = humanize_llm_error(e)
+            _logger.warning(
+                "reply 失败", task_id=task_id, raw_error=str(e), friendly=friendly
+            )
             try:
                 await self._storage.update_round_field(
                     task_id, "reply.state", "failed"
                 )
                 await self._storage.update_round_field(
-                    task_id, "reply.error", err
+                    task_id, "reply.error", friendly
                 )
             except Exception:
                 _logger.exception(
@@ -516,7 +652,7 @@ class TaskManager:
             await hub.publish(
                 TaskEvent(
                     type="reply.error",
-                    data={"agent": agent_name, "error": err},
+                    data={"agent": agent_name, "error": friendly},
                 )
             )
             await hub.publish(

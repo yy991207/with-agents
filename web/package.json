@@ -15,7 +15,9 @@
     "antd": "^5.20.0",
     "@ant-design/icons": "^5.4.0",
     "@microsoft/fetch-event-source": "^2.0.1",
-    "react-markdown": "^9.0.0"
+    "react-markdown": "^9.0.0",
+    "rehype-highlight": "^7.0.0",
+    "highlight.js": "^11.10.0"
   },
   "devDependencies": {
     "typescript": "^5.4.0",

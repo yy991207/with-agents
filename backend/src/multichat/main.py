@@ -21,6 +21,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import Settings, load_settings
+from .core.rate_limit import RateLimit, RateLimiter
 from .core.task_manager import TaskManager
 from .llm.deep_agents import build_registry
 from .routes.agents import router as agents_router
@@ -69,6 +70,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.storage = storage
     app.state.deep_agents = registry
     app.state.task_manager = task_manager
+    # judge 限频 默认每 60s 最多 10 次 防止用户狂点"帮我选"打爆 LLM
+    # 进程内软限流 重启即清零 生产化可改 redis
+    app.state.judge_limiter = RateLimiter(
+        name="judge",
+        limit=RateLimit(capacity=10, window_s=60.0),
+    )
     try:
         yield
     finally:

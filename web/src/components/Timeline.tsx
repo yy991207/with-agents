@@ -2,7 +2,7 @@
 // 活跃 round = state.activeTaskId 指向且 state ∉ {DONE, CANCELLED}
 // 活跃 → 完整布局(ThinkPanel + DecisionCard + ReplyBubble)
 // 非活跃 → 折叠态 ThinkCardChip(可点开 Modal 看完整 think)
-import { Tag } from 'antd';
+import { Empty, Tag } from 'antd';
 import UserBubble from './UserBubble';
 import ThinkPanel from './ThinkPanel';
 import ThinkCardChip from './ThinkCardChip';
@@ -34,17 +34,13 @@ export default function Timeline({
 
   return (
     <div style={{ padding: '16px 24px' }}>
-      {state.rounds.length === 0 && (
-        <div
-          style={{
-            color: 'rgba(0,0,0,0.45)',
-            textAlign: 'center',
-            marginTop: 64,
-          }}
-        >
-          还没有对话,从下方输入第一个问题吧
-        </div>
-      )}
+      {state.rounds.length === 0 ? (
+        <Empty
+          description="开始第一次对话"
+          image={Empty.PRESENTED_IMAGE_SIMPLE}
+          style={{ marginTop: 60 }}
+        />
+      ) : null}
 
       {state.rounds.map((round) => {
         const active = isActive(round, state.activeTaskId);
@@ -59,7 +55,24 @@ export default function Timeline({
 
         return (
           <div key={round.taskId} style={{ marginBottom: 24 }}>
-            <UserBubble content={round.userMessage} />
+            {/* 用户消息 + 已取消标签同行,标签靠右,失败一目了然 */}
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'flex-start',
+                gap: 12,
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <UserBubble content={round.userMessage} />
+              </div>
+              {showCancelTag && (
+                <Tag color="red" style={{ marginTop: 12, flexShrink: 0 }}>
+                  已取消{round.cancelReason ? `:${round.cancelReason}` : ''}
+                </Tag>
+              )}
+            </div>
 
             {showThinkPanel ? (
               <ThinkPanel
@@ -91,14 +104,6 @@ export default function Timeline({
             )}
 
             {showReply && round.reply && <ReplyBubble reply={round.reply} />}
-
-            {showCancelTag && (
-              <div style={{ margin: '4px 0' }}>
-                <Tag color="default">
-                  已取消{round.cancelReason ? `:${round.cancelReason}` : ''}
-                </Tag>
-              </div>
-            )}
           </div>
         );
       })}

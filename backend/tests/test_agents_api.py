@@ -190,3 +190,100 @@ async def test_update_judge_unknown_400(
     ac, _s, _r = app_client
     resp = await ac.put("/api/judge", json={"target": "Unknown"})
     assert resp.status_code == 400
+
+
+# ------------------------------------------------------- 配置历史/回滚
+@pytest.mark.asyncio
+async def test_list_agent_history_returns_versions(
+    app_client: tuple[AsyncClient, MotorMongoStorage, object],
+) -> None:
+    """连续 update 后 history 包含每次旧版本 按 version 降序"""
+    ac, _s, _r = app_client
+    # 第一次 update 把 v1 归档
+    await ac.put("/api/agents/GLM", json={"prompt": "活泼且严谨一点"})
+    # 第二次 update 把 v2 归档
+    await ac.put("/api/agents/GLM", json={"prompt": "活泼且更详细一些"})
+
+    resp = await ac.get("/api/agents/GLM/history")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert isinstance(data, list)
+    versions = [item["version"] for item in data]
+    assert versions == [2, 1]
+    # 字段完整性
+    sample = data[0]
+    assert {"name", "model", "prompt", "version", "archived_at", "archived_reason"} <= set(
+        sample.keys()
+    )
+    assert sample["name"] == "GLM"
+    assert sample["archived_reason"] == "upsert"
+
+
+@pytest.mark.asyncio
+async def test_revert_to_v1(
+    app_client: tuple[AsyncClient, MotorMongoStorage, object],
+) -> None:
+    """update v1→v2→v3 后 revert 到 v1 新 current 是 v4 但内容等于 v1"""
+    ac, storage, _r = app_client
+
+    # 取 v1 内容(seed 时的 prompt)
+    seed = await storage.get_agent("GLM")
+    assert seed is not None and seed.version == 1
+    v1_model = seed.model
+    v1_prompt = seed.prompt
+
+    # 改两次到 v3
+    await ac.put("/api/agents/GLM", json={"prompt": "v2 prompt 长一点"})
+    await ac.put("/api/agents/GLM", json={"prompt": "v3 prompt 再加点"})
+    cur = await storage.get_agent("GLM")
+    assert cur is not None and cur.version == 3
+
+    # revert 到 v1
+    resp = await ac.post("/api/agents/GLM/revert", json={"target_version": 1})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["name"] == "GLM"
+    assert body["version"] == 4  # v3 归档后 +1
+    assert body["reloaded"] is True
+
+    final = await storage.get_agent("GLM")
+    assert final is not None
+    assert final.version == 4
+    assert final.model == v1_model
+    assert final.prompt == v1_prompt
+
+
+@pytest.mark.asyncio
+async def test_revert_unknown_version_404(
+    app_client: tuple[AsyncClient, MotorMongoStorage, object],
+) -> None:
+    """指定的历史 version 不存在 返回 404"""
+    ac, _s, _r = app_client
+    # 至少触发一次归档保证 history 表非空
+    await ac.put("/api/agents/GLM", json={"prompt": "v2 prompt 长一点"})
+    resp = await ac.post(
+        "/api/agents/GLM/revert", json={"target_version": 999}
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_revert_unknown_agent_404(
+    app_client: tuple[AsyncClient, MotorMongoStorage, object],
+) -> None:
+    """agent 不存在 返回 404"""
+    ac, _s, _r = app_client
+    resp = await ac.post(
+        "/api/agents/NoSuchAgent/revert", json={"target_version": 1}
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_history_for_unknown_agent_404(
+    app_client: tuple[AsyncClient, MotorMongoStorage, object],
+) -> None:
+    """history 接口 agent 不存在 也是 404"""
+    ac, _s, _r = app_client
+    resp = await ac.get("/api/agents/NoSuchAgent/history")
+    assert resp.status_code == 404

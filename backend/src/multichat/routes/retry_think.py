@@ -6,7 +6,9 @@
 
 响应
     - 204 重试已发出
-    - 501 单卡 retry 在 M2 暂未实装 task_manager 抛 NotImplementedError 时返回
+    - 404 task 不存在或已结束(KeyError)
+    - 409 状态机不允许 retry 例如 task 不在 THINK_DONE / agent 不存在(ValueError)
+    - 501 retry 接口暂未实装(NotImplementedError) 留作灰度回滚兜底
 
 设计说明
     - 整体重试可以走 /decide choice="regenerate" 此处仅处理单 agent 重试
@@ -33,8 +35,14 @@ async def retry_think(body: RetryThinkRequest, request: Request) -> None:
     tm = request.app.state.task_manager
     try:
         await tm.retry_think(body.task_id, body.agent)
+    except KeyError:
+        # task 已结束/不存在 让前端清理本地状态
+        raise HTTPException(404, f"task not found or not active: {body.task_id}")
+    except ValueError as e:
+        # 状态机不允许 例如不在 THINK_DONE 或 agent 名错
+        raise HTTPException(409, str(e))
     except NotImplementedError:
-        # M2 暂未实装 单 agent retry 给前端一个明确的 501 提示走 regenerate 兜底
+        # 兜底 任何回滚到旧版 task_manager 的场景给个友好 501
         raise HTTPException(
             501, "single-agent retry not yet implemented try regenerate"
         )

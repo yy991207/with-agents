@@ -81,9 +81,20 @@ def _build_one(
         timeout=settings.runtime.http_timeout_seconds,
         max_retries=1,
     )
+
+    # 挂工具策略
+    #   reply 模式 注入共享 tool(current_time/http_get/web_search 等)
+    #   think 模式 显式空 prompt 已禁止调工具 也不挂 tool 防 LLM 误判
+    if kind == "reply":
+        from .tools import get_shared_tools
+
+        tools = get_shared_tools()
+    else:
+        tools = []
+
     return create_deep_agent(
         model=model,
-        tools=[],
+        tools=tools,
         system_prompt=system_prompt,
         name=f"{agent_record.name}-{kind}",
     )

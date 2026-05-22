@@ -304,6 +304,24 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         sseStatus: 'idle',
       };
 
+    case 'session.deleted': {
+      // 删除会话:从 sessions 列表移除;若删的就是当前会话,清空对话视图
+      const sessions = state.sessions.filter((s) => s.sessionId !== action.sessionId);
+      const isCurrent = state.sessionId === action.sessionId;
+      if (isCurrent) {
+        return {
+          ...state,
+          sessions,
+          sessionId: null,
+          rounds: [],
+          activeTaskId: null,
+          taskState: 'DONE',
+          sseStatus: 'idle',
+        };
+      }
+      return { ...state, sessions };
+    }
+
     case 'sessions.set':
       return { ...state, sessions: action.sessions };
 
@@ -329,15 +347,31 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         rounds: patchRound(state.rounds, action.taskId, action.patch),
       };
 
-    case 'task.created':
+    case 'task.created': {
       // 创建新任务时同时落 sessionId 与 activeTaskId,塞一个空 round 占位
+      // 同时在 sessions 列表头补一条占位项,免得用户看不到刚发起的会话
+      const isNewSession = !state.sessions.some(
+        (s) => s.sessionId === action.sessionId,
+      );
+      const updatedSessions = isNewSession
+        ? [
+            {
+              sessionId: action.sessionId,
+              title: action.userMessage.slice(0, 40) || '新会话',
+              updatedAt: new Date().toISOString(),
+            },
+            ...state.sessions,
+          ]
+        : state.sessions;
       return {
         ...state,
         sessionId: action.sessionId,
         activeTaskId: action.taskId,
         taskState: 'PENDING',
         rounds: [...state.rounds, createEmptyRound(action.taskId, action.userMessage)],
+        sessions: updatedSessions,
       };
+    }
 
     case 'task.resume': {
       // 抗刷新重连:把 activeTaskId 设回去,等 snapshot 回放

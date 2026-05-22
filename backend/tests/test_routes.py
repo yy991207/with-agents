@@ -100,8 +100,12 @@ def _build_app(
     *,
     task_manager: object,
     storage: MotorMongoStorage | None = None,
+    judge_limiter: object | None = None,
 ) -> FastAPI:
-    """组装一个最小 FastAPI 实例 仅挂 M3 路由"""
+    """组装一个最小 FastAPI 实例 仅挂 M3 路由
+
+    judge_limiter 可选 不传则不挂  routes/decide.py 在 limiter 缺失时跳过限频
+    """
     app = FastAPI()
     # CORS 这里也加上 与 main.py 一致 验证不会拦请求
     app.add_middleware(
@@ -114,6 +118,8 @@ def _build_app(
     app.state.task_manager = task_manager
     if storage is not None:
         app.state.storage = storage
+    if judge_limiter is not None:
+        app.state.judge_limiter = judge_limiter
     app.include_router(ask_router)
     app.include_router(decide_router)
     app.include_router(cancel_router)
@@ -219,6 +225,50 @@ async def test_decide_unknown_task_409() -> None:
         assert resp.status_code == 409
 
 
+@pytest.mark.asyncio
+async def test_decide_auto_rate_limited_429() -> None:
+    """choice=auto 触发 judge 限流 第 11 次返 429"""
+    from multichat.core.rate_limit import RateLimit, RateLimiter
+
+    tm = MagicMock()
+    tm.submit_decision = AsyncMock()
+    limiter = RateLimiter("judge", RateLimit(capacity=10, window_s=60.0))
+    app = _build_app(task_manager=tm, judge_limiter=limiter)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        # 前 10 次 auto 都应放行
+        for i in range(10):
+            r = await ac.post(
+                "/decide", json={"task_id": f"t{i}", "choice": "auto"}
+            )
+            assert r.status_code == 204, r.text
+        # 第 11 次应被限流
+        r11 = await ac.post(
+            "/decide", json={"task_id": "t10", "choice": "auto"}
+        )
+        assert r11.status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_decide_non_auto_not_rate_limited() -> None:
+    """choice 非 auto 时不应受限 即便 limiter 已经满载也应放行"""
+    from multichat.core.rate_limit import RateLimit, RateLimiter
+
+    tm = MagicMock()
+    tm.submit_decision = AsyncMock()
+    limiter = RateLimiter("judge", RateLimit(capacity=1, window_s=60.0))
+    # 把 limiter 用满
+    await limiter.check()
+
+    app = _build_app(task_manager=tm, judge_limiter=limiter)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        r = await ac.post(
+            "/decide", json={"task_id": "t1", "choice": "GLM"}
+        )
+        assert r.status_code == 204
+
+
 # --------------------------------------------------------------------- /cancel
 
 
@@ -266,6 +316,36 @@ async def test_retry_think_204_when_supported() -> None:
             "/retry-think", json={"task_id": "t1", "agent": "GLM"}
         )
         assert resp.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_retry_think_unknown_404() -> None:
+    """task_manager 抛 KeyError 时路由返回 404 表示 task 不存在/已结束"""
+    tm = MagicMock()
+    tm.retry_think = AsyncMock(side_effect=KeyError("t1"))
+    app = _build_app(task_manager=tm)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        resp = await ac.post(
+            "/retry-think", json={"task_id": "t1", "agent": "GLM"}
+        )
+        assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_retry_think_wrong_state_409() -> None:
+    """task_manager 抛 ValueError 时路由返回 409 表示状态机不允许"""
+    tm = MagicMock()
+    tm.retry_think = AsyncMock(side_effect=ValueError("not in THINK_DONE"))
+    app = _build_app(task_manager=tm)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        resp = await ac.post(
+            "/retry-think", json={"task_id": "t1", "agent": "GLM"}
+        )
+        assert resp.status_code == 409
+        body = resp.json()
+        assert "THINK_DONE" in body["detail"]
 
 
 # --------------------------------------------------------------------- /history
@@ -323,6 +403,53 @@ async def test_sessions_list(storage: MotorMongoStorage) -> None:
         assert isinstance(data, list)
         ids = {item["session_id"] for item in data}
         assert {s1, s2} <= ids
+
+
+# ----------------------------------------------------- DELETE /sessions/{id}
+
+
+@pytest.mark.asyncio
+async def test_delete_session_204(storage: MotorMongoStorage) -> None:
+    """正常删除 session 返回 204 后续 GET 列表中应无该 session"""
+    sid = await storage.create_session(title="待删 ok")
+    tid = await storage.create_round(sid, "q", None)
+    await storage.update_round_state(tid, TaskState.DONE)
+
+    tm = MagicMock()
+    app = _build_app(task_manager=tm, storage=storage)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        resp = await ac.delete(f"/sessions/{sid}")
+        assert resp.status_code == 204
+        # 再次删返回 404
+        resp2 = await ac.delete(f"/sessions/{sid}")
+        assert resp2.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_session_404(storage: MotorMongoStorage) -> None:
+    """session 不存在时 DELETE 返回 404"""
+    tm = MagicMock()
+    app = _build_app(task_manager=tm, storage=storage)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        resp = await ac.delete("/sessions/no-such-session-id")
+        assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_session_409_active(storage: MotorMongoStorage) -> None:
+    """session 下还有进行中 round 时 DELETE 返回 409"""
+    sid = await storage.create_session(title="活动 ses")
+    # 创建后默认 PENDING 算进行中
+    await storage.create_round(sid, "q", None)
+
+    tm = MagicMock()
+    app = _build_app(task_manager=tm, storage=storage)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        resp = await ac.delete(f"/sessions/{sid}")
+        assert resp.status_code == 409
 
 
 # --------------------------------------------------------------------- /sse

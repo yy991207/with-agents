@@ -362,8 +362,127 @@ async def test_round_state_legacy_migration(storage: MotorMongoStorage) -> None:
     assert r3.state == TaskState.CANCELLED
 
 
+# --------------------------------------------------------------- agent_history
+@pytest.mark.asyncio
+async def test_upsert_archives_old_version(storage: MotorMongoStorage) -> None:
+    """upsert 三次后 history 应有 2 条(v1 v2) current 是 v3"""
+    settings = _build_settings()
+    await storage.seed_from_yaml(settings)
+    # seed 写入 v1 不归档(首次插入无前值)
+    await storage.upsert_agent("GLM", "glm-1", "活泼一点点")  # v2 归档 v1
+    await storage.upsert_agent("GLM", "glm-2", "活泼专业一点")  # v3 归档 v2
+
+    cur = await storage.get_agent("GLM")
+    assert cur is not None and cur.version == 3 and cur.model == "glm-2"
+    history = await storage.list_agent_history("GLM")
+    versions = [int(h["version"]) for h in history]
+    # 降序排列 含 v2 和 v1
+    assert versions == [2, 1]
+    # 内容正确归档
+    v2 = [h for h in history if h["version"] == 2][0]
+    assert v2["model"] == "glm-1"
+    assert v2["prompt"] == "活泼一点点"
+    assert v2["archived_reason"] == "upsert"
+
+
+@pytest.mark.asyncio
+async def test_list_agent_history_descending(storage: MotorMongoStorage) -> None:
+    """list_agent_history 必须按 version 降序"""
+    settings = _build_settings()
+    await storage.seed_from_yaml(settings)
+    for i in range(5):
+        await storage.upsert_agent("Kimi", f"kimi-{i}", f"prompt-{i}-长一点")
+    history = await storage.list_agent_history("Kimi", limit=10)
+    versions = [int(h["version"]) for h in history]
+    assert versions == sorted(versions, reverse=True)
+    assert len(versions) == 5  # v1 v2 v3 v4 v5 都被归档
+
+
+@pytest.mark.asyncio
+async def test_get_agent_history_by_version(storage: MotorMongoStorage) -> None:
+    """精确按 version 查 取不到返 None"""
+    settings = _build_settings()
+    await storage.seed_from_yaml(settings)
+    await storage.upsert_agent("Qwen", "qwen-2", "百科加详细")
+    h1 = await storage.get_agent_history("Qwen", 1)
+    assert h1 is not None
+    assert h1["model"] == "qwen-test"  # seed 时模型
+    assert h1["prompt"] == "百科"
+    # 不存在版本返 None
+    assert await storage.get_agent_history("Qwen", 99) is None
+    # 不存在 agent 返 None
+    assert await storage.get_agent_history("NoSuchAgent", 1) is None
+
+
 def _utcnow_for_test():
     """测试辅助 直接生成带时区的当前 UTC 时间 与 storage 一致"""
     from datetime import datetime, timezone
 
     return datetime.now(timezone.utc)
+
+
+# --------------------------------------------------------------- delete_session
+@pytest.mark.asyncio
+async def test_delete_session_with_rounds_ok(storage: MotorMongoStorage) -> None:
+    """正常路径 session 下有 done 终态 round 删除应连带清掉所有 rounds"""
+    sid = await storage.create_session(title="待删")
+    tid_a = await storage.create_round(sid, "q1", None)
+    tid_b = await storage.create_round(sid, "q2", None)
+    # 全部置 DONE 状态 满足"无进行中"条件
+    await storage.update_round_state(tid_a, TaskState.DONE)
+    await storage.update_round_state(tid_b, TaskState.DONE)
+
+    deleted = await storage.delete_session(sid)
+    assert deleted == 2
+    assert await storage.get_session(sid) is None
+    # rounds 也应被清理
+    rounds = await storage.list_rounds(sid)
+    assert rounds == []
+
+
+@pytest.mark.asyncio
+async def test_delete_session_not_found_raises_keyerror(storage: MotorMongoStorage) -> None:
+    """session 不存在 抛 KeyError 路由层映射 404"""
+    with pytest.raises(KeyError):
+        await storage.delete_session("no-such-session-id")
+
+
+@pytest.mark.asyncio
+async def test_delete_session_active_round_raises_valueerror(
+    storage: MotorMongoStorage,
+) -> None:
+    """有进行中 round 抛 ValueError 路由层映射 409"""
+    sid = await storage.create_session(title="活动会话")
+    tid = await storage.create_round(sid, "q1", None)
+    # 默认状态就是 PENDING 算进行中
+    with pytest.raises(ValueError):
+        await storage.delete_session(sid)
+    # 历史值 created 也应被识别
+    sid2 = await storage.create_session(title="历史活动")
+    await storage._db["rounds"].insert_one(
+        {
+            "task_id": "legacy-active-tid",
+            "session_id": sid2,
+            "round_index": 0,
+            "question": "q",
+            "user_mention": None,
+            "think_results": [],
+            "chosen_agent": None,
+            "reply_content": "",
+            "state": "created",
+            "created_at": _utcnow_for_test(),
+            "updated_at": _utcnow_for_test(),
+        }
+    )
+    with pytest.raises(ValueError):
+        await storage.delete_session(sid2)
+    # 把它置为 cancelled 后应可删
+    await storage._db["rounds"].update_one(
+        {"task_id": "legacy-active-tid"}, {"$set": {"state": "cancelled"}}
+    )
+    deleted = await storage.delete_session(sid2)
+    assert deleted == 1
+    # 原 session sid 把它的 round 切换到 cancelled 也应允许删
+    await storage.update_round_state(tid, TaskState.CANCELLED)
+    deleted2 = await storage.delete_session(sid)
+    assert deleted2 == 1

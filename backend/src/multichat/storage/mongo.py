@@ -134,6 +134,13 @@ class MotorMongoStorage:
             [("name", ASCENDING)], unique=True, name="uniq_agent_name"
         )
 
+        # agent_history 集合 按 (name, version 降序) 查最近版本快
+        # version 不强制唯一 因为同一名字不同时间会有多版 但同名同 version 唯一
+        await self._db["agent_history"].create_index(
+            [("name", ASCENDING), ("version", DESCENDING)],
+            name="idx_agent_history_name_version_desc",
+        )
+
     # ============================================================ Sessions CRUD
     async def create_session(self, title: str | None = None) -> str:
         """新建会话 返回 string session_id"""
@@ -182,6 +189,44 @@ class MotorMongoStorage:
         )
         if result.matched_count == 0:
             raise KeyError(f"session 不存在 session_id={session_id}")
+
+    async def delete_session(self, session_id: str) -> int:
+        """删除 session 与其下所有 rounds 返回删除的 round 数
+
+        约束:
+            - session 不存在抛 KeyError 路由层映射 404
+            - 若 session 下存在进行中的 round 抛 ValueError 路由层映射 409
+              进行中状态包含 spec 新值 + 历史值 与 cancel_orphan_rounds 对齐
+        """
+        sess = await self._db["sessions"].find_one({"session_id": session_id})
+        if sess is None:
+            raise KeyError(f"session 不存在 session_id={session_id}")
+
+        in_progress = [
+            "pending",
+            "thinking",
+            "think_done",
+            "decided",
+            "replying",
+            # 历史值兼容 与 cancel_orphan_rounds 保持一致
+            "created",
+            "waiting_decision",
+        ]
+        active_cnt = await self._db["rounds"].count_documents(
+            {
+                "session_id": session_id,
+                "state": {"$in": in_progress},
+            }
+        )
+        if active_cnt > 0:
+            raise ValueError(
+                f"session 仍有 {active_cnt} 个进行中的 round 无法删除"
+            )
+
+        # 先删 rounds 再删 session 顺序保证即便中途失败也不会留下"无 session 的孤儿 round"
+        rounds_res = await self._db["rounds"].delete_many({"session_id": session_id})
+        await self._db["sessions"].delete_one({"session_id": session_id})
+        return int(rounds_res.deleted_count or 0)
 
     # =============================================================== Rounds CRUD
     async def create_round(
@@ -377,6 +422,11 @@ class MotorMongoStorage:
         """新增或更新 agent 已存在则 version +1 反之初始化 version=1
 
         kind 字段固定为 agent 这里不开放第二个枚举值 保持集合纯净
+
+        新增 H7 配置回滚:
+            - 写新值前 先把当前值整体归档到 agent_history 集合
+            - 归档文档保留 name model prompt version + archived_at archived_reason
+            - 仅当存在 current 才归档 首次插入不留历史(没有"上一版"可回滚)
         """
         existing = await self._db["agents"].find_one({"name": name}, {"_id": 0})
         now = _utcnow()
@@ -391,6 +441,17 @@ class MotorMongoStorage:
             }
             await self._db["agents"].insert_one(dict(doc))
             return AgentRecord.model_validate(doc)
+
+        # 归档旧值 让历史可追溯 reason 默认 upsert 由 routes 层调 revert 时传 revert
+        archive_doc = {
+            "name": existing["name"],
+            "model": existing["model"],
+            "prompt": existing["prompt"],
+            "version": int(existing.get("version", 1)),
+            "archived_at": now,
+            "archived_reason": "upsert",
+        }
+        await self._db["agent_history"].insert_one(archive_doc)
 
         new_version = int(existing.get("version", 1)) + 1
         updates = {
@@ -413,6 +474,34 @@ class MotorMongoStorage:
                 "updated_at": merged["updated_at"],
             }
         )
+
+    # --------------------------------------------------------- Agent History
+    async def list_agent_history(
+        self, name: str, limit: int = 20
+    ) -> list[dict]:
+        """列出 agent 历史版本 按 version 降序 默认 20 条
+
+        返回字典列表 字段为 name model prompt version archived_at archived_reason
+        """
+        cursor = (
+            self._db["agent_history"]
+            .find({"name": name}, {"_id": 0})
+            .sort("version", DESCENDING)
+            .limit(max(1, int(limit)))
+        )
+        out: list[dict] = []
+        async for doc in cursor:
+            out.append(dict(doc))
+        return out
+
+    async def get_agent_history(
+        self, name: str, version: int
+    ) -> dict | None:
+        """取指定 agent 的指定历史版本字典 不存在返回 None"""
+        doc = await self._db["agent_history"].find_one(
+            {"name": name, "version": int(version)}, {"_id": 0}
+        )
+        return dict(doc) if doc is not None else None
 
     # ------------------------------------------------------------- Judge 指针
     async def get_judge_target(self) -> str:

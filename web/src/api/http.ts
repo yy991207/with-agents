@@ -124,6 +124,14 @@ export function listSessions(): Promise<SessionMeta[]> {
   return request<SessionMeta[]>('/sessions');
 }
 
+// DELETE /sessions/{id}:删除会话(204 / 404 / 409)
+// 后端约定:409 表示该会话还存在进行中 task,前端需要先取消或等待
+export function deleteSession(sessionId: string): Promise<void> {
+  return requestNoContent(`/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'DELETE',
+  });
+}
+
 // ====== M1.D 配置抽屉相关 API ======
 
 // GET /api/agents:拉取 4 个 agent 的当前配置以及 judge 指向

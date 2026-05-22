@@ -276,6 +276,14 @@ async def test_think_one_failed_others_continue(env, monkeypatch: pytest.MonkeyP
     failed = [e for e in history if e.type == "think.failed"]
     assert len(failed) == 1
     assert failed[0].data["agent"] == "GLM"
+    # 中优 B 任务2 错误友好化 think.failed 的 error 必须是中文化兜底或语义提示
+    # 不再是英文 raw "RuntimeError: 模拟 think 失败"
+    import re as _re
+
+    assert _re.search(
+        r"超时|限流|不可用|失败|取消|网络|凭证|上下文",
+        failed[0].data["error"],
+    )
 
     # 用户从可用项中挑一个 让流程继续到 DONE 再校验 round.thinks.GLM 失败状态
     await manager.submit_decision(task_id, "Kimi")
@@ -421,3 +429,151 @@ async def test_global_cancel(env, monkeypatch: pytest.MonkeyPatch) -> None:
     r = await storage.get_round(task_id)
     assert r is not None
     assert r.state == TaskState.CANCELLED
+
+
+# ---------------------------------------------------------------- retry_think 用例
+@pytest.mark.asyncio
+async def test_retry_think_unknown_task_raises_keyerror(env) -> None:
+    """task_id 未在活动 hub 中应抛 KeyError(路由层 -> 404)"""
+    manager, _storage, _ = env
+    with pytest.raises(KeyError):
+        await manager.retry_think("no-such-task", "GLM")
+
+
+@pytest.mark.asyncio
+async def test_retry_think_wrong_state_raises_valueerror(
+    env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """task 不在 THINK_DONE 状态时 retry 抛 ValueError"""
+    manager, storage, _ = env
+
+    # 让 think 阻塞 task 永远停在 THINKING 状态 直到测试结束才被回收
+    block_event = asyncio.Event()
+
+    async def fake_think(agent_name, user_message, history, registry, timeout_s):
+        await block_event.wait()
+        return f"{agent_name}"
+
+    async def fake_reply(*args, **kwargs):
+        return ""
+
+    monkeypatch.setattr(tm_module, "run_think", fake_think)
+    monkeypatch.setattr(tm_module, "run_reply", fake_reply)
+
+    task_id = await manager.create_task(None, "你好")
+    # 等 task 进入 THINKING 状态
+    await _wait_state(storage, task_id, TaskState.THINKING)
+
+    with pytest.raises(ValueError):
+        await manager.retry_think(task_id, "GLM")
+
+    # 收尾 让 think 协程退出 防止悬挂任务影响 fixture 清理
+    block_event.set()
+    bg = manager._tasks.get(task_id)  # noqa: SLF001
+    if bg is not None:
+        # 不强求成功 给一个决策让循环结束
+        await _wait_state(storage, task_id, TaskState.THINK_DONE)
+        await manager.submit_decision(task_id, "GLM")
+        await asyncio.wait_for(bg, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_retry_think_unknown_agent_raises_valueerror(
+    env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """agent 名错时 retry 抛 ValueError 即便已到 THINK_DONE"""
+    manager, storage, _ = env
+
+    async def fake_think(agent_name, user_message, history, registry, timeout_s):
+        return f"{agent_name} 行"
+
+    async def fake_reply(*args, **kwargs):
+        return ""
+
+    monkeypatch.setattr(tm_module, "run_think", fake_think)
+    monkeypatch.setattr(tm_module, "run_reply", fake_reply)
+
+    task_id = await manager.create_task(None, "你好")
+    await _wait_state(storage, task_id, TaskState.THINK_DONE)
+
+    with pytest.raises(ValueError):
+        await manager.retry_think(task_id, "NoSuchAgent")
+
+    # 收尾 让 task 跑完
+    await manager.submit_decision(task_id, "GLM")
+    bg = manager._tasks[task_id]  # noqa: SLF001
+    await asyncio.wait_for(bg, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_retry_think_happy_path(
+    env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """正常 retry 跑通 first round 全成功后 retry GLM 验证
+
+    1 think.start + think.done 事件再次出现
+    2 storage 里 GLM 内容被更新
+    3 task.state THINK_DONE 再次广播
+    """
+    manager, storage, _ = env
+
+    call_idx = {"n": 0}
+
+    async def fake_think(agent_name, user_message, history, registry, timeout_s):
+        call_idx["n"] += 1
+        return f"{agent_name}-call-{call_idx['n']}"
+
+    async def fake_reply(*args, **kwargs):
+        return ""
+
+    monkeypatch.setattr(tm_module, "run_think", fake_think)
+    monkeypatch.setattr(tm_module, "run_reply", fake_reply)
+
+    task_id = await manager.create_task(None, "你好")
+    hub = manager.get_hub(task_id)
+    assert hub is not None
+
+    # 等首轮 4 路 think 完成
+    await _wait_state(storage, task_id, TaskState.THINK_DONE)
+
+    # 此时 GLM 内容是首轮的(第 1~4 次调用之一)
+    r1 = await storage.get_round(task_id)
+    assert r1 is not None
+    glm_first = (r1.thinks or {}).get("GLM", {}).get("content", "")
+    assert glm_first.startswith("GLM-call-")
+
+    # 触发 retry
+    await manager.retry_think(task_id, "GLM")
+
+    # 等 GLM 内容变化 用轮询保证子协程跑完
+    deadline = asyncio.get_event_loop().time() + 3
+    glm_new = ""
+    while asyncio.get_event_loop().time() < deadline:
+        r = await storage.get_round(task_id)
+        if r is not None:
+            cand = (r.thinks or {}).get("GLM", {}).get("content", "")
+            if cand and cand != glm_first:
+                glm_new = cand
+                break
+        await asyncio.sleep(0.02)
+    assert glm_new and glm_new != glm_first
+    # 调用次数应至少 5 次 4 路首轮 + 1 次 retry
+    assert call_idx["n"] >= 5
+
+    # 校验事件序列 retry 后再有 think.start + think.done(GLM)
+    history, queue = await hub.subscribe()
+    await hub.unsubscribe(queue)
+    glm_starts = [
+        e for e in history if e.type == "think.start" and e.data.get("agent") == "GLM"
+    ]
+    glm_dones = [
+        e for e in history if e.type == "think.done" and e.data.get("agent") == "GLM"
+    ]
+    # 首轮 1 次 + retry 1 次
+    assert len(glm_starts) == 2
+    assert len(glm_dones) == 2
+
+    # 收尾 提交 decision 让 task loop 走完 防 fixture 等不到
+    await manager.submit_decision(task_id, "Kimi")
+    bg = manager._tasks[task_id]  # noqa: SLF001
+    await asyncio.wait_for(bg, timeout=3)

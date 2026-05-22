@@ -12,6 +12,7 @@ import { useSettings } from './hooks/useSettings';
 import { useChat } from './state/ChatContext';
 import { getHistory } from './api/http';
 import { openTaskStream } from './api/sse';
+import { convertRound } from './state/converters';
 import {
   clearPersisted,
   loadPersisted,
@@ -42,9 +43,12 @@ export default function App() {
       // 1. 拉历史时间线
       try {
         const hist = await getHistory(sessionId);
+        // 后端返回 snake_case dict 必须经 convertRound 转成前端 RoundView
+        // 否则 ReplyBubble 渲染历史 reply 时 toolCalls.map() 会崩
+        const rounds = (hist.rounds as unknown as unknown[]).map(convertRound);
         // 注意:history.loaded 会强制 activeTaskId=null / taskState=DONE
         // 后面如果有 activeTaskId,再用 task.resume 把它挂回去
-        dispatch({ type: 'history.loaded', sessionId, rounds: hist.rounds });
+        dispatch({ type: 'history.loaded', sessionId, rounds });
       } catch (e) {
         // 历史拉失败:可能 session 已被清,清持久化让用户重新开会话
         const msg = e instanceof Error ? e.message : String(e);

@@ -24,6 +24,8 @@ from pymongo import ASCENDING, DESCENDING
 
 from ..core.models import (
     AgentRecord,
+    ModelCatalogEntry,
+    ProviderProfile,
     Round,
     Session,
     SessionMeta,
@@ -139,6 +141,11 @@ class MotorMongoStorage:
         await self._db["agent_history"].create_index(
             [("name", ASCENDING), ("version", DESCENDING)],
             name="idx_agent_history_name_version_desc",
+        )
+
+        # provider_profiles 集合  name 唯一  支持运行时切换 base_url + api_key
+        await self._db["provider_profiles"].create_index(
+            [("name", ASCENDING)], unique=True, name="uniq_profile_name"
         )
 
     # ============================================================ Sessions CRUD
@@ -418,21 +425,30 @@ class MotorMongoStorage:
         name: str,
         model: str,
         prompt: str,
+        kind: str = "agent",
+        profile_name: str | None = None,
     ) -> AgentRecord:
         """新增或更新 agent 已存在则 version +1 反之初始化 version=1
 
         kind 字段固定为 agent 这里不开放第二个枚举值 保持集合纯净
 
+        profile_name 可选传入语义:
+            - None 旧记录已有则保留旧值 否则取默认值"默认"
+            - 显式传字符串则覆盖落库 由路由层在调用前做存在性校验
+
         新增 H7 配置回滚:
             - 写新值前 先把当前值整体归档到 agent_history 集合
             - 归档文档保留 name model prompt version + archived_at archived_reason
+              (含 profile_name 便于历史回滚也能回到旧 profile)
             - 仅当存在 current 才归档 首次插入不留历史(没有"上一版"可回滚)
         """
         existing = await self._db["agents"].find_one({"name": name}, {"_id": 0})
         now = _utcnow()
         if existing is None:
+            # 新建路径 profile_name 缺省回落"默认"
             doc = {
                 "name": name,
+                "profile_name": profile_name or "默认",
                 "model": model,
                 "prompt": prompt,
                 "kind": "agent",
@@ -445,6 +461,7 @@ class MotorMongoStorage:
         # 归档旧值 让历史可追溯 reason 默认 upsert 由 routes 层调 revert 时传 revert
         archive_doc = {
             "name": existing["name"],
+            "profile_name": existing.get("profile_name", "默认"),
             "model": existing["model"],
             "prompt": existing["prompt"],
             "version": int(existing.get("version", 1)),
@@ -454,7 +471,10 @@ class MotorMongoStorage:
         await self._db["agent_history"].insert_one(archive_doc)
 
         new_version = int(existing.get("version", 1)) + 1
+        # profile_name 处理: 传了用新值 没传保留旧值 旧值缺失兜底"默认"
+        new_profile_name = profile_name if profile_name is not None else existing.get("profile_name", "默认")
         updates = {
+            "profile_name": new_profile_name,
             "model": model,
             "prompt": prompt,
             "kind": "agent",
@@ -467,6 +487,7 @@ class MotorMongoStorage:
         return AgentRecord.model_validate(
             {
                 "name": name,
+                "profile_name": merged["profile_name"],
                 "model": merged["model"],
                 "prompt": merged["prompt"],
                 "kind": "agent",
@@ -529,12 +550,58 @@ class MotorMongoStorage:
         参数 settings 形如 multichat.config.Settings 含 agents 字典与 judge 指针
         返回值是写入的 agent 条数 0 表示已 seed 过
 
+        新增逻辑:
+            - 若 provider_profiles 集合为空 把 yaml 顶层 key/base_url 注入名为"默认" profile
+            - 默认 profile 的 models 池 = yaml.agents 段中所有 agent.model 去重 + 几条常用扩展
+            - agents seed 时给每条 record 写 profile_name="默认"
+
         注意:
             judge 指针即便已经存在也不在这里覆盖 完全由用户后续通过 set_judge_target 调
             首次种子默认值用 settings.judge.agent
         """
+        # 默认 profile 注入: 仅当 provider_profiles 集合为空时执行
+        # 已存在则视为运行时已经管理过 不再回写以免覆盖用户改动
+        profile_existing = await self._db["provider_profiles"].count_documents({})
+        if profile_existing == 0:
+            now0 = _utcnow()
+            # 默认模型池 = yaml.agents 中出现的所有 model 去重 + 常用扩展模型
+            yaml_models: list[str] = []
+            for cfg in settings.agents.values():
+                if cfg.model and cfg.model not in yaml_models:
+                    yaml_models.append(cfg.model)
+            extra_models = ["deepseek-v3", "glm-4.5", "kimi-k2", "qwen-max"]
+            for m in extra_models:
+                if m not in yaml_models:
+                    yaml_models.append(m)
+            default_profile_doc = {
+                "name": "默认",
+                "provider_type": "openai_compatible",
+                "base_url": settings.base_url,
+                "api_key": settings.key,
+                "models": [{"model_id": m, "label": m} for m in yaml_models],
+                "version": 1,
+                "updated_at": now0,
+            }
+            await self._db["provider_profiles"].insert_one(default_profile_doc)
+            _logger.info(
+                "seed 注入默认 profile",
+                base_url=settings.base_url,
+                models_count=len(yaml_models),
+            )
+
         existing = await self._db["agents"].count_documents({})
         if existing > 0:
+            # 数据迁移 老版本 agents 文档可能缺 profile_name 字段
+            # 启动时一次性补齐为 "默认" 防止 delete_profile 引用 count 漏算
+            missing = await self._db["agents"].update_many(
+                {"profile_name": {"$exists": False}},
+                {"$set": {"profile_name": "默认"}},
+            )
+            if missing.modified_count > 0:
+                _logger.info(
+                    "迁移 agents 补齐 profile_name 字段",
+                    modified=missing.modified_count,
+                )
             _logger.info("agents 已存在 跳过 seed", existing=existing)
             return 0
 
@@ -544,6 +611,7 @@ class MotorMongoStorage:
             docs.append(
                 {
                     "name": agent_name,
+                    "profile_name": "默认",
                     "model": agent_cfg.model,
                     "prompt": agent_cfg.prompt,
                     "kind": "agent",
@@ -570,3 +638,94 @@ class MotorMongoStorage:
 
         _logger.info("seed 注入完成", agents_written=len(docs), judge=settings.judge.agent)
         return len(docs)
+
+    # ============================================================ Profiles CRUD
+    async def list_profiles(self) -> list[ProviderProfile]:
+        """按 name 升序列出所有 profile"""
+        cursor = self._db["provider_profiles"].find({}, {"_id": 0}).sort("name", ASCENDING)
+        out: list[ProviderProfile] = []
+        async for doc in cursor:
+            out.append(ProviderProfile.model_validate(doc))
+        return out
+
+    async def get_profile(self, name: str) -> ProviderProfile | None:
+        doc = await self._db["provider_profiles"].find_one({"name": name}, {"_id": 0})
+        if doc is None:
+            return None
+        return ProviderProfile.model_validate(doc)
+
+    async def create_profile(self, profile: ProviderProfile) -> ProviderProfile:
+        """新建 profile 同名已存在抛 ValueError"""
+        existing = await self._db["provider_profiles"].find_one({"name": profile.name}, {"_id": 0})
+        if existing is not None:
+            raise ValueError(f"profile {profile.name} 已存在")
+        now = _utcnow()
+        doc = {
+            "name": profile.name,
+            "provider_type": profile.provider_type,
+            "base_url": profile.base_url,
+            "api_key": profile.api_key,
+            "models": [m.model_dump(mode="json") for m in profile.models],
+            "version": 1,
+            "updated_at": now,
+        }
+        await self._db["provider_profiles"].insert_one(dict(doc))
+        return ProviderProfile.model_validate(doc)
+
+    async def update_profile(
+        self,
+        name: str,
+        *,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        models: list | None = None,
+        provider_type: str | None = None,
+    ) -> ProviderProfile:
+        """局部更新 profile  仅更新非 None 字段  不存在抛 KeyError  version+1"""
+        existing = await self._db["provider_profiles"].find_one({"name": name}, {"_id": 0})
+        if existing is None:
+            raise KeyError(f"profile 不存在 name={name}")
+
+        now = _utcnow()
+        updates: dict[str, Any] = {
+            "version": int(existing.get("version", 1)) + 1,
+            "updated_at": now,
+        }
+        if base_url is not None:
+            updates["base_url"] = base_url
+        if api_key is not None:
+            updates["api_key"] = api_key
+        if provider_type is not None:
+            updates["provider_type"] = provider_type
+        if models is not None:
+            # 接收 ModelCatalogEntry 列表或 dict 列表 统一序列化
+            normalized: list[dict[str, Any]] = []
+            for m in models:
+                if isinstance(m, ModelCatalogEntry):
+                    normalized.append(m.model_dump(mode="json"))
+                elif isinstance(m, dict):
+                    normalized.append({"model_id": str(m.get("model_id", "")), "label": str(m.get("label", ""))})
+                else:
+                    raise TypeError(f"models 项类型不支持 {type(m).__name__}")
+            updates["models"] = normalized
+
+        await self._db["provider_profiles"].update_one({"name": name}, {"$set": updates})
+        merged = {**existing, **updates}
+        return ProviderProfile.model_validate(
+            {
+                "name": name,
+                "provider_type": merged.get("provider_type", "openai_compatible"),
+                "base_url": merged["base_url"],
+                "api_key": merged["api_key"],
+                "models": merged.get("models", []),
+                "version": merged["version"],
+                "updated_at": merged["updated_at"],
+            }
+        )
+
+    async def delete_profile(self, name: str) -> None:
+        """删除 profile  仍被任意 agent 引用时抛 ValueError 路由层映射 409"""
+        ref_cnt = await self._db["agents"].count_documents({"profile_name": name})
+        if ref_cnt > 0:
+            raise ValueError(f"profile {name} 仍被 {ref_cnt} 个 agent 引用 无法删除")
+        await self._db["provider_profiles"].delete_one({"name": name})

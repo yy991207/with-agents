@@ -3,6 +3,9 @@
 // 这里集中处理转换 让 useSession 和 App.bootstrap 共用同一份逻辑
 import type {
   AgentName,
+  AgentView,
+  ModelView,
+  ProfileView,
   RoundView,
   SessionMeta,
   TaskState,
@@ -75,5 +78,42 @@ export function convertRound(raw: unknown): RoundView {
     thinks,
     decision,
     reply,
+  };
+}
+
+// /api/agents 响应里单个 agent → AgentView
+// 后端字段是 snake_case  前端用 camelCase  这里集中适配
+export function convertAgentView(raw: unknown): AgentView {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  return {
+    name: (r.name as string) ?? '',
+    model: (r.model as string) ?? '',
+    prompt: (r.prompt as string) ?? '',
+    profileName: (r.profile_name as string) ?? '默认',
+    version: (r.version as number) ?? 1,
+    updatedAt: (r.updated_at as string) ?? '',
+  };
+}
+
+// /api/profiles 响应里单个 profile → ProfileView
+// 注意:GET 时 api_key 是 mask 形式 "sk-...xxxx"
+export function convertProfile(raw: unknown): ProfileView {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const modelsRaw = (r.models as unknown[]) ?? [];
+  const models: ModelView[] = modelsRaw.map((m) => {
+    const mr = (m ?? {}) as Record<string, unknown>;
+    return {
+      model_id: (mr.model_id as string) ?? '',
+      label: (mr.label as string) ?? '',
+    };
+  });
+  return {
+    name: (r.name as string) ?? '',
+    provider_type: (r.provider_type as string) ?? 'openai_compatible',
+    base_url: (r.base_url as string) ?? '',
+    api_key: (r.api_key as string) ?? '',
+    models,
+    version: (r.version as number) ?? 1,
+    updated_at: (r.updated_at as string) ?? '',
   };
 }

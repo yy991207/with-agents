@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
-from ..core.models import AgentRecord, Round, Session, SessionMeta, TaskState
+from ..core.models import AgentRecord, ProviderProfile, Round, Session, SessionMeta, TaskState
 
 
 @runtime_checkable
@@ -74,6 +74,8 @@ class MongoStorage(Protocol):
         name: str,
         model: str,
         prompt: str,
+        kind: str = "agent",
+        profile_name: str | None = None,
     ) -> AgentRecord: ...
 
     async def list_agent_history(
@@ -95,5 +97,30 @@ class MongoStorage(Protocol):
     async def get_judge_target(self) -> str: ...
 
     async def set_judge_target(self, agent_name: str) -> None: ...
+
+    # ----------------------------------------------------------- ProviderProfiles
+    async def list_profiles(self) -> list[ProviderProfile]: ...
+
+    async def get_profile(self, name: str) -> ProviderProfile | None: ...
+
+    async def create_profile(self, profile: ProviderProfile) -> ProviderProfile:
+        """新建 profile 同名已存在抛 ValueError"""
+        ...
+
+    async def update_profile(
+        self,
+        name: str,
+        *,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        models: list | None = None,
+        provider_type: str | None = None,
+    ) -> ProviderProfile:
+        """局部更新 profile  仅更新非 None 字段  不存在抛 KeyError  version+1"""
+        ...
+
+    async def delete_profile(self, name: str) -> None:
+        """删除 profile  仍被任意 agent 引用时抛 ValueError 路由层映射 409"""
+        ...
 
     async def seed_from_yaml(self, settings: Any) -> int: ...

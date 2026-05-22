@@ -61,7 +61,8 @@ async def app_client() -> AsyncIterator[tuple[AsyncClient, MotorMongoStorage, ob
 
     registry = build_registry(settings)
     records = await storage.list_agents()
-    await registry.initialize(records)
+    profiles = {p.name: p for p in await storage.list_profiles()}
+    await registry.initialize(records, profiles)
 
     app = FastAPI()
     app.state.settings = settings
@@ -87,11 +88,13 @@ async def test_list_agents_after_seed(app_client: tuple[AsyncClient, MotorMongoS
     assert names == {"DeepSeek", "GLM", "Kimi", "Qwen"}
     # 默认 judge 指针来自 yaml.judge.agent
     assert data["judge_target"] == "GLM"
-    # 字段完整性
+    # 字段完整性 含新加的 profile_name
     sample = data["agents"][0]
-    assert {"name", "model", "prompt", "version", "updated_at"} <= set(sample.keys())
+    assert {"name", "profile_name", "model", "prompt", "version", "updated_at"} <= set(sample.keys())
     # version 都是 1 因 seed 初始化
     assert all(a["version"] == 1 for a in data["agents"])
+    # 默认 profile 引用
+    assert all(a["profile_name"] == "默认" for a in data["agents"])
 
 
 @pytest.mark.asyncio
@@ -287,3 +290,46 @@ async def test_history_for_unknown_agent_404(
     ac, _s, _r = app_client
     resp = await ac.get("/api/agents/NoSuchAgent/history")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_update_agent_with_profile_name(
+    app_client: tuple[AsyncClient, MotorMongoStorage, object],
+) -> None:
+    """PUT /api/agents/{name} 传 profile_name 应切换 agent 引用的 profile"""
+    from multichat.core.models import ProviderProfile
+
+    ac, storage, _reg = app_client
+    # 先创建一个新 profile 否则切换会 400
+    await storage.create_profile(
+        ProviderProfile(
+            name="claude-paid",
+            base_url="https://claude.example.com/v1",
+            api_key="sk-claude-tail-1234",
+        )
+    )
+
+    resp = await ac.put(
+        "/api/agents/GLM",
+        json={"profile_name": "claude-paid"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["version"] == 2
+    assert body["reloaded"] is True
+
+    rec = await storage.get_agent("GLM")
+    assert rec is not None and rec.profile_name == "claude-paid"
+
+
+@pytest.mark.asyncio
+async def test_update_agent_unknown_profile_400(
+    app_client: tuple[AsyncClient, MotorMongoStorage, object],
+) -> None:
+    """传不存在的 profile_name 应 400"""
+    ac, _s, _r = app_client
+    resp = await ac.put(
+        "/api/agents/GLM",
+        json={"profile_name": "not-exist"},
+    )
+    assert resp.status_code == 400

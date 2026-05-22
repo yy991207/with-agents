@@ -3,11 +3,15 @@
 import type {
   AgentName,
   AgentsListResponse,
+  CreateProfileRequest,
   HistoryResponse,
+  ProfileView,
   SessionMeta,
   UpdateAgentRequest,
   UpdateAgentResponse,
+  UpdateProfileRequest,
 } from '../state/types';
+import { convertProfile } from '../state/converters';
 
 // 后端基址:dev 走 vite proxy,prod 与同源部署即可
 const BASE = '';
@@ -155,5 +159,51 @@ export function updateJudge(target: string): Promise<void> {
   return requestNoContent('/api/judge', {
     method: 'PUT',
     body: { target },
+  });
+}
+
+// ====== Provider profile CRUD ======
+
+// GET /api/profiles:拉取所有 provider profile
+// 注意:返回的 api_key 都是 mask 形式  仅用于展示
+export async function listProfiles(): Promise<ProfileView[]> {
+  const data = await request<unknown[]>('/api/profiles');
+  return Array.isArray(data) ? data.map(convertProfile) : [];
+}
+
+// GET /api/profiles/{name}:拉取单个 profile
+export async function getProfile(name: string): Promise<ProfileView> {
+  const data = await request<unknown>(`/api/profiles/${encodeURIComponent(name)}`);
+  return convertProfile(data);
+}
+
+// POST /api/profiles:新建 profile
+// api_key 必须是明文 后端会做 mask 后再返回
+export async function createProfile(body: CreateProfileRequest): Promise<ProfileView> {
+  const data = await request<unknown>('/api/profiles', {
+    method: 'POST',
+    body,
+  });
+  return convertProfile(data);
+}
+
+// PUT /api/profiles/{name}:更新 profile
+// 不传 api_key 表示保留旧值  传空字符串当作清空
+export async function updateProfile(
+  name: string,
+  body: UpdateProfileRequest,
+): Promise<ProfileView> {
+  const data = await request<unknown>(`/api/profiles/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    body,
+  });
+  return convertProfile(data);
+}
+
+// DELETE /api/profiles/{name}:删除 profile
+// 后端 409 表示该 profile 仍被某个 agent 引用  需要前端先切换 agent 的 profile
+export function deleteProfile(name: string): Promise<void> {
+  return requestNoContent(`/api/profiles/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
   });
 }

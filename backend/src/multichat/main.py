@@ -29,6 +29,7 @@ from .routes.ask import router as ask_router
 from .routes.cancel import router as cancel_router
 from .routes.decide import router as decide_router
 from .routes.history import router as history_router
+from .routes.profiles import router as profiles_router
 from .routes.retry_think import router as retry_think_router
 from .routes.sessions import router as sessions_router
 from .routes.static_spa import mount_spa
@@ -49,9 +50,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # 从 DB 加载已有 agents 启动 deep_agent 注册表
     # 必须在 seed 之后 否则首次启动时 list_agents 为空会抛 ValueError
+    # profiles_by_name 提供给 registry 让 build 时按 record.profile_name 取凭据
+    profiles = await storage.list_profiles()
+    profiles_by_name = {p.name: p for p in profiles}
     records = await storage.list_agents()
     registry = build_registry(settings)
-    await registry.initialize(records)
+    await registry.initialize(records, profiles_by_name)
 
     # H2 启动孤儿清理
     # 上次进程未干净退出 可能在 mongo 中残留 state 处于"进行中"的 round
@@ -117,6 +121,8 @@ def create_app(config_path: str | None = None) -> FastAPI:
     # 路由挂载
     # M1: agents/judge CRUD
     app.include_router(agents_router)
+    # provider_profiles CRUD
+    app.include_router(profiles_router)
     # M3: 对话核心 + 历史
     app.include_router(ask_router)
     app.include_router(decide_router)

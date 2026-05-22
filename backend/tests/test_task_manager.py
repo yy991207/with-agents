@@ -72,7 +72,8 @@ async def env() -> AsyncIterator[tuple[TaskManager, MotorMongoStorage, TaskEvent
 
     registry = build_registry(settings)
     records = await storage.list_agents()
-    await registry.initialize(records)
+    profiles = {p.name: p for p in await storage.list_profiles()}
+    await registry.initialize(records, profiles)
 
     manager = TaskManager(storage=storage, registry=registry, settings=settings)
     yield manager, storage, None

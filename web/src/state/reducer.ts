@@ -8,6 +8,7 @@ import type {
   ChatAction,
   ChatState,
   DecisionView,
+  ProfileView,
   ReplyView,
   RoundView,
   SettingsState,
@@ -26,6 +27,8 @@ const initialSettings: SettingsState = {
   saving: false,
   drafts: {},
   judgeTarget: null,
+  profiles: [],
+  profilesLoading: false,
 };
 
 // 初始状态
@@ -56,10 +59,20 @@ function buildDrafts(agents: AgentView[]): Record<string, AgentEditDraft> {
       name: a.name,
       model: a.model,
       prompt: a.prompt,
+      profileName: a.profileName ?? '默认',
       version: a.version,
       dirty: false,
     };
   }
+  return out;
+}
+
+// 工具:在已有 profile 列表里 upsert 一项 同名替换 否则追加
+function upsertProfile(profiles: ProfileView[], next: ProfileView): ProfileView[] {
+  const idx = profiles.findIndex((p) => p.name === next.name);
+  if (idx < 0) return [...profiles, next];
+  const out = [...profiles];
+  out[idx] = next;
   return out;
 }
 
@@ -440,6 +453,25 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       };
     }
 
+    case 'settings.draft.profile': {
+      // 切换 agent 关联的 provider profile  纯本地草稿改动 直到 save 才落盘
+      const cur = state.settings.drafts[action.name];
+      if (!cur) return state;
+      if (cur.profileName === action.profileName) return state;
+      const next: AgentEditDraft = {
+        ...cur,
+        profileName: action.profileName,
+        dirty: true,
+      };
+      return {
+        ...state,
+        settings: {
+          ...state.settings,
+          drafts: { ...state.settings.drafts, [action.name]: next },
+        },
+      };
+    }
+
     case 'settings.saving.start':
       return { ...state, settings: { ...state.settings, saving: true } };
 
@@ -469,10 +501,44 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         settings: { ...state.settings, judgeTarget: action.target },
       };
 
+    case 'settings.profiles.loading.start':
+      return {
+        ...state,
+        settings: { ...state.settings, profilesLoading: true },
+      };
+
+    case 'settings.profiles.loaded':
+      return {
+        ...state,
+        settings: {
+          ...state.settings,
+          profiles: action.profiles,
+          profilesLoading: false,
+        },
+      };
+
+    case 'settings.profiles.upserted':
+      return {
+        ...state,
+        settings: {
+          ...state.settings,
+          profiles: upsertProfile(state.settings.profiles, action.profile),
+        },
+      };
+
+    case 'settings.profiles.deleted':
+      return {
+        ...state,
+        settings: {
+          ...state.settings,
+          profiles: state.settings.profiles.filter((p) => p.name !== action.name),
+        },
+      };
+
     case 'settings.error':
       return {
         ...state,
-        settings: { ...state.settings, loading: false, saving: false },
+        settings: { ...state.settings, loading: false, saving: false, profilesLoading: false },
       };
 
     default:

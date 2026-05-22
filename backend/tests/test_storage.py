@@ -486,3 +486,126 @@ async def test_delete_session_active_round_raises_valueerror(
     await storage.update_round_state(tid, TaskState.CANCELLED)
     deleted2 = await storage.delete_session(sid)
     assert deleted2 == 1
+
+
+# =============================================================== Profiles 测试
+@pytest.mark.asyncio
+async def test_seed_creates_default_profile(storage: MotorMongoStorage) -> None:
+    """seed 第一次跑应自动注入名为'默认'的 profile 含 yaml key/base_url + 模型池"""
+    settings = _build_settings()
+    await storage.seed_from_yaml(settings)
+
+    profiles = await storage.list_profiles()
+    assert len(profiles) == 1
+    p = profiles[0]
+    assert p.name == "默认"
+    assert p.provider_type == "openai_compatible"
+    assert p.base_url == settings.base_url
+    assert p.api_key == settings.key
+    # 模型池 = yaml.agents 中所有 model + 4 条扩展
+    model_ids = {m.model_id for m in p.models}
+    for cfg in settings.agents.values():
+        assert cfg.model in model_ids
+    assert {"deepseek-v3", "glm-4.5", "kimi-k2", "qwen-max"} <= model_ids
+
+
+@pytest.mark.asyncio
+async def test_agent_record_has_profile_name(storage: MotorMongoStorage) -> None:
+    """seed 后每条 agent 都有 profile_name='默认'"""
+    settings = _build_settings()
+    await storage.seed_from_yaml(settings)
+    agents = await storage.list_agents()
+    assert all(a.profile_name == "默认" for a in agents)
+
+
+@pytest.mark.asyncio
+async def test_upsert_agent_with_profile_name(storage: MotorMongoStorage) -> None:
+    """upsert_agent 显式传 profile_name 应覆盖落库"""
+    settings = _build_settings()
+    await storage.seed_from_yaml(settings)
+
+    # 先建一个新 profile 然后 upsert agent 切到该 profile
+    from multichat.core.models import ProviderProfile
+
+    new_profile = ProviderProfile(
+        name="claude-paid",
+        base_url="https://api.anthropic-proxy.example.com/v1",
+        api_key="sk-claude-tail-1234",
+    )
+    await storage.create_profile(new_profile)
+
+    upd = await storage.upsert_agent(
+        name="GLM",
+        model="glm-test",
+        prompt="保持原样的活泼调调",
+        profile_name="claude-paid",
+    )
+    assert upd.profile_name == "claude-paid"
+    fresh = await storage.get_agent("GLM")
+    assert fresh is not None and fresh.profile_name == "claude-paid"
+
+    # 不传 profile_name 时保留旧值
+    upd2 = await storage.upsert_agent(
+        name="GLM", model="glm-v3", prompt="再改一次活泼度"
+    )
+    assert upd2.profile_name == "claude-paid"
+
+
+@pytest.mark.asyncio
+async def test_create_profile_duplicate_raises(storage: MotorMongoStorage) -> None:
+    """同名 profile 重复创建抛 ValueError"""
+    from multichat.core.models import ProviderProfile
+
+    p = ProviderProfile(name="dup", base_url="https://x.example.com/v1", api_key="sk-dup-tail")
+    await storage.create_profile(p)
+    with pytest.raises(ValueError):
+        await storage.create_profile(p)
+
+
+@pytest.mark.asyncio
+async def test_update_profile_partial_fields(storage: MotorMongoStorage) -> None:
+    """update_profile 仅传 base_url 时其他字段保留 version+1"""
+    from multichat.core.models import ModelCatalogEntry, ProviderProfile
+
+    await storage.create_profile(
+        ProviderProfile(
+            name="p1",
+            base_url="https://old.example.com/v1",
+            api_key="sk-old-tail",
+            models=[ModelCatalogEntry(model_id="m-1", label="m-1")],
+        )
+    )
+    upd = await storage.update_profile("p1", base_url="https://new.example.com/v1")
+    assert upd.base_url == "https://new.example.com/v1"
+    assert upd.api_key == "sk-old-tail"
+    assert upd.version == 2
+    assert len(upd.models) == 1
+
+
+@pytest.mark.asyncio
+async def test_update_profile_unknown_raises_keyerror(storage: MotorMongoStorage) -> None:
+    """update_profile 不存在抛 KeyError 让路由层映射 404"""
+    with pytest.raises(KeyError):
+        await storage.update_profile("not-exist", base_url="https://x.example.com/v1")
+
+
+@pytest.mark.asyncio
+async def test_delete_profile_referenced_raises(storage: MotorMongoStorage) -> None:
+    """删除仍被 agent 引用的 profile 抛 ValueError"""
+    settings = _build_settings()
+    await storage.seed_from_yaml(settings)
+    # 4 个 agent 都引用'默认'
+    with pytest.raises(ValueError):
+        await storage.delete_profile("默认")
+
+
+@pytest.mark.asyncio
+async def test_delete_orphan_profile_ok(storage: MotorMongoStorage) -> None:
+    """删除没人引用的 profile 应直接成功"""
+    from multichat.core.models import ProviderProfile
+
+    await storage.create_profile(
+        ProviderProfile(name="orphan", base_url="https://x.example.com/v1", api_key="sk-orphan-tail")
+    )
+    await storage.delete_profile("orphan")
+    assert await storage.get_profile("orphan") is None

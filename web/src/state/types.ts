@@ -96,8 +96,9 @@ export interface AgentView {
   name: string; // DeepSeek / GLM / Kimi / Qwen
   model: string; // 如 deepseek-v4-pro
   prompt: string; // system_prompt
+  profileName: string; // 关联的 provider profile 名称(后端字段 profile_name)
   version: number; // 改一次 +1
-  updated_at: string; // ISO 字符串
+  updatedAt: string; // ISO 字符串
 }
 
 // /api/agents 列表响应
@@ -106,11 +107,45 @@ export interface AgentsListResponse {
   judge_target: string; // 当前 judge 指向哪个 agent
 }
 
-// PUT /api/agents/{name} 请求体:model 与 prompt 至少传一项
+// PUT /api/agents/{name} 请求体:model / prompt / profile_name 至少传一项
 export interface UpdateAgentRequest {
   model?: string;
   prompt?: string;
+  profile_name?: string; // 切换 provider profile
   expected_version?: number; // 可选乐观锁
+}
+
+// provider profile 子模型视图
+export interface ModelView {
+  model_id: string;
+  label: string;
+}
+
+// provider profile 视图(GET 时 api_key 是 mask 形式 "sk-...xxxx")
+export interface ProfileView {
+  name: string;
+  provider_type: string; // 当前固定 "openai_compatible"
+  base_url: string;
+  api_key: string; // 注意:GET 返回 mask 形式  POST/PUT 时传明文
+  models: ModelView[];
+  version: number;
+  updated_at: string;
+}
+
+// 创建 profile 请求体
+export interface CreateProfileRequest {
+  name: string; // 1-64 字符
+  provider_type?: string; // 默认 "openai_compatible"
+  base_url: string; // ≥8 字符
+  api_key: string; // ≥4 字符
+  models?: ModelView[];
+}
+
+// 更新 profile 请求体:不传 api_key 表示保留旧值 传空字符串当作清空
+export interface UpdateProfileRequest {
+  base_url?: string;
+  api_key?: string;
+  models?: ModelView[];
 }
 
 // PUT /api/agents/{name} 响应
@@ -130,6 +165,7 @@ export interface AgentEditDraft {
   name: string;
   model: string;
   prompt: string;
+  profileName: string; // 关联的 provider profile  保存时一并 PUT
   version: number; // 服务端版本 用于乐观锁
   dirty: boolean; // 用户有未保存改动
 }
@@ -141,6 +177,8 @@ export interface SettingsState {
   saving: boolean; // 保存中
   drafts: Record<string, AgentEditDraft>; // 4 个 agent 的编辑稿 按 name 索引
   judgeTarget: string | null;
+  profiles: ProfileView[]; // 所有 provider profile  抽屉打开时同步拉取
+  profilesLoading: boolean; // profile 列表拉取中
 }
 
 // 全局 Chat 状态
@@ -177,9 +215,14 @@ export type ChatAction =
   | { type: 'settings.loading.start' }
   | { type: 'settings.loaded'; agents: AgentView[]; judgeTarget: string }
   | { type: 'settings.draft.update'; name: string; field: 'model' | 'prompt'; value: string }
+  | { type: 'settings.draft.profile'; name: string; profileName: string }
   | { type: 'settings.saving.start' }
   | { type: 'settings.saved'; name: string; version: number }
   | { type: 'settings.judge.set'; target: string }
+  | { type: 'settings.profiles.loading.start' }
+  | { type: 'settings.profiles.loaded'; profiles: ProfileView[] }
+  | { type: 'settings.profiles.upserted'; profile: ProfileView }
+  | { type: 'settings.profiles.deleted'; name: string }
   | { type: 'settings.error'; message: string };
 
 // 任务忙碌态判定:THINKING / THINK_DONE / DECIDED / REPLYING 视为忙

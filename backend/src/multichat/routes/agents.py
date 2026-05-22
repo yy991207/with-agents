@@ -24,9 +24,13 @@ _logger = structlog.get_logger(__name__)
 
 
 class AgentView(BaseModel):
-    """对外的 agent 视图 与 AgentRecord 一致 但 updated_at 序列化为 ISO 字符串"""
+    """对外的 agent 视图 与 AgentRecord 一致 但 updated_at 序列化为 ISO 字符串
+
+    profile_name 暴露给前端展示当前引用哪个 provider profile
+    """
 
     name: str
+    profile_name: str
     model: str
     prompt: str
     version: int
@@ -41,10 +45,11 @@ class AgentsListResponse(BaseModel):
 
 
 class UpdateAgentRequest(BaseModel):
-    """PUT /api/agents/{name} 请求体 model/prompt 至少二选一"""
+    """PUT /api/agents/{name} 请求体 model/prompt/profile_name 至少传一项"""
 
     model: str | None = None
     prompt: str | None = None
+    profile_name: str | None = None
     # 可选乐观锁 不传则强制覆盖 传了则要求与服务端版本一致
     expected_version: int | None = None
 
@@ -90,6 +95,7 @@ async def list_agents(request: Request) -> AgentsListResponse:
         agents=[
             AgentView(
                 name=r.name,
+                profile_name=r.profile_name,
                 model=r.model,
                 prompt=r.prompt,
                 version=r.version,
@@ -128,29 +134,39 @@ async def update_agent(
         )
 
     # 至少改一项
-    if body.model is None and body.prompt is None:
-        raise HTTPException(400, "at least one of model/prompt must be provided")
+    if body.model is None and body.prompt is None and body.profile_name is None:
+        raise HTTPException(400, "at least one of model/prompt/profile_name must be provided")
 
-    # 长度兜底 prompt 至少 5 字 model 不能为空字符串
+    # 长度兜底 仅校验本次主动传入的字段 防止只改 profile_name 时被旧值长度卡住
     new_model = body.model if body.model is not None else existing.model
     new_prompt = body.prompt if body.prompt is not None else existing.prompt
-    if not new_model.strip():
+    if body.model is not None and not new_model.strip():
         raise HTTPException(400, "model must not be empty")
-    if len(new_prompt.strip()) < 5:
+    if body.prompt is not None and len(new_prompt.strip()) < 5:
         raise HTTPException(400, "prompt too short")
 
+    # 校验 profile_name 必须存在  避免运行时 reload 找不到 profile 抛 KeyError
+    new_profile_name = body.profile_name if body.profile_name is not None else existing.profile_name
+    target_profile = await storage.get_profile(new_profile_name)
+    if target_profile is None:
+        raise HTTPException(400, f"unknown profile: {new_profile_name}")
+
     # 写 DB upsert_agent 内部 version +1 同时 updated_at 刷新
-    new_record = await storage.upsert_agent(name, new_model, new_prompt)
+    new_record = await storage.upsert_agent(
+        name, new_model, new_prompt, profile_name=new_profile_name
+    )
 
     # 热替换 失败回滚 DB 重新写回旧值 让 DB 与内存一致
     try:
-        await registry.reload(new_record)
+        await registry.reload(new_record, target_profile)
         reloaded = True
     except Exception as exc:
         _logger.error("deep_agent reload 失败", name=name, err=str(exc))
         # 回滚 此处 upsert 仍会让 version 再 +1 但 model/prompt 是旧值
         # 这是有意为之 让前端通过 version 跳变知道发生过失败回滚
-        await storage.upsert_agent(name, existing.model, existing.prompt)
+        await storage.upsert_agent(
+            name, existing.model, existing.prompt, profile_name=existing.profile_name
+        )
         raise HTTPException(500, f"reload failed reverted: {exc}") from exc
 
     return UpdateAgentResponse(
@@ -234,17 +250,32 @@ async def revert_agent(
             404, f"history not found: {name} v{body.target_version}"
         )
 
+    # 历史版本如有 profile_name 字段则一并恢复 否则保留当前值
+    target_profile_name = str(target.get("profile_name", current.profile_name))
+    target_profile = await storage.get_profile(target_profile_name)
+    if target_profile is None:
+        # 历史 profile 已被删 回滚到当前 profile 防止 reload 时找不到
+        target_profile_name = current.profile_name
+        target_profile = await storage.get_profile(target_profile_name)
+    if target_profile is None:
+        raise HTTPException(500, f"无法定位 profile {target_profile_name} 请先创建")
+
     new_record = await storage.upsert_agent(
-        name, str(target["model"]), str(target["prompt"])
+        name,
+        str(target["model"]),
+        str(target["prompt"]),
+        profile_name=target_profile_name,
     )
     try:
-        await registry.reload(new_record)
+        await registry.reload(new_record, target_profile)
         reloaded = True
     except Exception as exc:
         _logger.error("revert reload 失败 回滚到原值", name=name, err=str(exc))
         # reload 失败 把当前值再写回 让 DB 与内存一致
         # 这里复用 upsert 仍会让 version 再 +1 但 model/prompt 是回滚前的旧值
-        await storage.upsert_agent(name, current.model, current.prompt)
+        await storage.upsert_agent(
+            name, current.model, current.prompt, profile_name=current.profile_name
+        )
         raise HTTPException(500, f"reload failed reverted: {exc}") from exc
     return UpdateAgentResponse(
         name=new_record.name, version=new_record.version, reloaded=reloaded

@@ -130,11 +130,42 @@ class AgentRecord(BaseModel):
     name 取值如 DeepSeek/GLM/Kimi/Qwen 全局唯一
     kind 当前固定为 agent 留出枚举位为日后扩展 agent 子类型预留
     version 每次 upsert 自增 1 用于前端比对是否本地缓存过期
+    profile_name 引用 ProviderProfile.name 用于运行时拿到 base_url + api_key
+        历史数据兼容: 旧 record 没有这个字段时按"默认" profile 处理
     """
 
     name: str
+    profile_name: str = "默认"
     model: str
     prompt: str
     kind: Literal["agent"] = "agent"
+    version: int = 1
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class ModelCatalogEntry(BaseModel):
+    """ProviderProfile 内一个可选模型的元信息
+
+    label 用于前端下拉显示 缺省同 model_id
+    """
+
+    model_id: str
+    label: str = ""
+
+
+class ProviderProfile(BaseModel):
+    """provider_profiles 集合中的一条记录
+
+    name 是业务主键 全局唯一  agent.profile_name 引用此字段
+    api_key 首版明文存 mongo  接口返回前端时由路由层 mask 仅展示末 4 位
+    provider_type 当前固定 openai_compatible 留字段为以后扩展其它协议预留
+    models 是 profile 内对应供应商的可选模型池 前端下拉用
+    """
+
+    name: str
+    provider_type: Literal["openai_compatible"] = "openai_compatible"
+    base_url: str
+    api_key: str
+    models: list[ModelCatalogEntry] = Field(default_factory=list)
     version: int = 1
     updated_at: datetime = Field(default_factory=_utcnow)

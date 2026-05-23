@@ -26,3 +26,76 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background-color: rgba(0, 0, 0, 0.32);
 }
+
+/* HTML 回复内容的基础样式 dangerousSetInnerHTML 渲染时使用 */
+.reply-html p {
+  margin: 4px 0;
+}
+.reply-html h2 {
+  margin: 12px 0 6px;
+  font-size: 18px;
+  font-weight: 600;
+}
+.reply-html h3 {
+  margin: 10px 0 4px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.reply-html ul,
+.reply-html ol {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+.reply-html li {
+  margin: 2px 0;
+}
+.reply-html pre {
+  margin: 8px 0;
+  padding: 12px;
+  background: #f6f8fa;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.reply-html code {
+  font-family: Menlo, Monaco, 'Courier New', monospace;
+  font-size: 13px;
+}
+.reply-html p code,
+.reply-html li code {
+  padding: 2px 6px;
+  background: #f0f0f0;
+  border-radius: 4px;
+}
+.reply-html a {
+  color: #1677ff;
+  text-decoration: none;
+}
+.reply-html a:hover {
+  text-decoration: underline;
+}
+.reply-html strong {
+  font-weight: 600;
+}
+.reply-html table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  width: 100%;
+}
+.reply-html th,
+.reply-html td {
+  border: 1px solid #e5e7eb;
+  padding: 6px 12px;
+  text-align: left;
+}
+.reply-html th {
+  background: #f6f8fa;
+  font-weight: 600;
+}
+.reply-html blockquote {
+  margin: 8px 0;
+  padding: 4px 12px;
+  border-left: 3px solid #e5e7eb;
+  color: rgba(0, 0, 0, 0.65);
+}

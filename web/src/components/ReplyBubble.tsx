@@ -1,4 +1,4 @@
-// 流式回答气泡:左对齐,agent 颜色边框,头部带状态,主体 markdown 渲染
+// 流式回答气泡:左对齐,agent 颜色边框,头部带状态,主体 HTML 渲染
 // streaming 时尾巴拼一个闪烁光标;toolCalls 走 Collapse 默认折叠
 import { Alert, Card, Collapse, Space, Tag, Typography } from 'antd';
 import {
@@ -8,8 +8,6 @@ import {
   StopOutlined,
 } from '@ant-design/icons';
 import type { ReactNode } from 'react';
-import ReactMarkdown from 'react-markdown';
-import rehypeHighlight from 'rehype-highlight';
 import { getAgentColor } from '../theme/tokens';
 import type { ReplyView } from '../state/types';
 
@@ -41,7 +39,7 @@ export default function ReplyBubble({ reply, agentLabel }: ReplyBubbleProps) {
   const badge = stateBadge(reply.state);
   const title = agentLabel || reply.agent;
 
-  // streaming 时在结尾追加一个软光标提示用户文本还在长
+  // 内容渲染: 失败显示错误 / 无内容显示提示 / 正常输出 HTML
   const renderContent = () => {
     if (reply.state === 'failed') {
       return (
@@ -61,10 +59,11 @@ export default function ReplyBubble({ reply, agentLabel }: ReplyBubbleProps) {
       );
     }
     return (
-      <div className="reply-markdown" style={{ lineHeight: 1.7, fontSize: 14 }}>
-        <ReactMarkdown rehypePlugins={[rehypeHighlight]}>
-          {reply.content}
-        </ReactMarkdown>
+      <div style={{ lineHeight: 1.7, fontSize: 14 }}>
+        <div
+          className="reply-html"
+          dangerouslySetInnerHTML={{ __html: reply.content }}
+        />
         {reply.state === 'streaming' && (
           <span
             style={{
@@ -142,7 +141,6 @@ export default function ReplyBubble({ reply, agentLabel }: ReplyBubbleProps) {
           />
         )}
       </Card>
-      {/* keyframes 一次性注入 用 inline style 写到根 head 里太重 这里靠全局 css 兜底 */}
       <style>{`@keyframes reply-cursor-blink { 0%,49% { opacity: 1; } 50%,100% { opacity: 0; } }`}</style>
     </div>
   );

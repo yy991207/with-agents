@@ -153,11 +153,8 @@ async def web_search(query: str, max_results: int = 5) -> str:
 
 
 def get_shared_tools() -> list[Any]:
-    """返回供 reply 阶段 deep_agent 挂载的共享 tool 列表
-
-    首版只暴露 3 个最常用的 IO 类 tool 后续可按需追加
-    """
-    return [current_time, http_get, web_search]
+    """返回供 reply 阶段 deep_agent 挂载的共享 tool 列表"""
+    return [current_time, http_get]
 
 
 async def load_mcp_tools_from_db(storage: Any) -> tuple[list[Any], list[str]]:

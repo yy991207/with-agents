@@ -83,11 +83,6 @@ export default function DecisionCard({
         >
           重新 think
         </Button>
-        {onCancel && (
-          <Button danger disabled={disabled} onClick={onCancel}>
-            取消
-          </Button>
-        )}
       </Space>
     </Card>
   );

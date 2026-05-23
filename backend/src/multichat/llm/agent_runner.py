@@ -44,7 +44,7 @@ async def run_think(
     deep_agent = registry.get(agent_name, "think")
     messages = _build_messages(history, user_message)
     state = await asyncio.wait_for(
-        deep_agent.ainvoke({"messages": messages}),
+        deep_agent.ainvoke({"messages": messages}, config={"recursion_limit": 1000}),
         timeout=timeout_s,
     )
     text = _extract_final_ai_text(state)
@@ -72,7 +72,11 @@ async def run_reply(
 
     async def _stream() -> None:
         # deepagents 0.6.x astream_events v2 协议 字段细节见 verify_deepagents.py
-        async for ev in deep_agent.astream_events({"messages": messages}, version="v2"):
+        async for ev in deep_agent.astream_events(
+            {"messages": messages},
+            version="v2",
+            config={"recursion_limit": 1000},
+        ):
             event_type = ev.get("event")
             if event_type == "on_chat_model_stream":
                 chunk = ev.get("data", {}).get("chunk")

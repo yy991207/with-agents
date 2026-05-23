@@ -26,12 +26,31 @@ const { Sider, Content, Header } = Layout;
 
 export default function App() {
   const { send, stop, decideChoice, cancelAgent, retryAgent } = useChatTask();
-  const { dispatch, registerSSEController } = useChat();
+  const { state, dispatch, registerSSEController } = useChat();
   // 配置抽屉的开关入口由 useSettings 暴露
   const { openDrawer } = useSettings();
 
   // StrictMode 下 useEffect 会跑两次,用 ref 守住只跑一次的"启动恢复"
   const bootstrappedRef = useRef(false);
+  // 滚动容器 ref 用于自动滚到底部
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // 自动滚到底部: 新 round 追加 / reply 流式增长 / 切换会话时触发
+  const scrollToBottom = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  };
+
+  // 流式回复时 content 持续变化 每次 rounds 刷新都滚到底
+  useEffect(() => {
+    scrollToBottom();
+  }, [state.rounds]);
+
+  // 切换会话时滚到底（rounds.set 不单独触发 靠 sessionId 变化驱动）
+  useEffect(() => {
+    scrollToBottom();
+  }, [state.sessionId]);
 
   // 首次 mount:读取 localStorage,尝试恢复 session + 重连 SSE
   useEffect(() => {
@@ -158,7 +177,7 @@ export default function App() {
             </Button>
           </Tooltip>
         </Header>
-        <Content style={{ overflowY: 'auto' }}>
+        <Content style={{ overflowY: 'auto' }} ref={scrollRef}>
           <Timeline
             onChoose={handleChoose}
             onRetryThink={handleRetry}

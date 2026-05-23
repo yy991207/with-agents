@@ -209,6 +209,34 @@ class TaskManager:
                 await self._do_reply(task_id, mention, user_message, history, hub)
                 return
 
+            # 只有一个 agent 时跳过 think+决策 直通 reply
+            agent_names = list(self._registry.names())
+            if len(agent_names) == 1:
+                solo = agent_names[0]
+                await self._mark_thinks_skipped(task_id)
+                await self._storage.update_round_field(
+                    task_id,
+                    "decision",
+                    {
+                        "choice": solo,
+                        "reason": "solo_agent",
+                        "decided_at": _now_iso(),
+                    },
+                )
+                await self._set_state(task_id, TaskState.DECIDED)
+                await hub.publish(
+                    TaskEvent(
+                        type="task.state",
+                        data={
+                            "state": "DECIDED",
+                            "agent": solo,
+                            "reason": "solo_agent",
+                        },
+                    )
+                )
+                await self._do_reply(task_id, solo, user_message, history, hub)
+                return
+
             # 正常 think 阶段
             await self._set_state(task_id, TaskState.THINKING)
             await hub.publish(

@@ -3,14 +3,16 @@
 import { useState } from 'react';
 import { Modal, Space, Tag, Typography } from 'antd';
 import { getAgentColor } from '../theme/tokens';
+import type { AgentLabelMap } from '../state/agentLabels';
 import type { RoundView } from '../state/types';
 import ThinkPanel from './ThinkPanel';
 
 export interface ThinkCardChipProps {
   round: RoundView;
+  agentLabels?: AgentLabelMap;
 }
 
-export default function ThinkCardChip({ round }: ThinkCardChipProps) {
+export default function ThinkCardChip({ round, agentLabels }: ThinkCardChipProps) {
   const [open, setOpen] = useState(false);
 
   const agents = Object.keys(round.thinks);
@@ -76,7 +78,7 @@ export default function ThinkCardChip({ round }: ThinkCardChipProps) {
         footer={null}
         width={960}
       >
-        <ThinkPanel round={round} />
+        <ThinkPanel round={round} agentLabels={agentLabels} />
       </Modal>
     </>
   );

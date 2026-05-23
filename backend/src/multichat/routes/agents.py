@@ -22,6 +22,7 @@ POST   /api/agents/{name}/revert   回滚到指定历史版本
 from __future__ import annotations
 
 import structlog
+import httpx
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
@@ -72,15 +73,19 @@ class AgentsListResponse(BaseModel):
 
 
 class CreateAgentRequest(BaseModel):
-    """POST /api/agents 请求体  name 由后端自动生成"""
+    """POST /api/agents 请求体  name 由后端自动生成
+
+    传 copy_key_from 时复用已有 agent 的 key，api_key 可以省略。
+    """
 
     display_name: str = Field(min_length=1, max_length=64)
     base_url: str = Field(min_length=8)
-    api_key: str = Field(min_length=4)
+    api_key: str | None = Field(default=None, min_length=4)
     model: str = Field(min_length=1)
     prompt: str = Field(min_length=5)
     available_models: list[ModelView] = Field(default_factory=list)
     provider_type: str = "openai_compatible"
+    copy_key_from: str | None = None
 
 
 class UpdateAgentRequest(BaseModel):
@@ -108,6 +113,36 @@ class UpdateJudgeRequest(BaseModel):
     """PUT /api/judge 请求体 target 必须是已知 agent 内部 name"""
 
     target: str
+
+
+class DiscoverModelsRequest(BaseModel):
+    """POST /api/models/discover 请求体
+
+    base_url 使用 OpenAI 兼容接口根路径 如 https://api.openai.com/v1。
+    后端会统一拼接 /models 并用 api_key 作为 Bearer Token 请求。
+    """
+
+    base_url: str = Field(min_length=8)
+    api_key: str = Field(min_length=4)
+    provider_type: str = "openai_compatible"
+
+
+class DiscoverAgentModelsRequest(BaseModel):
+    """POST /api/agents/{name}/models/discover 请求体
+
+    编辑已有 agent 时前端拿不到明文 api_key，所以 api_key 可不传。
+    未传时后端使用数据库里保存的 key，只做模型发现，不直接保存配置。
+    """
+
+    base_url: str | None = Field(default=None, min_length=8)
+    api_key: str | None = Field(default=None, min_length=4)
+    provider_type: str | None = None
+
+
+class DiscoverModelsResponse(BaseModel):
+    """模型发现响应 前端直接用于 Select options 与 agent.available_models"""
+
+    models: list[ModelView]
 
 
 class AgentHistoryItem(BaseModel):
@@ -160,6 +195,77 @@ def _models_payload(models: list[ModelView] | None) -> list[ModelCatalogEntry] |
     return [ModelCatalogEntry(model_id=m.model_id, label=m.label) for m in models]
 
 
+def _models_url(base_url: str) -> str:
+    """按 OpenAI 兼容协议把 base_url 规范化为 models 接口地址"""
+    return f"{base_url.strip().rstrip('/')}/models"
+
+
+def _parse_models_payload(payload: object) -> list[ModelView]:
+    """解析 OpenAI 兼容 /models 返回体 只保留可展示的模型 id
+
+    通用协议里模型列表在 data 数组中 每项使用 id 字段。这里不依赖具体厂商字段，
+    避免把某个服务商的私有返回结构写死到业务代码里。
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("models response must be a JSON object")
+    data = payload.get("data")
+    if not isinstance(data, list):
+        raise ValueError("models response missing data list")
+
+    models: list[ModelView] = []
+    seen: set[str] = set()
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        model_id = item.get("id")
+        if not isinstance(model_id, str):
+            continue
+        model_id = model_id.strip()
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        models.append(ModelView(model_id=model_id, label=model_id))
+    return models
+
+
+async def _discover_openai_compatible_models(
+    *, base_url: str, api_key: str, provider_type: str
+) -> list[ModelView]:
+    """调用 OpenAI 兼容 /models 接口并做统一错误映射"""
+    if provider_type != "openai_compatible":
+        raise HTTPException(400, "only openai_compatible provider is supported")
+
+    url = _models_url(base_url)
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url, headers=headers)
+        resp.raise_for_status()
+        models = _parse_models_payload(resp.json())
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        if status in {401, 403}:
+            detail = "API Key 无效或没有模型列表权限"
+        elif status == 404:
+            detail = "模型列表接口不存在 请确认 Base URL 是否为 OpenAI 兼容根路径"
+        elif status == 429:
+            detail = "模型列表请求被限流 请稍后再试"
+        else:
+            detail = f"模型列表请求失败 provider 返回 {status}"
+        raise HTTPException(400, detail) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(400, f"模型列表请求失败 请检查 Base URL: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(400, f"模型列表响应格式不正确: {exc}") from exc
+
+    if not models:
+        raise HTTPException(400, "未获取到可用模型 请检查 Base URL 与 API Key")
+    return models
+
+
 @router.get("/agents", response_model=AgentsListResponse)
 async def list_agents(request: Request) -> AgentsListResponse:
     """列出全部 agent 配置与当前 judge 指针 给前端 SettingsDrawer 初始化用"""
@@ -176,20 +282,72 @@ async def list_agents(request: Request) -> AgentsListResponse:
     )
 
 
+@router.post("/models/discover", response_model=DiscoverModelsResponse)
+async def discover_models(body: DiscoverModelsRequest) -> DiscoverModelsResponse:
+    """按 OpenAI 兼容协议动态获取可用模型列表
+
+    这里由后端代理请求第三方 provider，避免前端直接把 api_key 暴露给浏览器跨域请求。
+    当前只支持 openai_compatible，后续如果要扩展其它协议再单独加 provider_type 分支。
+    """
+    models = await _discover_openai_compatible_models(
+        base_url=body.base_url,
+        api_key=body.api_key,
+        provider_type=body.provider_type,
+    )
+    return DiscoverModelsResponse(models=models)
+
+
+@router.post("/agents/{name}/models/discover", response_model=DiscoverModelsResponse)
+async def discover_agent_models(
+    name: str, body: DiscoverAgentModelsRequest, request: Request
+) -> DiscoverModelsResponse:
+    """用已有 agent 的凭证动态获取模型列表
+
+    如果前端刚改了 base_url 或 api_key，可在 body 中带上临时值；否则使用 DB 中当前值。
+    这个接口只读取模型，不修改 agent，避免“查询模型”动作隐式保存配置。
+    """
+    storage = request.app.state.storage
+    existing = await storage.get_agent(name)
+    if existing is None:
+        raise HTTPException(404, f"agent not found: {name}")
+
+    base_url = body.base_url or existing.base_url
+    api_key = body.api_key or existing.api_key
+    provider_type = body.provider_type or existing.provider_type
+    models = await _discover_openai_compatible_models(
+        base_url=base_url,
+        api_key=api_key,
+        provider_type=provider_type,
+    )
+    return DiscoverModelsResponse(models=models)
+
+
 @router.post("/agents", response_model=AgentView, status_code=201)
 async def create_agent(body: CreateAgentRequest, request: Request) -> AgentView:
     """新建 agent  name 由后端生成 形如 agent_<8位hex>  display_name 由用户决定
 
     新建即热注册 让后续对话立即可见
+    传 copy_key_from 时从已有 agent 复制 api_key
     """
     storage = request.app.state.storage
     registry = request.app.state.deep_agents
+
+    # 从已有 agent 复制 key
+    api_key = body.api_key
+    if body.copy_key_from:
+        existing = await storage.get_agent(body.copy_key_from)
+        if existing is None:
+            raise HTTPException(400, f"copy_key_from agent not found: {body.copy_key_from}")
+        api_key = existing.api_key
+    if not api_key:
+        raise HTTPException(400, "api_key is required when copy_key_from is not set")
+
     try:
         record = await storage.create_agent(
             name=None,
             display_name=body.display_name,
             base_url=body.base_url,
-            api_key=body.api_key,
+            api_key=api_key,
             model=body.model,
             prompt=body.prompt,
             available_models=_models_payload(body.available_models) or [],

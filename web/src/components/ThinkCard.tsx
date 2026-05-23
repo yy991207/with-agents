@@ -7,6 +7,7 @@ import type { ThinkView } from '../state/types';
 
 export interface ThinkCardProps {
   think: ThinkView;
+  agentLabel?: string;
   onRetry?: () => void;
   onPause?: () => void;
 }
@@ -29,14 +30,20 @@ function stateMeta(s: ThinkView['state']): { text: string; color: string } {
   }
 }
 
-export default function ThinkCard({ think, onRetry, onPause }: ThinkCardProps) {
+export default function ThinkCard({
+  think,
+  agentLabel,
+  onRetry,
+  onPause,
+}: ThinkCardProps) {
   const color = getAgentColor(think.agent);
   const meta = stateMeta(think.state);
+  const title = agentLabel || think.agent;
 
   return (
     <Card
       size="small"
-      title={<span style={{ color, fontWeight: 600 }}>{think.agent}</span>}
+      title={<span style={{ color, fontWeight: 600 }}>{title}</span>}
       style={{ borderTop: `3px solid ${color}`, height: '100%' }}
       extra={
         <Space size={6}>

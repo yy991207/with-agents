@@ -6,13 +6,13 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-
+.playwright-mcp/
 # Python 打包构建产物 pip install -e / setuptools 会生成
 build/
 dist/
 *.egg-info/
 *.egg
-
+doc/
 # Python 虚拟环境
 .venv/
 venv/

@@ -95,6 +95,17 @@ export interface ModelView {
   label: string;
 }
 
+// POST /api/models/discover 动态拉取 OpenAI 兼容 provider 的模型列表
+export interface DiscoverModelsRequest {
+  base_url: string;
+  api_key: string;
+  provider_type?: string;
+}
+
+export interface DiscoverModelsResponse {
+  models: ModelView[];
+}
+
 // 单个 agent 完整配置视图
 // 注意:GET 时 api_key 是 mask 形式 "sk-...xxxx" PUT 时不传或空字符串保留旧值
 export interface AgentView {
@@ -117,14 +128,16 @@ export interface AgentsListResponse {
 }
 
 // POST /api/agents 创建一个新 agent
+// 传 copy_key_from 时复用已有 agent 的 key，api_key 可以省略
 export interface CreateAgentRequest {
   display_name: string;        // 1-64 字符
   base_url: string;            // ≥8 字符
-  api_key: string;             // ≥4 字符 明文
+  api_key?: string;            // ≥4 字符；传 copy_key_from 时可省略
   model: string;               // ≥1 字符
   prompt: string;              // ≥5 字符
   available_models?: ModelView[];
   provider_type?: string;      // 默认 openai_compatible
+  copy_key_from?: string;      // 从已有 agent 复制 key，优先级高于 api_key
 }
 
 // PUT /api/agents/{name} 更新 agent
@@ -196,7 +209,7 @@ export type ChatAction =
   | { type: 'task.resume'; taskId: string; taskState?: TaskState }
   | { type: 'task.state'; state: TaskState }
   | { type: 'sse.status'; status: SSEStatus }
-  | { type: 'sse.event'; event: SSEEvent }
+  | { type: 'sse.event'; taskId?: string; event: SSEEvent }
   | { type: 'history.loaded'; sessionId: string; rounds: RoundView[] }
   // 配置抽屉相关 action
   | { type: 'settings.open' }

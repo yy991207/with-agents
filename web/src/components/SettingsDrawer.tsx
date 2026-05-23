@@ -2,30 +2,33 @@
 // 设计要点:
 // 1. 顶部说明区
 // 2. agent Tabs(editable-card 模式) 可加可删 至少保留 1 个
-// 3. 每个 tab 内一套完整 form 包括 displayName / baseUrl / apiKey / model / availableModels / prompt
+// 3. 每个 tab 内一套完整 form 包括 displayName / baseUrl / apiKey / model / prompt
 // 4. 底部 judge 选择 一行 Radio.Group
 import { useEffect, useMemo, useState } from 'react';
 import {
-  Alert,
   Button,
-  Divider,
   Drawer,
   Form,
   Input,
+  Menu,
   message,
   Modal,
   Radio,
   Select,
   Space,
   Spin,
-  Tabs,
   Tag,
   Typography,
 } from 'antd';
 import {
-  DeleteOutlined,
+  ReloadOutlined,
   PlusOutlined,
+  DeleteOutlined,
 } from '@ant-design/icons';
+import {
+  discoverAgentModels,
+  discoverModels,
+} from '../api/http';
 import { useSettings } from '../hooks/useSettings';
 import { getAgentColor } from '../theme/tokens';
 import type {
@@ -36,65 +39,111 @@ import type {
 
 const { Paragraph, Text } = Typography;
 
-// 仅前端使用的可用模型行 带稳定 key 用于 Form.List 风格渲染
-interface ModelDraftRow extends ModelView {
-  _key: string;
-}
-
-function makeRow(model_id = '', label = ''): ModelDraftRow {
-  const k = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-  return { _key: k, model_id, label };
-}
-
 // ====== 新建 agent Modal ======
 interface CreateAgentModalProps {
   open: boolean;
   onCancel: () => void;
   onSubmit: (body: CreateAgentRequest) => Promise<boolean>;
+  // 从已有 agent 草稿中预填的字段，新建时复用 baseUrl / model / prompt 等
+  initialBaseUrl?: string;
+  initialApiKeyMask?: string;
+  initialAgentName?: string;
+  initialModel?: string;
+  initialAvailableModels?: ModelView[];
+  initialPrompt?: string;
 }
 
-function CreateAgentModal({ open, onCancel, onSubmit }: CreateAgentModalProps) {
+function CreateAgentModal({
+  open,
+  onCancel,
+  onSubmit,
+  initialBaseUrl,
+  initialApiKeyMask,
+  initialAgentName,
+  initialModel,
+  initialAvailableModels,
+  initialPrompt,
+}: CreateAgentModalProps) {
   const [displayName, setDisplayName] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState('');
   const [prompt, setPrompt] = useState('');
-  const [models, setModels] = useState<ModelDraftRow[]>([makeRow()]);
+  const [availableModels, setAvailableModels] = useState<ModelView[]>([]);
+  const [discovering, setDiscovering] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  // open 切换时重置表单
+  // open 切换时重置表单，并从已有 agent 草稿中预填字段
   useEffect(() => {
     if (!open) return;
     setDisplayName('');
-    setBaseUrl('');
-    setApiKey('');
-    setModel('');
-    setPrompt('');
-    setModels([makeRow()]);
+    setBaseUrl(initialBaseUrl ?? '');
+    setApiKey(initialApiKeyMask ?? '');
+    setModel(initialModel ?? '');
+    setPrompt(initialPrompt ?? '');
+    setAvailableModels(initialAvailableModels ?? []);
+    setDiscovering(false);
     setSubmitting(false);
-  }, [open]);
+  }, [open, initialBaseUrl, initialApiKeyMask, initialModel, initialAvailableModels, initialPrompt]);
 
-  const addRow = () => setModels((prev) => [...prev, makeRow()]);
-  const removeRow = (key: string) =>
-    setModels((prev) => prev.filter((r) => r._key !== key));
-  const updateRow = (key: string, field: 'model_id' | 'label', value: string) =>
-    setModels((prev) =>
-      prev.map((r) => (r._key === key ? { ...r, [field]: value } : r)),
-    );
+  const modelOptions = useMemo(
+    () =>
+      availableModels.map((m) => ({
+        label: `${m.label}（${m.model_id}）`,
+        value: m.model_id,
+      })),
+    [availableModels],
+  );
+
+  // 从已有 agent 复制 key 时不需要校验 apiKey
+  const hasCopyKey = Boolean(initialAgentName);
 
   const validate = (): string | null => {
     const n = displayName.trim();
     if (n.length < 1 || n.length > 64) return '显示名长度需为 1-64 字符';
     if (baseUrl.trim().length < 8) return 'Base URL 至少 8 个字符';
-    if (apiKey.trim().length < 4) return 'API Key 至少 4 个字符';
+    if (!hasCopyKey && apiKey.trim().length < 4) return 'API Key 至少 4 个字符';
+    if (availableModels.length < 1) return '请先获取可用模型列表';
     if (model.trim().length < 1) return '当前模型不能为空';
     if (prompt.trim().length < 5) return 'System Prompt 至少 5 个字';
-    for (const r of models) {
-      if (r.model_id.trim() || r.label.trim()) {
-        if (!r.model_id.trim()) return '可用模型行的 model_id 不能为空';
-      }
-    }
     return null;
+  };
+
+  const handleDiscover = async () => {
+    if (baseUrl.trim().length < 8) {
+      message.warning('Base URL 至少 8 个字符');
+      return;
+    }
+    setDiscovering(true);
+    try {
+      let models: ModelView[];
+      if (initialAgentName) {
+        // 预填了 mask key，走后端 /agents/{name}/models/discover 用真实 key 拉模型
+        const resp = await discoverAgentModels(initialAgentName, {
+          base_url: baseUrl.trim(),
+          provider_type: 'openai_compatible',
+        });
+        models = resp.models;
+      } else {
+        const resp = await discoverModels({
+          base_url: baseUrl.trim(),
+          api_key: apiKey,
+          provider_type: 'openai_compatible',
+        });
+        models = resp.models;
+      }
+      setAvailableModels(models);
+      setModel((cur) =>
+        models.some((m) => m.model_id === cur)
+          ? cur
+          : models[0]?.model_id ?? '',
+      );
+      message.success(`已获取 ${models.length} 个可用模型`);
+    } catch (e) {
+      message.error(`获取模型失败:${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setDiscovering(false);
+    }
   };
 
   const handleOk = async () => {
@@ -104,20 +153,18 @@ function CreateAgentModal({ open, onCancel, onSubmit }: CreateAgentModalProps) {
       return;
     }
     setSubmitting(true);
-    const cleanedModels: ModelView[] = models
-      .filter((r) => r.model_id.trim())
-      .map((r) => ({
-        model_id: r.model_id.trim(),
-        label: r.label.trim() || r.model_id.trim(),
-      }));
     const body: CreateAgentRequest = {
       display_name: displayName.trim(),
       base_url: baseUrl.trim(),
-      api_key: apiKey,
       model: model.trim(),
       prompt,
-      available_models: cleanedModels,
+      available_models: availableModels,
     };
+    if (initialAgentName) {
+      body.copy_key_from = initialAgentName;
+    } else {
+      body.api_key = apiKey;
+    }
     const ok = await onSubmit(body);
     setSubmitting(false);
     if (ok) onCancel();
@@ -156,7 +203,11 @@ function CreateAgentModal({ open, onCancel, onSubmit }: CreateAgentModalProps) {
           <Input
             value={baseUrl}
             placeholder="https://api.openai.com/v1"
-            onChange={(e) => setBaseUrl(e.target.value)}
+            onChange={(e) => {
+              setBaseUrl(e.target.value);
+              setAvailableModels([]);
+              setModel('');
+            }}
             allowClear
           />
         </Form.Item>
@@ -164,17 +215,35 @@ function CreateAgentModal({ open, onCancel, onSubmit }: CreateAgentModalProps) {
           <Input.Password
             value={apiKey}
             placeholder="sk-xxxxxxxx"
-            onChange={(e) => setApiKey(e.target.value)}
+            onChange={(e) => {
+              setApiKey(e.target.value);
+              setAvailableModels([]);
+              setModel('');
+            }}
             autoComplete="new-password"
           />
         </Form.Item>
         <Form.Item label="当前模型" required>
-          <Input
-            value={model}
-            placeholder="如 gpt-4o"
-            onChange={(e) => setModel(e.target.value)}
-            allowClear
-          />
+          <Space.Compact style={{ width: '100%' }}>
+            <Select
+              style={{ width: '100%' }}
+              value={model || undefined}
+              placeholder="先获取模型列表 再选择"
+              showSearch
+              optionFilterProp="label"
+              options={modelOptions}
+              onChange={(v) => setModel(String(v))}
+              disabled={modelOptions.length === 0}
+              notFoundContent="暂无模型 请先获取"
+            />
+            <Button
+              icon={<ReloadOutlined />}
+              loading={discovering}
+              onClick={handleDiscover}
+            >
+              获取模型
+            </Button>
+          </Space.Compact>
         </Form.Item>
         <Form.Item label="System Prompt" required>
           <Input.TextArea
@@ -183,35 +252,6 @@ function CreateAgentModal({ open, onCancel, onSubmit }: CreateAgentModalProps) {
             placeholder="该 agent 的系统提示词 至少 5 个字"
             onChange={(e) => setPrompt(e.target.value)}
           />
-        </Form.Item>
-        <Form.Item label="可用模型(可选)" style={{ marginBottom: 0 }}>
-          <Space direction="vertical" style={{ width: '100%' }}>
-            {models.map((row) => (
-              <Space.Compact key={row._key} style={{ width: '100%' }}>
-                <Input
-                  style={{ width: '40%' }}
-                  placeholder="model_id 如 gpt-4o"
-                  value={row.model_id}
-                  onChange={(e) => updateRow(row._key, 'model_id', e.target.value)}
-                />
-                <Input
-                  style={{ width: '50%' }}
-                  placeholder="label 如 GPT-4o"
-                  value={row.label}
-                  onChange={(e) => updateRow(row._key, 'label', e.target.value)}
-                />
-                <Button
-                  danger
-                  icon={<DeleteOutlined />}
-                  onClick={() => removeRow(row._key)}
-                  disabled={models.length <= 1}
-                />
-              </Space.Compact>
-            ))}
-            <Button type="dashed" icon={<PlusOutlined />} onClick={addRow} block>
-              添加模型
-            </Button>
-          </Space>
         </Form.Item>
       </Form>
     </Modal>
@@ -234,60 +274,7 @@ function AgentForm({
   onSave,
   onReset,
 }: AgentFormProps) {
-  // 当前 model 是否在 availableModels 内 否则默认进自定义
-  const modelIsKnown = useMemo(
-    () => draft.availableModels.some((m) => m.model_id === draft.model),
-    [draft.availableModels, draft.model],
-  );
-  const [customMode, setCustomMode] = useState<boolean>(
-    !modelIsKnown && Boolean(draft.model),
-  );
-
-  // 可用模型本地行视图 用稳定 key 避免抖动
-  const [rows, setRows] = useState<ModelDraftRow[]>(() =>
-    draft.availableModels.length > 0
-      ? draft.availableModels.map((m) => makeRow(m.model_id, m.label))
-      : [makeRow()],
-  );
-
-  // draft 切换 agent 或外部 reset 时同步 rows
-  useEffect(() => {
-    setRows(
-      draft.availableModels.length > 0
-        ? draft.availableModels.map((m) => makeRow(m.model_id, m.label))
-        : [makeRow()],
-    );
-    // 同步 customMode 仅在 draft.model 变更时矫正
-    setCustomMode(
-      !draft.availableModels.some((m) => m.model_id === draft.model) &&
-        Boolean(draft.model),
-    );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft.name, draft.version]);
-
-  // 把 rows 变更同步到 draft
-  const flushRowsToDraft = (next: ModelDraftRow[]) => {
-    setRows(next);
-    const cleaned: ModelView[] = next
-      .filter((r) => r.model_id.trim())
-      .map((r) => ({
-        model_id: r.model_id.trim(),
-        label: r.label.trim() || r.model_id.trim(),
-      }));
-    onPatch({ availableModels: cleaned });
-  };
-
-  const addRow = () => flushRowsToDraft([...rows, makeRow()]);
-  const removeRow = (key: string) =>
-    flushRowsToDraft(rows.filter((r) => r._key !== key));
-  const updateRowField = (
-    key: string,
-    field: 'model_id' | 'label',
-    value: string,
-  ) =>
-    flushRowsToDraft(
-      rows.map((r) => (r._key === key ? { ...r, [field]: value } : r)),
-    );
+  const [discovering, setDiscovering] = useState(false);
 
   const modelOptions = useMemo(
     () =>
@@ -299,6 +286,34 @@ function AgentForm({
   );
 
   const headerColor = getAgentColor(draft.name);
+
+  const handleDiscover = async () => {
+    if (draft.baseUrl.trim().length < 8) {
+      message.warning('Base URL 至少 8 个字符');
+      return;
+    }
+    if (draft.apiKeyDirty && draft.apiKey.length < 4) {
+      message.warning('API Key 至少 4 个字符');
+      return;
+    }
+    setDiscovering(true);
+    try {
+      const resp = await discoverAgentModels(draft.name, {
+        base_url: draft.baseUrl.trim(),
+        api_key: draft.apiKeyDirty ? draft.apiKey : undefined,
+        provider_type: draft.providerType || 'openai_compatible',
+      });
+      const nextModel = resp.models.some((m) => m.model_id === draft.model)
+        ? draft.model
+        : resp.models[0]?.model_id ?? '';
+      onPatch({ availableModels: resp.models, model: nextModel });
+      message.success(`已获取 ${resp.models.length} 个可用模型`);
+    } catch (e) {
+      message.error(`获取模型失败:${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setDiscovering(false);
+    }
+  };
 
   return (
     <Form layout="vertical" disabled={saving}>
@@ -334,7 +349,9 @@ function AgentForm({
         <Input
           value={draft.baseUrl}
           placeholder="https://api.openai.com/v1"
-          onChange={(e) => onPatch({ baseUrl: e.target.value })}
+          onChange={(e) =>
+            onPatch({ baseUrl: e.target.value })
+          }
           allowClear
         />
       </Form.Item>
@@ -344,92 +361,42 @@ function AgentForm({
         help={
           draft.apiKeyDirty
             ? '将在保存时覆盖原 Key'
-            : `留空保留原 Key 当前:${draft.apiKeyMask || '(无)'}`
+            : draft.apiKeyMask
+              ? '输入新 Key 以覆盖当前密钥'
+              : '请设置 API Key'
         }
       >
         <Input.Password
           value={draft.apiKey}
-          placeholder={`留空保留 当前:${draft.apiKeyMask || '(无)'}`}
-          onChange={(e) => onPatch({ apiKey: e.target.value })}
+          placeholder={draft.apiKeyMask ? '输入新 Key 以覆盖' : 'sk-xxxxxxxx'}
+          onChange={(e) =>
+            onPatch({ apiKey: e.target.value })
+          }
           autoComplete="new-password"
         />
       </Form.Item>
 
       <Form.Item label="当前模型" required>
-        {customMode ? (
-          <Space.Compact style={{ width: '100%' }}>
-            <Input
-              style={{ width: '100%' }}
-              value={draft.model}
-              placeholder="自定义 model_id 如 deepseek-v4-pro"
-              onChange={(e) => onPatch({ model: e.target.value })}
-              allowClear
-            />
-            <Button
-              onClick={() => {
-                if (modelOptions.length > 0 && !modelIsKnown) {
-                  onPatch({ model: String(modelOptions[0].value) });
-                }
-                setCustomMode(false);
-              }}
-              disabled={modelOptions.length === 0}
-            >
-              选择
-            </Button>
-          </Space.Compact>
-        ) : (
-          <Space.Compact style={{ width: '100%' }}>
-            <Select
-              style={{ width: '100%' }}
-              value={draft.model || undefined}
-              placeholder="选择模型"
-              showSearch
-              optionFilterProp="label"
-              options={modelOptions}
-              onChange={(v) => onPatch({ model: String(v) })}
-              notFoundContent={
-                modelOptions.length === 0
-                  ? '当前 agent 暂无候选模型 请点自定义'
-                  : undefined
-              }
-            />
-            <Button onClick={() => setCustomMode(true)}>自定义</Button>
-          </Space.Compact>
-        )}
-      </Form.Item>
-
-      <Form.Item label="可用模型列表">
-        <Space direction="vertical" style={{ width: '100%' }}>
-          {rows.map((row) => (
-            <Space.Compact key={row._key} style={{ width: '100%' }}>
-              <Input
-                style={{ width: '40%' }}
-                placeholder="model_id"
-                value={row.model_id}
-                onChange={(e) =>
-                  updateRowField(row._key, 'model_id', e.target.value)
-                }
-              />
-              <Input
-                style={{ width: '50%' }}
-                placeholder="label"
-                value={row.label}
-                onChange={(e) =>
-                  updateRowField(row._key, 'label', e.target.value)
-                }
-              />
-              <Button
-                danger
-                icon={<DeleteOutlined />}
-                onClick={() => removeRow(row._key)}
-                disabled={rows.length <= 1}
-              />
-            </Space.Compact>
-          ))}
-          <Button type="dashed" icon={<PlusOutlined />} onClick={addRow} block>
-            添加模型
+        <Space.Compact style={{ width: '100%' }}>
+          <Select
+            style={{ width: '100%' }}
+            value={draft.model || undefined}
+            placeholder="选择模型"
+            showSearch
+            optionFilterProp="label"
+            options={modelOptions}
+            onChange={(v) => onPatch({ model: String(v) })}
+            disabled={modelOptions.length === 0}
+            notFoundContent="暂无模型 请刷新列表"
+          />
+          <Button
+            icon={<ReloadOutlined />}
+            loading={discovering}
+            onClick={handleDiscover}
+          >
+            刷新模型
           </Button>
-        </Space>
+        </Space.Compact>
       </Form.Item>
 
       <Form.Item label="System Prompt" required>
@@ -470,140 +437,147 @@ export default function SettingsDrawer() {
 
   // 新增 Modal 开关
   const [createOpen, setCreateOpen] = useState(false);
+  // 左侧类目：agents | judge
+  const [settingsCategory, setSettingsCategory] = useState('agents');
 
-  const items = useMemo(() => {
-    const list = Object.values(drafts);
-    return list.map((draft) => ({
-      key: draft.name,
-      label: (
-        <span style={{ color: getAgentColor(draft.name), fontWeight: 600 }}>
-          {draft.displayName || draft.name}
-        </span>
-      ),
-      // 至少保留 1 个 不让全删光
-      closable: list.length > 1,
-      children: (
-        <AgentForm
-          draft={draft}
-          saving={saving}
-          onPatch={(patch) => setDraftField(draft.name, patch)}
-          onSave={() => save(draft.name)}
-          onReset={() => reset(draft.name)}
-        />
-      ),
-    }));
-  }, [drafts, saving, setDraftField, save, reset]);
+  // 从当前选中 agent 的草稿中取预填值，新建弹窗打开时复用
+  const activeDraft = activeAgentName ? drafts[activeAgentName] : null;
+  const initialCreate = useMemo(() => {
+    if (!activeDraft) return {};
+    return {
+      initialBaseUrl: activeDraft.baseUrl,
+      initialApiKeyMask: activeDraft.apiKeyMask,
+      initialAgentName: activeDraft.name,
+      initialModel: activeDraft.model,
+      initialAvailableModels: activeDraft.availableModels,
+      initialPrompt: activeDraft.prompt,
+    };
+  }, [activeDraft?.baseUrl, activeDraft?.apiKeyMask, activeDraft?.name, activeDraft?.model, activeDraft?.availableModels, activeDraft?.prompt]);
 
-  // editable-card 删除 tab 时走 Popconfirm 二次确认
-  // antd Tabs onEdit 不直接支持 Popconfirm 这里只在用户按 X 时弹 Modal.confirm
-  const handleTabEdit: React.ComponentProps<typeof Tabs>['onEdit'] = (
-    targetKey,
-    action,
-  ) => {
-    if (action === 'add') {
-      setCreateOpen(true);
-      return;
-    }
-    if (action === 'remove' && typeof targetKey === 'string') {
-      const draft = drafts[targetKey];
-      const label = draft?.displayName || targetKey;
-      Modal.confirm({
-        title: `确认删除数字员工 ${label}`,
-        content: '该操作不可恢复 请确保没有进行中的对话依赖此 agent',
-        okText: '删除',
-        okButtonProps: { danger: true },
-        cancelText: '取消',
-        onOk: async () => {
-          await removeAgent(targetKey);
-        },
-      });
-    }
-  };
-
+  // 新增 agent 的回调
   const handleCreate = async (body: CreateAgentRequest): Promise<boolean> => {
     return await createAgent(body);
   };
 
   return (
     <Drawer
-      title="数字员工管理"
+      title="设置"
       placement="right"
       width={760}
       open={open}
       onClose={closeDrawer}
       destroyOnClose={false}
     >
-      <Alert
-        type="info"
-        showIcon
-        message="管理你的数字员工 自由命名 各自独立配置"
-        description="每个 tab 是一个独立 agent 拥有自己的提供商/Key/模型/Prompt 数量可加可减 至少保留 1 个"
-        style={{ marginBottom: 16 }}
-      />
-
       <Spin spinning={loading} tip="加载配置中…">
-        {items.length > 0 ? (
-          <Tabs
-            type="editable-card"
-            activeKey={activeAgentName ?? undefined}
-            onChange={(key) => switchTab(key)}
-            onEdit={handleTabEdit}
-            items={items}
-            addIcon={<PlusOutlined />}
-          />
-        ) : (
-          !loading && (
-            <div
-              style={{
-                padding: 24,
-                textAlign: 'center',
-                background: '#fafafa',
-                borderRadius: 8,
-              }}
-            >
-              <Paragraph type="secondary">暂无数字员工 点下方按钮新建一个</Paragraph>
-              <Button
-                type="primary"
-                icon={<PlusOutlined />}
-                onClick={() => setCreateOpen(true)}
-              >
-                新增数字员工
-              </Button>
-            </div>
-          )
-        )}
+        <div style={{ display: 'flex', gap: 16, height: '100%' }}>
+          {/* 左侧类目菜单 */}
+          <div style={{ width: 140, flexShrink: 0 }}>
+            <Menu
+              mode="inline"
+              selectedKeys={[settingsCategory]}
+              onClick={({ key }) => setSettingsCategory(key)}
+              items={[
+                { key: 'agents', label: '数字员工配置' },
+                { key: 'judge', label: 'Judge 选择' },
+              ]}
+              style={{ border: 'none', background: 'transparent' }}
+            />
+          </div>
 
-        <Divider style={{ margin: '12px 0 16px' }} />
+          {/* 右侧详情面板 */}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            {settingsCategory === 'agents' && (
+              <>
+                {Object.keys(drafts).length > 0 ? (
+                  <>
+                    <div style={{ display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center' }}>
+                      <Select
+                        style={{ flex: 1 }}
+                        value={activeAgentName ?? undefined}
+                        onChange={(key) => switchTab(key)}
+                        options={Object.values(drafts).map((d) => ({
+                          value: d.name,
+                          label: (
+                            <span style={{ color: getAgentColor(d.name), fontWeight: 600 }}>
+                              {d.displayName || d.name}
+                            </span>
+                          ),
+                        }))}
+                      />
+                      <Button icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+                        新增
+                      </Button>
+                      {Object.keys(drafts).length > 1 && activeAgentName && (
+                        <Button
+                          danger
+                          icon={<DeleteOutlined />}
+                          onClick={() => {
+                            const draft = drafts[activeAgentName];
+                            const label = draft?.displayName || activeAgentName;
+                            Modal.confirm({
+                              title: `确认删除数字员工 ${label}`,
+                              content: '该操作不可恢复 请确保没有进行中的对话依赖此 agent',
+                              okText: '删除',
+                              okButtonProps: { danger: true },
+                              cancelText: '取消',
+                              onOk: async () => { await removeAgent(activeAgentName); },
+                            });
+                          }}
+                        >
+                          删除
+                        </Button>
+                      )}
+                    </div>
+                    {activeAgentName && drafts[activeAgentName] && (
+                      <AgentForm
+                        draft={drafts[activeAgentName]}
+                        saving={saving}
+                        onPatch={(patch) => setDraftField(activeAgentName, patch)}
+                        onSave={() => save(activeAgentName)}
+                        onReset={() => reset(activeAgentName)}
+                      />
+                    )}
+                  </>
+                ) : (
+                  <div style={{ padding: 24, textAlign: 'center', background: '#fafafa', borderRadius: 8 }}>
+                    <Paragraph type="secondary">暂无数字员工 点下方按钮新建一个</Paragraph>
+                    <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+                      新增数字员工
+                    </Button>
+                  </div>
+                )}
+              </>
+            )}
 
-        <div>
-          <Text strong>Judge 选择</Text>
-          <Paragraph type="secondary" style={{ marginTop: 4 }}>
-            选中即生效 由该 agent 负责自动决策
-          </Paragraph>
-          {Object.values(drafts).length === 0 ? (
-            <Text type="secondary">暂无候选</Text>
-          ) : (
-            <Radio.Group
-              value={judgeTarget ?? undefined}
-              onChange={(e) => setJudge(String(e.target.value))}
-              disabled={saving || loading}
-            >
-              <Space wrap>
-                {Object.values(drafts).map((d) => (
-                  <Radio key={d.name} value={d.name}>
-                    <span
-                      style={{
-                        color: getAgentColor(d.name),
-                        fontWeight: 600,
-                      }}
-                    >
-                      {d.displayName || d.name}
-                    </span>
-                  </Radio>
-                ))}
-              </Space>
-            </Radio.Group>
-          )}
+            {settingsCategory === 'judge' && (
+              <div>
+                <Text strong style={{ fontSize: 16 }}>Judge 选择</Text>
+                <Paragraph type="secondary" style={{ marginTop: 4 }}>
+                  选中即生效 由该 agent 负责自动决策
+                </Paragraph>
+                {Object.values(drafts).length === 0 ? (
+                  <Text type="secondary">暂无候选</Text>
+                ) : (
+                  <Radio.Group
+                    value={judgeTarget ?? undefined}
+                    onChange={(e) => setJudge(String(e.target.value))}
+                    disabled={saving || loading}
+                    style={{ marginTop: 12 }}
+                  >
+                    <Space direction="vertical">
+                      {Object.values(drafts).map((d) => (
+                        <Radio key={d.name} value={d.name}>
+                          <span style={{ color: getAgentColor(d.name), fontWeight: 600 }}>
+                            {d.displayName || d.name}
+                          </span>
+                        </Radio>
+                      ))}
+                    </Space>
+                  </Radio.Group>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </Spin>
 
@@ -611,6 +585,7 @@ export default function SettingsDrawer() {
         open={createOpen}
         onCancel={() => setCreateOpen(false)}
         onSubmit={handleCreate}
+        {...initialCreate}
       />
     </Drawer>
   );

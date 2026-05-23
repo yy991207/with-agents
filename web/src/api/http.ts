@@ -5,6 +5,8 @@ import type {
   AgentView,
   AgentsListResponse,
   CreateAgentRequest,
+  DiscoverModelsRequest,
+  DiscoverModelsResponse,
   HistoryResponse,
   SessionMeta,
   UpdateAgentRequest,
@@ -130,11 +132,51 @@ export function deleteSession(sessionId: string): Promise<void> {
   });
 }
 
+export interface BatchDeleteResult {
+  deleted: number;
+  skipped: number;
+  errors: string[];
+}
+
+// POST /sessions/batch-delete 批量删除会话
+export function batchDeleteSessions(
+  sessionIds: string[],
+): Promise<BatchDeleteResult> {
+  return request<BatchDeleteResult>('/sessions/batch-delete', {
+    method: 'POST',
+    body: { session_ids: sessionIds },
+  });
+}
+
 // ====== 数字员工 agent 配置相关 API ======
 
 // GET /api/agents 拉取所有 agent 与 judge 指向
 export function getAgents(): Promise<AgentsListResponse> {
   return request<AgentsListResponse>('/api/agents');
+}
+
+// POST /api/models/discover 根据 Base URL + API Key 动态获取可用模型列表
+export function discoverModels(
+  body: DiscoverModelsRequest,
+): Promise<DiscoverModelsResponse> {
+  return request<DiscoverModelsResponse>('/api/models/discover', {
+    method: 'POST',
+    body,
+  });
+}
+
+// POST /api/agents/{name}/models/discover 使用已有 agent 保存的 Key 拉模型列表
+export function discoverAgentModels(
+  name: string,
+  body: Partial<DiscoverModelsRequest>,
+): Promise<DiscoverModelsResponse> {
+  return request<DiscoverModelsResponse>(
+    `/api/agents/${encodeURIComponent(name)}/models/discover`,
+    {
+      method: 'POST',
+      body,
+    },
+  );
 }
 
 // GET /api/agents/{name} 单个 agent

@@ -55,8 +55,9 @@ function viewToDraft(a: AgentView): AgentEditDraft {
     displayName: a.display_name || a.name,
     providerType: a.provider_type || 'openai_compatible',
     baseUrl: a.base_url,
-    // 编辑时显示空 让用户感知"留空保留旧" 占位说明会显示 mask
-    apiKey: '',
+    // 填回后端 mask 值（如 sk-...a43d），Input.Password 自动渲染成黑圆点。
+    // apiKeyDirty=false 保证保存时不发送 mask，不会覆盖真实 key。
+    apiKey: a.api_key || '',
     apiKeyDirty: false,
     apiKeyMask: a.api_key || '',
     model: a.model,
@@ -115,9 +116,15 @@ function updateThink(round: RoundView, agent: AgentName, patch: Partial<ThinkVie
   };
 }
 
-// 把单条 SSE 事件应用到当前活跃 round 上
-function applySSEEvent(state: ChatState, event: SSEEvent): ChatState {
-  const taskId = state.activeTaskId;
+// 把单条 SSE 事件应用到对应 round 上。
+// SharedWorker 会同时托管多个 task 的连接,所以必须优先使用事件来源 taskId,
+// 不能只依赖 activeTaskId,否则旧任务回放会被写到当前活跃轮次。
+function applySSEEvent(
+  state: ChatState,
+  event: SSEEvent,
+  sourceTaskId?: string,
+): ChatState {
+  const taskId = sourceTaskId ?? state.activeTaskId;
   if (!taskId) return state;
   const idx = state.rounds.findIndex((r) => r.taskId === taskId);
   if (idx < 0) return state;
@@ -286,7 +293,7 @@ function applySSEEvent(state: ChatState, event: SSEEvent): ChatState {
         const type = readString(ev, 'type');
         if (!type) continue;
         const inner = (ev['data'] as Record<string, unknown>) ?? {};
-        next = applySSEEvent(next, { type, data: inner });
+        next = applySSEEvent(next, { type, data: inner }, taskId);
       }
       return next;
     }
@@ -402,7 +409,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
     case 'sse.event':
       // 把 SSE 事件按 type 分发到 round 视图
-      return applySSEEvent(state, action.event);
+      return applySSEEvent(state, action.event, action.taskId);
 
     // ====== 配置抽屉相关 ======
     case 'settings.open':

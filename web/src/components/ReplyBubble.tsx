@@ -15,6 +15,7 @@ import type { ReplyView } from '../state/types';
 
 export interface ReplyBubbleProps {
   reply: ReplyView;
+  agentLabel?: string;
 }
 
 // reply 状态对应的图标 + 文案
@@ -35,9 +36,10 @@ function stateBadge(s: ReplyView['state']): { icon: ReactNode; text: string; col
   }
 }
 
-export default function ReplyBubble({ reply }: ReplyBubbleProps) {
+export default function ReplyBubble({ reply, agentLabel }: ReplyBubbleProps) {
   const color = getAgentColor(reply.agent);
   const badge = stateBadge(reply.state);
+  const title = agentLabel || reply.agent;
 
   // streaming 时在结尾追加一个软光标提示用户文本还在长
   const renderContent = () => {
@@ -119,7 +121,7 @@ export default function ReplyBubble({ reply }: ReplyBubbleProps) {
         size="small"
         title={
           <Space>
-            <span style={{ color, fontWeight: 600 }}>{reply.agent}</span>
+            <span style={{ color, fontWeight: 600 }}>{title}</span>
             <Tag color={badge.color}>
               <Space size={4}>
                 {badge.icon}

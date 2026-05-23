@@ -57,6 +57,7 @@ export function useChatTask() {
               : `连接异常 ${describeError(err)}`;
             dispatch({
               type: 'sse.event',
+              taskId: task_id,
               event: { type: 'task.unrecoverable', data: { reason } },
             });
           },

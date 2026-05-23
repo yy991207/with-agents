@@ -9,6 +9,7 @@ import ThinkCardChip from './ThinkCardChip';
 import DecisionCard from './DecisionCard';
 import ReplyBubble from './ReplyBubble';
 import { useChat } from '../state/ChatContext';
+import { agentLabelOf, buildAgentLabelMap } from '../state/agentLabels';
 import type { AgentName, RoundView } from '../state/types';
 
 // 是否当前活跃轮:仍然指向 activeTaskId 且未结束
@@ -31,6 +32,7 @@ export default function Timeline({
   onCancel,
 }: TimelineProps) {
   const { state } = useChat();
+  const agentLabels = buildAgentLabelMap(state.settings.drafts);
 
   return (
     <div style={{ padding: '16px 24px' }}>
@@ -77,6 +79,7 @@ export default function Timeline({
             {showThinkPanel ? (
               <ThinkPanel
                 round={round}
+                agentLabels={agentLabels}
                 onRetry={
                   onRetryThink
                     ? (agent) => onRetryThink(round.taskId, agent)
@@ -89,7 +92,7 @@ export default function Timeline({
                 }
               />
             ) : (
-              <ThinkCardChip round={round} />
+              <ThinkCardChip round={round} agentLabels={agentLabels} />
             )}
 
             {showDecision && onChoose && (
@@ -104,7 +107,12 @@ export default function Timeline({
               />
             )}
 
-            {showReply && round.reply && <ReplyBubble reply={round.reply} />}
+            {showReply && round.reply && (
+              <ReplyBubble
+                reply={round.reply}
+                agentLabel={agentLabelOf(agentLabels, round.reply.agent)}
+              />
+            )}
           </div>
         );
       })}

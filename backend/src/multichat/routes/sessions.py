@@ -6,13 +6,28 @@ DELETE /sessions/{session_id} 删除 session 与其下所有 rounds
     - 204 删除成功
     - 404 session 不存在
     - 409 session 下还有进行中 round 不允许删除
+
+POST /sessions/batch-delete 批量删除会话
+    请求体 { session_ids: string[] }
+    - 200 { deleted, skipped, errors[] } 逐条返回结果，不因单条失败而全回滚
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="", tags=["history"])
+
+
+class BatchDeleteRequest(BaseModel):
+    session_ids: list[str] = Field(min_length=1, max_length=200)
+
+
+class BatchDeleteResult(BaseModel):
+    deleted: int
+    skipped: int
+    errors: list[str]
 
 
 @router.get("/sessions")
@@ -42,3 +57,27 @@ async def delete_session(session_id: str, request: Request) -> None:
     except ValueError as e:
         # 进行中 round 阻塞删除 返回 409 让前端提示用户
         raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.post("/sessions/batch-delete", response_model=BatchDeleteResult)
+async def batch_delete_sessions(
+    body: BatchDeleteRequest,
+    request: Request,
+) -> BatchDeleteResult:
+    """批量删除会话 逐条执行，单条失败不阻塞其他条"""
+    storage = request.app.state.storage
+    deleted = 0
+    skipped = 0
+    errors: list[str] = []
+    for sid in body.session_ids:
+        try:
+            await storage.delete_session(sid)
+            deleted += 1
+        except KeyError:
+            # session 不存在，跳过
+            skipped += 1
+        except ValueError as e:
+            # 进行中的 round 阻塞删除
+            errors.append(f"{sid}: {e}")
+            skipped += 1
+    return BatchDeleteResult(deleted=deleted, skipped=skipped, errors=errors)

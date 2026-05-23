@@ -138,8 +138,33 @@ export function useSettings() {
           body.api_key = draft.apiKey;
         }
         const updated = await updateAgent(name, body);
-        dispatch({ type: 'settings.saved', agent: updated });
-        message.success(`已保存 当前版本 v${updated.version}`);
+        // PUT 返回 UpdateAgentResponse 只含 name/version/reloaded，
+        // 不含 base_url/api_key/model 等完整字段。
+        // 后端没有 GET /api/agents/{name} 接口，改用列表接口拿完整数据。
+        const list = await getAgents();
+        const full = (list.agents ?? []).find((a) => a.name === name);
+        if (full) {
+          dispatch({ type: 'settings.saved', agent: full });
+          message.success(`已保存 当前版本 v${full.version}`);
+        } else {
+          // 极小概率找不到，降级兜底：用 draft 现有值 + 新 version 更新
+          dispatch({
+            type: 'settings.saved',
+            agent: {
+              name: draft.name,
+              display_name: draft.displayName,
+              provider_type: draft.providerType,
+              base_url: draft.baseUrl,
+              api_key: draft.apiKeyMask,
+              model: draft.model,
+              available_models: draft.availableModels,
+              prompt: draft.prompt,
+              version: updated.version,
+              updated_at: new Date().toISOString(),
+            },
+          });
+          message.success(`已保存 当前版本 v${updated.version}`);
+        }
       } catch (e) {
         const status = parseHttpStatus(e);
         const msg = describeError(e);

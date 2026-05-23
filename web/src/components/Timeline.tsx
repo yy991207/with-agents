@@ -111,6 +111,11 @@ export default function Timeline({
               <ReplyBubble
                 reply={round.reply}
                 agentLabel={agentLabelOf(agentLabels, round.reply.agent)}
+                onRetry={
+                  onCancel
+                    ? () => onCancel(round.taskId)
+                    : undefined
+                }
               />
             )}
           </div>

@@ -148,6 +148,13 @@ export default function App() {
   const handleCancel = (_taskId: string) => {
     void stop();
   };
+  // 重新回答: 找取消/失败 round 的原始问题重新 send
+  const handleRetryReply = (taskId: string) => {
+    const round = state.rounds.find((r) => r.taskId === taskId);
+    if (round) {
+      void send(round.userMessage);
+    }
+  };
 
   return (
     <Layout style={{ height: '100vh' }}>
@@ -182,7 +189,7 @@ export default function App() {
             onChoose={handleChoose}
             onRetryThink={handleRetry}
             onPauseThink={handlePause}
-            onCancel={handleCancel}
+            onCancel={handleRetryReply}
           />
         </Content>
         <ChatInput onSend={send} onStop={stop} />

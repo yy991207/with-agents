@@ -37,7 +37,16 @@ export interface DecisionView {
   reason: string;
 }
 
-// reply 段中的工具调用事件:tool_call 与 tool_result 配对
+// 回复时间线中的一段: 文本或工具调用 按时间顺序排列
+export interface ReplySegment {
+  type: 'text' | 'tool_call' | 'tool_result';
+  content?: string;       // type=text 时的文本内容
+  tool?: string;          // type=tool_call/tool_result 时的工具名
+  input?: string;         // type=tool_call 时的入参
+  result?: string;        // type=tool_result 时的返回
+}
+
+// reply 段中的工具调用事件: 保留兼容旧数据
 export interface ToolCallEvent {
   tool: string;
   input?: string;
@@ -53,6 +62,7 @@ export interface ReplyView {
   state: ReplyState;
   content: string;
   toolCalls: ToolCallEvent[];
+  segments: ReplySegment[];   // 按时间顺序排列的文本+工具调用
   error?: string;
 }
 

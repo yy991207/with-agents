@@ -337,6 +337,8 @@ class TaskManager:
             _logger.info("task cancelled by user", task_id=task_id)
             try:
                 await self._set_state(task_id, TaskState.CANCELLED)
+                # 把 reply 也标为 cancelled 落库 防止刷新页面后回复显示"回答中"
+                await self._storage.update_round_field(task_id, "reply.state", "cancelled")
                 await hub.publish(
                     TaskEvent(
                         type="task.state",

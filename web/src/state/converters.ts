@@ -57,6 +57,7 @@ export function convertRound(raw: unknown): RoundView {
           'done',
         content: (replyRaw.content as string) ?? '',
         toolCalls: [],
+        segments: [],
         error: replyRaw.error as string | undefined,
       }
     : undefined;

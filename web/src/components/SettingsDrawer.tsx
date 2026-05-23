@@ -1,9 +1,6 @@
-// 配置抽屉:数字员工管理
-// 设计要点:
-// 1. 顶部说明区
-// 2. agent Tabs(editable-card 模式) 可加可删 至少保留 1 个
-// 3. 每个 tab 内一套完整 form 包括 displayName / baseUrl / apiKey / model / prompt
-// 4. 底部 judge 选择 一行 Radio.Group
+// 配置抽屉:数字员工管理 + MCP 服务器配置
+// 左侧菜单: 数字员工配置 | Judge 选择 | MCP 配置
+// 右侧面板: 根据选中类目切换内容
 import { useEffect, useMemo, useState } from 'react';
 import {
   Button,
@@ -36,6 +33,7 @@ import type {
   CreateAgentRequest,
   ModelView,
 } from '../state/types';
+import McpSettingsPanel from './McpSettingsPanel';
 
 const { Paragraph, Text } = Typography;
 
@@ -479,6 +477,7 @@ export default function SettingsDrawer() {
               items={[
                 { key: 'agents', label: '数字员工配置' },
                 { key: 'judge', label: 'Judge 选择' },
+                { key: 'mcp', label: 'MCP 配置' },
               ]}
               style={{ border: 'none', background: 'transparent' }}
             />
@@ -548,6 +547,8 @@ export default function SettingsDrawer() {
                 )}
               </>
             )}
+
+            {settingsCategory === 'mcp' && <McpSettingsPanel />}
 
             {settingsCategory === 'judge' && (
               <div>

@@ -158,3 +158,72 @@ def get_shared_tools() -> list[Any]:
     首版只暴露 3 个最常用的 IO 类 tool 后续可按需追加
     """
     return [current_time, http_get, web_search]
+
+
+async def load_mcp_tools_from_db(storage: Any) -> tuple[list[Any], list[str]]:
+    """从数据库 mcp_config 文档读取 MCP 配置并加载工具
+
+    返回 (工具列表, 已启用服务器名称列表)
+    工具列表为空时服务器列表也为空
+    """
+    import structlog
+    from langchain_mcp_adapters.client import MultiServerMCPClient
+    from langchain_mcp_adapters.sessions import StdioConnection
+
+    _mcp_logger = structlog.get_logger(__name__)
+
+    doc = await storage._db["settings"].find_one({"_id": "mcp_config"})
+    if doc is None:
+        return [], []
+    config = doc.get("config", {})
+    if not isinstance(config, dict):
+        return [], []
+    servers = config.get("mcpServers", {})
+    if not isinstance(servers, dict) or len(servers) == 0:
+        return [], []
+
+    connections: dict[str, StdioConnection] = {}
+    enabled_names: list[str] = []
+    for name, srv in servers.items():
+        if not isinstance(srv, dict):
+            continue
+        if srv.get("disabled"):
+            _mcp_logger.info("mcp 跳过已禁用的 server", name=name)
+            continue
+        transport = srv.get("transport", "stdio")
+        if transport != "stdio":
+            _mcp_logger.info("mcp 跳过非 stdio server", name=name, transport=transport)
+            continue
+
+        command = srv.get("command", "")
+        args = srv.get("args", [])
+        if not command or not isinstance(command, str):
+            _mcp_logger.warning("mcp server 缺少 command 跳过", name=name)
+            continue
+
+        conn: StdioConnection = {
+            "transport": "stdio",
+            "command": str(command),
+            "args": [str(a) for a in args] if isinstance(args, list) else [],
+        }
+        env = srv.get("env")
+        if isinstance(env, dict):
+            conn["env"] = {str(k): str(v) for k, v in env.items()}
+        connections[name] = conn
+        enabled_names.append(name)
+
+    if not connections:
+        return [], []
+
+    try:
+        client = MultiServerMCPClient(connections=connections)
+        all_tools = await client.get_tools()
+        _mcp_logger.info(
+            "mcp 工具加载完成",
+            server_count=len(connections),
+            tool_count=len(all_tools),
+        )
+        return list(all_tools), enabled_names
+    except Exception as e:
+        _mcp_logger.warning("mcp 工具加载失败", error=str(e))
+        return [], []

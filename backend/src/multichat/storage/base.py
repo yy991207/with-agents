@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
-from ..core.models import AgentRecord, ModelCatalogEntry, Round, Session, SessionMeta, TaskState
+from ..core.models import AgentRecord, McpServerConfig, ModelCatalogEntry, Round, Session, SessionMeta, TaskState
 
 
 @runtime_checkable
@@ -124,3 +124,16 @@ class MongoStorage(Protocol):
     async def set_judge_target(self, agent_name: str) -> None: ...
 
     async def seed_from_yaml(self, settings: Any) -> int: ...
+
+    # ------------------------------------------------------------- MCP Servers
+    async def list_mcp_servers(self) -> list[McpServerConfig]:
+        """列出所有 MCP 服务器配置 按 name 升序"""
+        ...
+
+    async def upsert_mcp_server(self, server: McpServerConfig) -> McpServerConfig:
+        """创建或全量覆盖单个 MCP 服务器配置 按 name 唯一"""
+        ...
+
+    async def delete_mcp_server(self, name: str) -> None:
+        """删除 MCP 服务器 不存在抛 KeyError"""
+        ...

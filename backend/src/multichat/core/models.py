@@ -9,6 +9,8 @@
     - AgentRecord: agents collection 中的一条记录 完整数字员工配置
         裁判选谁存放在独立的 settings collection judge_pointer 文档里 与本模型无关
     - ModelCatalogEntry: agent.available_models 列表中的一项 用户可在 agent 配置中维护
+    - McpServerConfig: MCP 服务器配置 支持 stdio / sse / streamable_http 三种传输
+        持久化在 mcp_servers 集合中 前后端共享配置结构
 """
 
 from __future__ import annotations
@@ -161,4 +163,46 @@ class AgentRecord(BaseModel):
     available_models: list[ModelCatalogEntry] = Field(default_factory=list)
     prompt: str
     version: int = 1
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+# ============================================================ MCP 服务器配置
+class McpServerConfig(BaseModel):
+    """单个 MCP 服务器的完整配置 持久化在 mcp_servers 集合中
+
+    传输方式 transport 决定必填字段:
+        - stdio: 必须填 command + args
+        - sse / streamable_http: 必须填 url
+
+    always_allow 是前端可配置的"无需审批直接允许"工具列表
+    disabled 控制该 server 是否参与工具加载
+    """
+
+    name: str
+    """服务器唯一标识 用户自定义 如 playwright / tencentcloud-sdk-mcp"""
+
+    transport: Literal["stdio", "sse", "streamable_http"] = "stdio"
+    """传输方式: 本地进程启动 / SSE 长连接 / Streamable HTTP"""
+
+    command: str | None = None
+    """stdio 模式: 可执行文件路径 如 npx / uvx / python"""
+
+    args: list[str] = Field(default_factory=list)
+    """stdio 模式: 命令行参数 如 ["-y", "@modelcontextprotocol/server-memory"]"""
+
+    env: dict[str, str] = Field(default_factory=dict)
+    """环境变量字典 所有传输模式均适用"""
+
+    url: str | None = None
+    """sse / streamable_http 模式: 服务器 URL"""
+
+    headers: dict[str, str] = Field(default_factory=dict)
+    """sse / streamable_http 模式: 请求头"""
+
+    always_allow: list[str] = Field(default_factory=list)
+    """无需审批直接允许的工具名称列表"""
+
+    disabled: bool = False
+    """是否禁用该 MCP 服务器 禁用后不参与工具加载"""
+
     updated_at: datetime = Field(default_factory=_utcnow)

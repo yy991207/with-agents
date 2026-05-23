@@ -236,3 +236,42 @@ export function isBusyState(state: TaskState | null | undefined): boolean {
     state === 'REPLYING'
   );
 }
+
+// ====== MCP 服务器配置相关类型 ======
+
+// MCP 传输方式
+export type McpTransport = 'stdio' | 'sse' | 'streamable_http';
+
+// 单个 MCP 服务器的完整配置视图 (对齐后端 McpServerView)
+export interface McpServerView {
+  name: string;
+  transport: McpTransport;
+  command: string | null;
+  args: string[];
+  env: Record<string, string>;
+  url: string | null;
+  headers: Record<string, string>;
+  always_allow: string[];
+  disabled: boolean;
+  updated_at: string;
+}
+
+// GET /api/mcp/servers 响应
+export interface McpServersListResponse {
+  servers: McpServerView[];
+}
+
+// 本地编辑稿 用于表单双向绑定
+export interface McpServerDraft {
+  name: string;
+  transport: McpTransport;
+  command: string;
+  argsText: string;       // 编辑用文本 逗号/换行分隔
+  envText: string;        // 编辑用文本 KEY=VALUE 每行一个
+  url: string;
+  headersText: string;    // 编辑用文本 KEY=VALUE 每行一个
+  alwaysAllowText: string;// 编辑用文本 逗号/换行分隔
+  disabled: boolean;
+  dirty: boolean;         // 是否有未保存改动
+  isNew: boolean;         // 是否是新创建的（还未保存到后端）
+}

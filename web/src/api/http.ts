@@ -220,3 +220,26 @@ export function updateJudge(target: string): Promise<void> {
     body: { target },
   });
 }
+
+// ====== MCP 配置相关 API (单文档 JSON) ======
+
+export interface McpConfigResponse {
+  config: Record<string, unknown>;
+}
+
+export interface McpConfigRequest {
+  config: Record<string, unknown>;
+}
+
+// GET /api/mcp/config 获取整份 MCP 配置 JSON
+export function getMcpConfig(): Promise<McpConfigResponse> {
+  return request<McpConfigResponse>('/api/mcp/config');
+}
+
+// PUT /api/mcp/config 全量覆盖 MCP 配置
+export function putMcpConfig(body: McpConfigRequest): Promise<McpConfigResponse> {
+  return request<McpConfigResponse>('/api/mcp/config', {
+    method: 'PUT',
+    body,
+  });
+}

@@ -24,6 +24,7 @@ from pymongo import ASCENDING, DESCENDING
 
 from ..core.models import (
     AgentRecord,
+    McpServerConfig,
     ModelCatalogEntry,
     Round,
     Session,
@@ -189,6 +190,11 @@ class MotorMongoStorage:
         await self._db["agent_history"].create_index(
             [("name", ASCENDING), ("version", DESCENDING)],
             name="idx_agent_history_name_version_desc",
+        )
+
+        # mcp_servers 集合 name 唯一
+        await self._db["mcp_servers"].create_index(
+            [("name", ASCENDING)], unique=True, name="uniq_mcp_server_name"
         )
 
     # ============================================================ Sessions CRUD
@@ -698,6 +704,35 @@ class MotorMongoStorage:
 
         _logger.info("迁移历史 agents 完成", migrated=migrated)
         return migrated
+
+    # ------------------------------------------------------------- MCP Servers
+    async def list_mcp_servers(self) -> list[McpServerConfig]:
+        """列出所有 MCP 服务器配置 按 name 升序"""
+        cursor = self._db["mcp_servers"].find({}, {"_id": 0}).sort("name", ASCENDING)
+        out: list[McpServerConfig] = []
+        async for doc in cursor:
+            out.append(McpServerConfig.model_validate(doc))
+        return out
+
+    async def upsert_mcp_server(self, server: McpServerConfig) -> McpServerConfig:
+        """创建或全量覆盖单个 MCP 服务器配置 name 唯一
+
+        全量覆盖意味着传过来的 McpServerConfig 就是最终存储态
+        前端已是完整表单提交 不需要局部 merge
+        """
+        now = _utcnow()
+        doc = server.model_dump(mode="json")
+        doc["updated_at"] = now
+        await self._db["mcp_servers"].replace_one(
+            {"name": server.name}, doc, upsert=True
+        )
+        return McpServerConfig.model_validate(doc)
+
+    async def delete_mcp_server(self, name: str) -> None:
+        """删除 MCP 服务器 不存在抛 KeyError"""
+        result = await self._db["mcp_servers"].delete_one({"name": name})
+        if result.deleted_count == 0:
+            raise KeyError(f"MCP server 不存在 name={name}")
 
     # --------------------------------------------------------------- Seed 注入
     async def seed_from_yaml(self, settings: Any) -> int:

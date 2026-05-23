@@ -29,6 +29,7 @@ from .routes.ask import router as ask_router
 from .routes.cancel import router as cancel_router
 from .routes.decide import router as decide_router
 from .routes.history import router as history_router
+from .routes.mcp import router as mcp_router
 from .routes.retry_think import router as retry_think_router
 from .routes.sessions import router as sessions_router
 from .routes.static_spa import mount_spa
@@ -50,7 +51,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 从 DB 加载已有 agents 启动 deep_agent 注册表
     # 任意数量 agent 都接受 含 0 条(纯空环境也允许启动 由前端先创建)
     records = await storage.list_agents()
-    registry = build_registry(settings)
+    registry = build_registry(settings, storage=storage)
     await registry.initialize(records)
 
     # H2 启动孤儿清理
@@ -125,6 +126,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
     app.include_router(stream_router)
     app.include_router(history_router)
     app.include_router(sessions_router)
+    app.include_router(mcp_router)
 
     # H5 生产模式静态资源
     # 必须在所有 include_router 之后调用 否则 / 会被 SPA fallback 拦截

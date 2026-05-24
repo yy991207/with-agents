@@ -244,6 +244,76 @@ export function putMcpConfig(body: McpConfigRequest): Promise<McpConfigResponse>
   });
 }
 
+// ====== MCP 服务器 CRUD API (表格管理模式) ======
+
+export interface McpServerItem {
+  name: string;
+  transport: string;
+  command: string | null;
+  args: string[];
+  env: Record<string, string>;
+  url: string | null;
+  headers: Record<string, string>;
+  always_allow: string[];
+  disabled: boolean;
+  updated_at: string;
+}
+
+export interface McpServersListResponse {
+  servers: McpServerItem[];
+}
+
+export interface McpServerUpdateRequest {
+  transport: string;
+  command: string | null;
+  args: string[];
+  env: Record<string, string>;
+  url: string | null;
+  headers: Record<string, string>;
+  always_allow: string[];
+  disabled: boolean;
+}
+
+export interface McpToggleRequest {
+  disabled: boolean;
+}
+
+// GET /api/mcp/servers 列出所有 MCP 服务器
+export function listMcpServers(): Promise<McpServersListResponse> {
+  return request<McpServersListResponse>('/api/mcp/servers');
+}
+
+// POST /api/mcp/servers 新增一个 MCP 服务器
+export function createMcpServer(body: McpServerItem): Promise<McpServerItem> {
+  return request<McpServerItem>('/api/mcp/servers', {
+    method: 'POST',
+    body,
+  });
+}
+
+// PUT /api/mcp/servers/{name} 修改单个 MCP 服务器
+export function updateMcpServer(name: string, body: McpServerUpdateRequest): Promise<McpServerItem> {
+  return request<McpServerItem>(`/api/mcp/servers/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    body,
+  });
+}
+
+// DELETE /api/mcp/servers/{name} 删除单个 MCP 服务器
+export function deleteMcpServer(name: string): Promise<void> {
+  return requestNoContent(`/api/mcp/servers/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  });
+}
+
+// PUT /api/mcp/servers/{name}/toggle 快捷启停开关
+export function toggleMcpServer(name: string, body: McpToggleRequest): Promise<McpServerItem> {
+  return request<McpServerItem>(`/api/mcp/servers/${encodeURIComponent(name)}/toggle`, {
+    method: 'PUT',
+    body,
+  });
+}
+
 // ====== Skills 配置相关 API ======
 
 export interface SkillItem {

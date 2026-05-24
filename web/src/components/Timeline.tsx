@@ -21,14 +21,12 @@ function isActive(round: RoundView, activeTaskId: string | null): boolean {
 export interface TimelineProps {
   onChoose?: (taskId: string, choice: AgentName | 'auto' | 'regenerate') => void;
   onRetryThink?: (taskId: string, agent: AgentName) => void;
-  onPauseThink?: (taskId: string, agent: AgentName) => void;
   onCancel?: (taskId: string) => void;
 }
 
 export default function Timeline({
   onChoose,
   onRetryThink,
-  onPauseThink,
   onCancel,
 }: TimelineProps) {
   const { state } = useChat();
@@ -83,11 +81,6 @@ export default function Timeline({
                 onRetry={
                   onRetryThink
                     ? (agent) => onRetryThink(round.taskId, agent)
-                    : undefined
-                }
-                onPause={
-                  onPauseThink
-                    ? (agent) => onPauseThink(round.taskId, agent)
                     : undefined
                 }
               />

@@ -9,7 +9,6 @@ export interface ThinkPanelProps {
   round: RoundView;
   agentLabels?: AgentLabelMap;
   onRetry?: (agent: AgentName) => void;
-  onPause?: (agent: AgentName) => void;
 }
 
 // 根据 agent 数量决定每张卡的栅格宽度
@@ -25,7 +24,6 @@ export default function ThinkPanel({
   round,
   agentLabels,
   onRetry,
-  onPause,
 }: ThinkPanelProps) {
   // 用 round.thinks 的 key 顺序保持稳定 后端塞进来什么顺序就什么顺序
   const agents = Object.keys(round.thinks);
@@ -39,7 +37,6 @@ export default function ThinkPanel({
             think={round.thinks[agent]}
             agentLabel={agentLabelOf(agentLabels, agent)}
             onRetry={onRetry ? () => onRetry(agent) : undefined}
-            onPause={onPause ? () => onPause(agent) : undefined}
           />
         </Col>
       ))}

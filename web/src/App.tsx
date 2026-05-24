@@ -25,7 +25,7 @@ import type { AgentName } from './state/types';
 const { Sider, Content, Header } = Layout;
 
 export default function App() {
-  const { send, stop, decideChoice, cancelAgent, retryAgent } = useChatTask();
+  const { send, stop, decideChoice, retryAgent } = useChatTask();
   const { state, dispatch, registerSSEController } = useChat();
   // 配置抽屉的开关入口由 useSettings 暴露
   const { openDrawer } = useSettings();
@@ -142,12 +142,6 @@ export default function App() {
   const handleRetry = (_taskId: string, agent: AgentName) => {
     void retryAgent(agent);
   };
-  const handlePause = (_taskId: string, agent: AgentName) => {
-    void cancelAgent(agent);
-  };
-  const handleCancel = (_taskId: string) => {
-    void stop();
-  };
   // 重新回答: 找取消/失败 round 的原始问题重新 send
   const handleRetryReply = (taskId: string) => {
     const round = state.rounds.find((r) => r.taskId === taskId);
@@ -188,7 +182,6 @@ export default function App() {
           <Timeline
             onChoose={handleChoose}
             onRetryThink={handleRetry}
-            onPauseThink={handlePause}
             onCancel={handleRetryReply}
           />
         </Content>

@@ -1,8 +1,11 @@
-// MCP 配置面板: 以 JSON 文本直接编辑 格式对齐 mcp_settings.json
+// MCP 配置面板: 提供两个子 Tab 切换
+//   Tab1「可视化管理」: McpManagePanel 表格增删改查
+//   Tab2「JSON 编辑」  : 直接编辑 JSON 文本 保留原有功能
 // 整体结构: {"mcpServers": {"name": {"command":"npx","args":[...],"env":{},"alwaysAllow":[...],"disabled":false}}}
 import { useEffect, useState, useCallback } from 'react';
-import { Button, Input, Space, Typography, message } from 'antd';
+import { Button, Input, Space, Tabs, Typography, message } from 'antd';
 import { getMcpConfig, putMcpConfig } from '../api/http';
+import McpManagePanel from './McpManagePanel';
 
 const { Title, Paragraph, Text } = Typography;
 const { TextArea } = Input;
@@ -27,7 +30,8 @@ const DEFAULT_JSON = `{
   }
 }`;
 
-export default function McpSettingsPanel() {
+// JSON 编辑子面板
+function JsonEditorPanel() {
   const [jsonText, setJsonText] = useState('');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -41,7 +45,6 @@ export default function McpSettingsPanel() {
       if (config && Object.keys(config).length > 0) {
         setJsonText(JSON.stringify(config, null, 2));
       } else {
-        // 新环境 提供默认模板
         setJsonText(DEFAULT_JSON.trim());
       }
       setUnsaved(false);
@@ -61,7 +64,6 @@ export default function McpSettingsPanel() {
   }, []);
 
   const handleSave = async () => {
-    // 先试解析 JSON 确保合法
     let parsed: Record<string, unknown>;
     try {
       parsed = JSON.parse(jsonText);
@@ -101,7 +103,7 @@ export default function McpSettingsPanel() {
   return (
     <div>
       <Title level={5} style={{ marginTop: 0 }}>
-        MCP 配置
+        JSON 编辑
       </Title>
       <Paragraph type="secondary">
         直接编辑 JSON 配置完成 MCP 服务器的增删改。格式参考 Roo Code 的
@@ -141,6 +143,35 @@ export default function McpSettingsPanel() {
           </Text>
         )}
       </Space>
+    </div>
+  );
+}
+
+export default function McpSettingsPanel() {
+  const [activeTab, setActiveTab] = useState('manage');
+
+  return (
+    <div>
+      <Title level={5} style={{ marginTop: 0 }}>
+        MCP 配置
+      </Title>
+
+      <Tabs
+        activeKey={activeTab}
+        onChange={setActiveTab}
+        items={[
+          {
+            key: 'manage',
+            label: '可视化管理',
+            children: <McpManagePanel />,
+          },
+          {
+            key: 'json',
+            label: 'JSON 编辑',
+            children: <JsonEditorPanel />,
+          },
+        ]}
+      />
     </div>
   );
 }

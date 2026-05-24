@@ -1,24 +1,47 @@
 """Skills 配置 API  安装/配置/启停 skill
 
-GET    /api/skills             返回所有 skill 列表
-POST   /api/skills             新增一个 skill（name 不可重复）
-POST   /api/skills/reload      重载所有 agent 使 skills 变更生效
-PUT    /api/skills/{name}       修改单个 skill
-DELETE /api/skills/{name}       删除单个 skill
-PUT    /api/skills/{name}/toggle  快捷启停开关
+GET    /api/skills                     返回所有 skill 列表
+POST   /api/skills                     新增一个 skill（name 不可重复）
+POST   /api/skills/reload              重载所有 agent 使 skills 变更生效
+GET    /api/skills/marketplace         浏览 Agent Skills Hub 市场中的可用 skill
+POST   /api/skills/marketplace/import  从市场一键导入 skill（按名称批量）
+GET    /api/skills/marketplace/{name}  预览市场中某个 skill 的完整内容
+PUT    /api/skills/{name}              修改单个 skill
+DELETE /api/skills/{name}              删除单个 skill
+PUT    /api/skills/{name}/toggle       快捷启停开关
 
 数据存储: settings 集合 skills_config 文档 skills 数组
 每次操作都是原子化的数组元素变更 不依赖全量覆盖
+
+市场数据来源: GitHub agent-skills-hub/agent-skills-hub 仓库 (790+ skills)
+GitHub API 无鉴权限速 60 次/小时 后端对目录列表做了内存缓存(5 分钟 TTL)
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+import base64
+import logging
+import time
+from typing import Optional
+
+import httpx
+import yaml
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
 
 _SKILLS_CONFIG_DOC_ID = "skills_config"
+
+# Agent Skills Hub GitHub 仓库信息
+_MARKET_REPO_OWNER = "agent-skills-hub"
+_MARKET_REPO_NAME = "agent-skills-hub"
+_MARKET_BRANCH = "main"
+_MARKET_SKILLS_DIR = "skills"
+_MARKET_RAW_BASE = f"https://raw.githubusercontent.com/{_MARKET_REPO_OWNER}/{_MARKET_REPO_NAME}/{_MARKET_BRANCH}/{_MARKET_SKILLS_DIR}"
+
+# 目录列表缓存 避免频繁调用 GitHub API
+_market_cache: Optional[dict] = None  # {"ts": float, "items": list[MarketSkillSummary]}
 
 
 class SkillItem(BaseModel):
@@ -48,6 +71,40 @@ class SkillsListResponse(BaseModel):
     """GET /api/skills 响应"""
 
     skills: list[SkillItem]
+
+
+class MarketSkillSummary(BaseModel):
+    """市场中单个 skill 的摘要信息 不包含完整 content"""
+
+    name: str
+    description: str = ""
+
+
+class MarketListResponse(BaseModel):
+    """GET /api/skills/marketplace 响应"""
+
+    skills: list[MarketSkillSummary]
+    total: int
+
+
+class MarketImportRequest(BaseModel):
+    """POST /api/skills/marketplace/import 请求体"""
+
+    names: list[str]  # 要导入的 skill 名称列表
+
+
+class MarketImportResult(BaseModel):
+    """单个 skill 的导入结果"""
+
+    name: str
+    status: str  # "ok" | "skipped"（重复）| "error"
+    message: str = ""
+
+
+class MarketImportResponse(BaseModel):
+    """POST /api/skills/marketplace/import 响应"""
+
+    results: list[MarketImportResult]
 
 
 def _skills_collection(storage):

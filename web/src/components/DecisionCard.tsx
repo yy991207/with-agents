@@ -22,7 +22,7 @@ export interface DecisionCardProps {
 export default function DecisionCard({
   agentCandidates,
   onChoose,
-  onCancel,
+  onCancel: _onCancel,
   availableAgents,
   judgePick,
   disabled,

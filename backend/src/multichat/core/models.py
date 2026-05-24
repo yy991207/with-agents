@@ -206,3 +206,35 @@ class McpServerConfig(BaseModel):
     """是否禁用该 MCP 服务器 禁用后不参与工具加载"""
 
     updated_at: datetime = Field(default_factory=_utcnow)
+
+
+# ============================================================ Skills 配置
+class SkillConfig(BaseModel):
+    """单个 Skill 的完整配置 持久化在 settings 集合 skills_config 文档中
+
+    Skill 是"可复用提示词片段" 每一个 skill 对应一个 SKILL.md 文件内容
+    前端编辑 JSON 配置完成 Skills 的安装/配置/启停
+
+    设计参考 Roo Code 的 SKILL.md 结构:
+        - name: skill 名称 对应 SKILL.md 中的 name frontmatter
+        - description: skill 简介 对应 SKILL.md 中的 description frontmatter
+        - content: SKILL.md 完整正文 包含所有指令与示例
+        - enabled: 控制是否注入到 agent 的 system prompt
+
+    被注入的 skill 内容会追加到 reply agent 的 system_prompt 尾部
+    让 agent 在执行任务时遵守 skill 定义的流程与规范
+    """
+
+    name: str
+    """skill 唯一标识 如 brainstorming / systematic-debugging"""
+
+    description: str = ""
+    """skill 的一句话描述 前端列表展示用"""
+
+    content: str
+    """SKILL.md 完整正文 包含 frontmatter 后的所有 Markdown 指令"""
+
+    enabled: bool = True
+    """false 表示禁用 该 skill 内容不注入 system prompt"""
+
+    updated_at: datetime = Field(default_factory=_utcnow)

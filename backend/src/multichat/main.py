@@ -127,6 +127,10 @@ def create_app(config_path: str | None = None) -> FastAPI:
     app.include_router(history_router)
     app.include_router(sessions_router)
     app.include_router(mcp_router)
+    # H8: skills 配置路由
+    from .routes.skills import router as skills_router  # noqa: E402
+
+    app.include_router(skills_router)
 
     # H5 生产模式静态资源
     # 必须在所有 include_router 之后调用 否则 / 会被 SPA fallback 拦截

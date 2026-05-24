@@ -243,3 +243,73 @@ export function putMcpConfig(body: McpConfigRequest): Promise<McpConfigResponse>
     body,
   });
 }
+
+// ====== Skills 配置相关 API ======
+
+export interface SkillItem {
+  name: string;
+  description: string;
+  content: string;
+  enabled: boolean;
+}
+
+export interface SkillsListResponse {
+  skills: SkillItem[];
+}
+
+export interface SkillUpdateRequest {
+  description: string;
+  content: string;
+  enabled: boolean;
+}
+
+export interface SkillToggleRequest {
+  enabled: boolean;
+}
+
+// GET /api/skills 列出所有 skill
+export function listSkills(): Promise<SkillsListResponse> {
+  return request<SkillsListResponse>('/api/skills');
+}
+
+// POST /api/skills 新增一个 skill
+export function createSkill(body: SkillItem): Promise<SkillItem> {
+  return request<SkillItem>('/api/skills', {
+    method: 'POST',
+    body,
+  });
+}
+
+// PUT /api/skills/{name} 修改单个 skill
+export function updateSkill(name: string, body: SkillUpdateRequest): Promise<SkillItem> {
+  return request<SkillItem>(`/api/skills/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    body,
+  });
+}
+
+// DELETE /api/skills/{name} 删除单个 skill
+export function deleteSkill(name: string): Promise<void> {
+  return requestNoContent(`/api/skills/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  });
+}
+
+// PUT /api/skills/{name}/toggle 快捷启停开关
+export function toggleSkill(name: string, body: SkillToggleRequest): Promise<SkillItem> {
+  return request<SkillItem>(`/api/skills/${encodeURIComponent(name)}/toggle`, {
+    method: 'PUT',
+    body,
+  });
+}
+
+// POST /api/skills/reload 重载所有 agent 使 skills 变更生效
+export interface SkillsReloadResponse {
+  reloaded: number;
+}
+
+export function reloadAgents(): Promise<SkillsReloadResponse> {
+  return request<SkillsReloadResponse>('/api/skills/reload', {
+    method: 'POST',
+  });
+}

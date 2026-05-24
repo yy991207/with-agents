@@ -285,3 +285,33 @@ export interface McpServerDraft {
   dirty: boolean;         // 是否有未保存改动
   isNew: boolean;         // 是否是新创建的（还未保存到后端）
 }
+
+// ====== Skills 配置相关类型 ======
+
+// 单个 skill 的配置视图 (对齐后端 SkillItem)
+export interface SkillView {
+  name: string;
+  description: string;
+  content: string;
+  enabled: boolean;
+}
+
+// GET /api/skills/config 响应
+export interface SkillsConfigResponse {
+  skills: SkillView[];
+}
+
+// PUT /api/skills/config 请求
+export interface SkillsConfigRequest {
+  skills: SkillView[];
+}
+
+// 本地编辑稿 一个 skill 的编辑状态
+export interface SkillEditDraft {
+  name: string;
+  description: string;
+  content: string;
+  enabled: boolean;
+  dirty: boolean;
+  isNew: boolean;
+}

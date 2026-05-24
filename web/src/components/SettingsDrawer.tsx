@@ -34,6 +34,7 @@ import type {
   ModelView,
 } from '../state/types';
 import McpSettingsPanel from './McpSettingsPanel';
+import SkillsPanel from './SkillsPanel';
 
 const { Paragraph, Text } = Typography;
 
@@ -478,6 +479,7 @@ export default function SettingsDrawer() {
                 { key: 'agents', label: '数字员工配置' },
                 { key: 'judge', label: 'Judge 选择' },
                 { key: 'mcp', label: 'MCP 配置' },
+                { key: 'skills', label: 'Skills 配置' },
               ]}
               style={{ border: 'none', background: 'transparent' }}
             />
@@ -547,8 +549,10 @@ export default function SettingsDrawer() {
                 )}
               </>
             )}
+{settingsCategory === 'mcp' && <McpSettingsPanel />}
 
-            {settingsCategory === 'mcp' && <McpSettingsPanel />}
+{settingsCategory === 'skills' && <SkillsPanel />}
+
 
             {settingsCategory === 'judge' && (
               <div>

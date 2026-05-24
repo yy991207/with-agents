@@ -100,8 +100,9 @@ async def _build_one(
     base_url + api_key 直接来自 agent_record  不再依赖外部 profile
     settings 仅提供 runtime.http_timeout_seconds 等运行时参数
 
-    reply 模式工具加载顺序: 先加载内置 3 个共享 tool 再加载 MCP 工具
-    若 storage 传入则从数据库读取 mcp_config 文档动态加载
+    reply 模式工具加载顺序: 先加载内置 2 个共享 tool 再加载 MCP 工具
+    再加载 skills 内容追加到 system_prompt
+    若 storage 传入则从数据库读取 mcp_config 和 skills_config 文档动态加载
     """
     suffix = THINK_SYSTEM_SUFFIX if kind == "think" else REPLY_SYSTEM_SUFFIX
     system_prompt = agent_record.prompt + suffix
@@ -117,12 +118,13 @@ async def _build_one(
     )
 
     # 挂工具策略
-    #   reply 模式 注入共享 tool(current_time/http_get/web_search) + MCP 工具
+    #   reply 模式 注入共享 tool(current_time/http_get) + MCP 工具
     #   think 模式 显式空 prompt 已禁止调工具 也不挂 tool 防 LLM 误判
     mcp_servers: list[str] = []
     mcp_tool_count = 0
+    skill_names: list[str] = []
     if kind == "reply":
-        from .tools import get_shared_tools, load_mcp_tools_from_db
+        from .tools import get_shared_tools, load_mcp_tools_from_db, load_skills_from_db
 
         tools = get_shared_tools()
         # MCP 工具加载 每个 server 失败独立容错 不阻塞 agent 初始化
@@ -131,6 +133,11 @@ async def _build_one(
             mcp_tool_count = len(mcp_tools)
             if mcp_tools:
                 tools = [*tools, *mcp_tools]
+
+            # Skills 内容加载 追加到 system_prompt 不产生 tool
+            skills_text, skill_names = await load_skills_from_db(storage)
+            if skills_text:
+                system_prompt += skills_text
     else:
         tools = []
 
@@ -223,6 +230,42 @@ class DeepAgentRegistry:
         if inst is None:
             raise KeyError(f"deep_agent not found: {key}")
         return inst
+
+    async def reload_all(self) -> int:
+        """重载所有已注册 agent 的实例 用于 skills 或 MCP 配置变更后生效
+
+        从 DB 重新读取 agents 配置 调用 _build_one 重新构建每个 agent 的 think+reply 实例
+        返回重载的 agent 数量
+        """
+        from ..storage.mongo import MotorMongoStorage
+
+        # 从 DB 重新拉取 agent 列表 确保用最新配置重建
+        if not isinstance(self._storage, MotorMongoStorage):
+            _logger.warning("storage 非 MotorMongoStorage 跳过 reload_all")
+            return 0
+
+        # 用 registry 已有的 names 对应 DB 中的 agent 记录重建
+        agent_names = self.names()
+        if not agent_names:
+            return 0
+
+        new_inst: dict[str, CompiledStateGraph] = {}
+        for name in agent_names:
+            record = await self._storage.get_agent(name)
+            if record is None:
+                _logger.warning("reload_all 找不到 agent 跳过", name=name)
+                continue
+            new_inst[f"{name}-think"] = await _build_one(
+                record, "think", self._settings, storage=self._storage
+            )
+            new_inst[f"{name}-reply"] = await _build_one(
+                record, "reply", self._settings, storage=self._storage
+            )
+
+        async with self._lock:
+            self._instances = new_inst
+        _logger.info("deep_agents 全部重载完成", count=len(new_inst))
+        return len(new_inst) // 2
 
     def names(self) -> list[str]:
         """返回所有已注册 agent 的名字 去重排序"""

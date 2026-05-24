@@ -224,3 +224,61 @@ async def load_mcp_tools_from_db(storage: Any) -> tuple[list[Any], list[str]]:
     except Exception as e:
         _mcp_logger.warning("mcp 工具加载失败", error=str(e))
         return [], []
+
+
+async def load_skills_from_db(storage: Any) -> tuple[str, list[str]]:
+    """从数据库 skills_config 文档读取已启用的 skills 并拼接成一段 system prompt 追加内容
+
+    与 MCP 工具加载不同 skills 不产生新的 tool 调用
+    而是把已启用 skill 的正文内容嵌入 system_prompt 让 agent 遵守 skill 定义的流程规范
+
+    返回 (拼接后的 system_prompt 文本, 已启用 skill 名称列表)
+    内容为空时返回 ("", [])
+    """
+    import structlog
+
+    _skill_logger = structlog.get_logger(__name__)
+
+    doc = await storage._db["settings"].find_one({"_id": "skills_config"})
+    if doc is None:
+        return "", []
+    skills = doc.get("skills", [])
+    if not isinstance(skills, list) or len(skills) == 0:
+        return "", []
+
+    enabled_parts: list[str] = []
+    enabled_names: list[str] = []
+    for s in skills:
+        if not isinstance(s, dict):
+            continue
+        if not s.get("enabled", True):
+            _skill_logger.info("skills 跳过已禁用的 skill", name=s.get("name", "?"))
+            continue
+        name = s.get("name", "")
+        content = s.get("content", "")
+        if not name or not content:
+            _skill_logger.warning("skills 缺少 name 或 content 跳过", name=name)
+            continue
+        # 每个 skill 内容用分隔线包裹 让 LLM 能明确知道这是个独立的能力模块
+        enabled_parts.append(
+            f"## Skill: {name}\n\n{content}\n"
+        )
+        enabled_names.append(name)
+
+    if not enabled_parts:
+        return "", []
+
+    # 追加到 system_prompt 的统一前缀说明
+    prefix = (
+        "\n\n---\n\n"
+        "## Skills（技能模块）\n\n"
+        "以下是你被配置的专属技能模块 每个 skills 定义了一套标准操作流程\n"
+        "遇到对应场景时必须遵守 skills 中的指令 优先级高于默认行为\n\n"
+    )
+    combined = prefix + "\n---\n\n".join(enabled_parts)
+    _skill_logger.info(
+        "skills 内容加载完成",
+        enabled_count=len(enabled_names),
+        names=enabled_names,
+    )
+    return combined, enabled_names

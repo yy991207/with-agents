@@ -1,20 +1,15 @@
 // 决策卡:让用户在动态 agent 列表 / auto / regenerate 之间选择
-// availableAgents 表示哪些 agent 的 think 成功 可被选 失败/取消的灰着不可点
-// agent 候选来源:优先 availableAgents 再退化到 round.thinks 的 keys
-import { Button, Card, Space, Tag } from 'antd';
+import { Button, Tag } from 'antd';
 import { ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { getAgentColor } from '../theme/tokens';
 import { useChat } from '../state/ChatContext';
 import type { AgentName } from '../state/types';
 
 export interface DecisionCardProps {
-  // 可用的 agent 候选(后端 think_done 时下发) 用于决定按钮排列与可点状态
   agentCandidates: AgentName[];
   onChoose: (choice: AgentName | 'auto' | 'regenerate') => void;
   onCancel?: () => void;
-  // 仅这些 agent 可点击 为空/未传则全部可点
   availableAgents?: AgentName[];
-  // 判官推荐(judge.done 后端给的)
   judgePick?: AgentName;
   disabled?: boolean;
 }
@@ -29,43 +24,56 @@ export default function DecisionCard({
 }: DecisionCardProps) {
   const { state } = useChat();
 
-  // 取 agent 的展示名:优先用 settings.drafts 里的 displayName 没有就退到 name
   const labelOf = (name: string): string => {
-    const d = state.settings.drafts[name];
-    return d?.displayName || name;
+    const draft = state.settings.drafts[name];
+    return draft?.displayName || name;
   };
 
-  // 没传 availableAgents 视为全部可点
-  const allow = (a: AgentName): boolean =>
-    !availableAgents || availableAgents.includes(a);
+  const allow = (agent: AgentName): boolean =>
+    !availableAgents || availableAgents.includes(agent);
 
   return (
-    <Card
-      size="small"
-      title="选一个 agent 来回答"
-      style={{ margin: '8px 0' }}
-      extra={
-        judgePick ? (
-          <Tag color={getAgentColor(judgePick)}>判官推荐 {labelOf(judgePick)}</Tag>
-        ) : null
-      }
+    <div
+      style={{
+        background: '#fff',
+        border: '1px solid #e5e7eb',
+        borderRadius: 18,
+        boxShadow: '0 10px 24px rgba(15, 23, 42, 0.05)',
+        padding: 16,
+      }}
     >
-      <Space wrap>
+      <div style={{ alignItems: 'center', display: 'flex', gap: 8, justifyContent: 'space-between', marginBottom: 12 }}>
+        <div>
+          <div style={{ color: 'rgba(15, 23, 42, 0.92)', fontSize: 15, fontWeight: 600, marginBottom: 4 }}>
+            选一个 agent 来回答
+          </div>
+          <div style={{ color: 'rgba(51, 65, 85, 0.68)', fontSize: 13 }}>
+            当前已经完成思考，你可以手动选择回答者，或者交给系统帮你决定。
+          </div>
+        </div>
+        {judgePick ? (
+          <Tag color={getAgentColor(judgePick)} style={{ borderRadius: 999, margin: 0 }}>
+            判官推荐 {labelOf(judgePick)}
+          </Tag>
+        ) : null}
+      </div>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
         {agentCandidates.map((agent) => {
-          const ok = allow(agent);
+          const enabled = allow(agent);
           const color = getAgentColor(agent);
           return (
             <Button
               key={agent}
-              disabled={disabled || !ok}
+              disabled={disabled || !enabled}
               onClick={() => onChoose(agent)}
+              shape="round"
               style={{
-                borderColor: ok ? color : undefined,
-                color: ok ? color : undefined,
+                borderColor: enabled ? color : undefined,
+                color: enabled ? color : undefined,
               }}
             >
               选 {labelOf(agent)}
-              {!ok && <Tag style={{ marginLeft: 6, marginRight: 0 }}>不可用</Tag>}
             </Button>
           );
         })}
@@ -73,6 +81,7 @@ export default function DecisionCard({
           icon={<ThunderboltOutlined />}
           disabled={disabled}
           onClick={() => onChoose('auto')}
+          shape="round"
         >
           帮我选
         </Button>
@@ -80,10 +89,11 @@ export default function DecisionCard({
           icon={<ReloadOutlined />}
           disabled={disabled}
           onClick={() => onChoose('regenerate')}
+          shape="round"
         >
-          重新 think
+          重新思考
         </Button>
-      </Space>
-    </Card>
+      </div>
+    </div>
   );
 }

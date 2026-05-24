@@ -2,12 +2,16 @@
 // H1 抗刷新启动:首次 mount 读 localStorage,拉历史 + 重连 SSE
 // 启动时加载 agent 列表填充 settings.drafts，保证 Timeline 渲染前 agentLabel 已有数据
 import { useEffect, useRef } from 'react';
-import { Button, Layout, Tooltip, message } from 'antd';
-import { SettingOutlined } from '@ant-design/icons';
-import SessionDrawer from './components/SessionDrawer';
+import { message } from 'antd';
 import SettingsDrawer from './components/SettingsDrawer';
 import Timeline from './components/Timeline';
 import ChatInput from './components/ChatInput';
+import LobeChatView from './components/lobehub/LobeChatView';
+import LobeHomeView from './components/lobehub/LobeHomeView';
+import LobePlaceholderView from './components/lobehub/LobePlaceholderView';
+import LobeSidebar from './components/lobehub/LobeSidebar';
+import LobeWorkbenchShell from './components/lobehub/LobeWorkbenchShell';
+import type { RecommendCardDefinition } from './components/lobehub/lobeData';
 import { useChatTask, isFatalSSEError } from './hooks/useChatTask';
 import { useSettings } from './hooks/useSettings';
 import { useChat } from './state/ChatContext';
@@ -20,9 +24,7 @@ import {
   loadPersisted,
   persistActiveTask,
 } from './state/persistence';
-import type { AgentName } from './state/types';
-
-const { Sider, Content, Header } = Layout;
+import type { AgentName, WorkbenchView } from './state/types';
 
 export default function App() {
   const { send, stop, decideChoice, retryAgent } = useChatTask();
@@ -150,44 +152,90 @@ export default function App() {
     }
   };
 
+  const activeAgentLabel = (() => {
+    const agentName = state.settings.activeAgentName ?? state.settings.judgeTarget;
+    if (!agentName) return 'Lobe AI';
+    const draft = state.settings.drafts[agentName];
+    return draft?.displayName || agentName;
+  })();
+
+  const handleNavigate = (view: WorkbenchView) => {
+    dispatch({ type: 'ui.view.set', view });
+  };
+
+  const handleRecommendAction = (card: RecommendCardDefinition) => {
+    if (card.action === 'send' && card.prompt) {
+      void send(card.prompt);
+      return;
+    }
+    if (card.action === 'settings') {
+      void openDrawer();
+      return;
+    }
+    if (card.action === 'view' && card.view) {
+      dispatch({ type: 'ui.view.set', view: card.view });
+    }
+  };
+
+  const inputNode = <ChatInput onSend={send} onStop={stop} />;
+
+  const timelineNode = (
+    <Timeline
+      onChoose={handleChoose}
+      onRetryThink={handleRetry}
+      onCancel={handleRetryReply}
+    />
+  );
+
+  const renderWorkbenchContent = () => {
+    if (state.workbench.activeView === 'home') {
+      return (
+        <LobeHomeView
+          agentLabel={activeAgentLabel}
+          input={inputNode}
+          recommendPage={state.workbench.recommendPage}
+          onAction={handleRecommendAction}
+          onOpenView={handleNavigate}
+          onRotateRecommendations={() => dispatch({ type: 'ui.recommend.rotate' })}
+        />
+      );
+    }
+
+    if (state.workbench.activeView === 'chat') {
+      return (
+        <LobeChatView
+          input={inputNode}
+          scrollRef={scrollRef}
+          timeline={timelineNode}
+        />
+      );
+    }
+
+    return (
+      <LobePlaceholderView
+        view={state.workbench.activeView}
+        onGoHome={() => handleNavigate('home')}
+        onOpenChat={() => handleNavigate('chat')}
+        onOpenSettings={() => {
+          void openDrawer();
+        }}
+      />
+    );
+  };
+
   return (
-    <Layout style={{ height: '100vh' }}>
-      <Sider width={260} theme="light" style={{ borderRight: '1px solid #e5e7eb' }}>
-        <SessionDrawer />
-      </Sider>
-      <Layout>
-        <Header
-          style={{
-            padding: '0 24px',
-            borderBottom: '1px solid #e5e7eb',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
+    <LobeWorkbenchShell
+      sidebar={
+        <LobeSidebar
+          onNavigate={handleNavigate}
+          onOpenSettings={() => {
+            void openDrawer();
           }}
-        >
-          <strong>Multi-LLM Chat</strong>
-          <Tooltip title="配置管理">
-            <Button
-              type="text"
-              icon={<SettingOutlined />}
-              onClick={() => {
-                void openDrawer();
-              }}
-            >
-              配置
-            </Button>
-          </Tooltip>
-        </Header>
-        <Content style={{ overflowY: 'auto' }} ref={scrollRef}>
-          <Timeline
-            onChoose={handleChoose}
-            onRetryThink={handleRetry}
-            onCancel={handleRetryReply}
-          />
-        </Content>
-        <ChatInput onSend={send} onStop={stop} />
-      </Layout>
+        />
+      }
+    >
+      {renderWorkbenchContent()}
       <SettingsDrawer />
-    </Layout>
+    </LobeWorkbenchShell>
   );
 }

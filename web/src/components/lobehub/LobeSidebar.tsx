@@ -1,0 +1,236 @@
+import { useMemo, useState } from 'react';
+import { message, Popconfirm } from 'antd';
+import { ActionIcon, Avatar, DraggablePanel, SearchBar } from '@lobehub/ui';
+import {
+  Bell,
+  Bot,
+  CircleHelp,
+  Ellipsis,
+  Hash,
+  PanelLeftClose,
+  Plus,
+  Trash2,
+} from 'lucide-react';
+import { Flexbox } from 'react-layout-kit';
+import { deleteSession } from '../../api/http';
+import { useSession } from '../../hooks/useSession';
+import { useSettings } from '../../hooks/useSettings';
+import { useChat } from '../../state/ChatContext';
+import type { WorkbenchView } from '../../state/types';
+import { FOOTER_NAV_ITEMS, PRIMARY_NAV_ITEMS } from './lobeData';
+import LobeNavItem from './LobeNavItem';
+import LobeSectionList from './LobeSectionList';
+
+export interface LobeSidebarProps {
+  onNavigate: (view: WorkbenchView) => void;
+  onOpenSettings: () => void | Promise<void>;
+}
+
+function describeError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+export default function LobeSidebar({ onNavigate, onOpenSettings }: LobeSidebarProps) {
+  const { state, dispatch } = useChat();
+  const { sessions, sessionId, switchSession, refreshSessions } = useSession();
+  const { switchTab } = useSettings();
+  const [keyword, setKeyword] = useState('');
+
+  const drafts = Object.values(state.settings.drafts);
+  const searchValue = keyword.trim().toLowerCase();
+
+  const filteredSessions = useMemo(() => {
+    if (!searchValue) return sessions;
+    return sessions.filter((session) =>
+      (session.title || '未命名').toLowerCase().includes(searchValue),
+    );
+  }, [searchValue, sessions]);
+
+  const filteredAgents = useMemo(() => {
+    if (!searchValue) return drafts;
+    return drafts.filter((draft) =>
+      (draft.displayName || draft.name).toLowerCase().includes(searchValue),
+    );
+  }, [drafts, searchValue]);
+
+  const handleDeleteSession = async (targetSessionId: string): Promise<void> => {
+    try {
+      await deleteSession(targetSessionId);
+      dispatch({ type: 'session.deleted', sessionId: targetSessionId });
+      await refreshSessions();
+      message.success('已删除该会话');
+    } catch (error) {
+      const detail = describeError(error);
+      if (detail.includes('409')) {
+        message.warning('该会话还有进行中的对话，请先取消或等其完成');
+      } else if (detail.includes('404')) {
+        dispatch({ type: 'session.deleted', sessionId: targetSessionId });
+        await refreshSessions();
+        message.info('该会话已不存在，已从列表中移除');
+      } else {
+        message.error(`删除会话失败：${detail}`);
+      }
+    }
+  };
+
+  const handleOpenAgent = (agentName: string): void => {
+    switchTab(agentName);
+    void onOpenSettings();
+  };
+
+  return (
+    <DraggablePanel
+      defaultSize={{ width: 320, height: '100%' }}
+      expandable={false}
+      headerHeight={0}
+      maxWidth={400}
+      minWidth={240}
+      mode="fixed"
+      placement="left"
+      showHandlerWhenUnexpand={false}
+      size={{ height: '100%' }}
+      style={{ background: 'var(--ant-color-bg-layout)', height: '100%' }}
+    >
+      <Flexbox gap={8} height={'100%'} style={{ overflow: 'hidden', padding: 8 }}>
+        <Flexbox gap={8}>
+          <Flexbox horizontal align="center" justify="space-between" gap={8} width={'100%'} padding={'0 2px'}>
+            <Flexbox horizontal align="center" gap={8} style={{ minWidth: 0, overflow: 'hidden' }}>
+              <Avatar
+                shape="square"
+                size={28}
+                icon={<Bot size={14} />}
+                style={{ background: 'rgba(15, 23, 42, 0.92)', color: '#fff' }}
+              />
+              <Flexbox horizontal align="center" gap={4} style={{ minWidth: 0, overflow: 'hidden' }}>
+                <div
+                  style={{
+                    color: 'rgba(15, 23, 42, 0.92)',
+                    flex: 1,
+                    fontSize: 14,
+                    fontWeight: 600,
+                    minWidth: 0,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  Multi Chat
+                </div>
+              </Flexbox>
+            </Flexbox>
+            <Flexbox horizontal gap={4}>
+              <ActionIcon icon={PanelLeftClose} title="收起侧栏" />
+              <ActionIcon icon={Bell} title="打开设置" onClick={() => void onOpenSettings()} />
+            </Flexbox>
+          </Flexbox>
+
+          <SearchBar
+            placeholder="搜索"
+            shortKey="k"
+            value={keyword}
+            onInputChange={setKeyword}
+          />
+
+          <Flexbox gap={2}>
+            {PRIMARY_NAV_ITEMS.map((item) => (
+              <LobeNavItem
+                key={item.key}
+                icon={item.icon}
+                label={item.label}
+                active={state.workbench.activeView === item.key}
+                onClick={() => onNavigate(item.key)}
+              />
+            ))}
+          </Flexbox>
+        </Flexbox>
+
+        <Flexbox flex={1} gap={8} style={{ minHeight: 0, overflowY: 'auto' }}>
+          <LobeSectionList
+            title="最近"
+            expanded={state.workbench.recentExpanded}
+            onToggle={() => dispatch({ type: 'ui.section.toggle', section: 'recent' })}
+          >
+            <Flexbox gap={2}>
+              {filteredSessions.map((session) => (
+                <LobeNavItem
+                  key={session.sessionId}
+                  icon={Hash}
+                  label={session.title || '未命名'}
+                  active={session.sessionId === sessionId}
+                  actions={
+                    <Popconfirm
+                      title="确认删除该会话"
+                      description="将一并删除所有对话内容，不可恢复"
+                      okText="删除"
+                      okButtonProps={{ danger: true }}
+                      cancelText="取消"
+                      onConfirm={() => {
+                        void handleDeleteSession(session.sessionId);
+                      }}
+                    >
+                      <ActionIcon icon={Trash2} title="删除会话" />
+                    </Popconfirm>
+                  }
+                  onClick={() => {
+                    void switchSession(session.sessionId);
+                    onNavigate('chat');
+                  }}
+                />
+              ))}
+              {filteredSessions.length === 0 ? (
+                <div style={{ color: 'rgba(71, 85, 105, 0.56)', fontSize: 12, padding: '4px 12px 8px' }}>
+                  暂无会话
+                </div>
+              ) : null}
+            </Flexbox>
+          </LobeSectionList>
+
+          <LobeSectionList
+            title="助理"
+            expanded={state.workbench.agentsExpanded}
+            actions={<ActionIcon icon={Plus} title="创建助理" onClick={() => void onOpenSettings()} />}
+            onToggle={() => dispatch({ type: 'ui.section.toggle', section: 'agents' })}
+          >
+            <Flexbox gap={2}>
+              {filteredAgents.map((draft) => (
+                <LobeNavItem
+                  key={draft.name}
+                  icon={Bot}
+                  label={draft.displayName || draft.name}
+                  onClick={() => handleOpenAgent(draft.name)}
+                  actions={<ActionIcon icon={Ellipsis} title="打开助理设置" onClick={() => handleOpenAgent(draft.name)} />}
+                />
+              ))}
+              <LobeNavItem
+                icon={Plus}
+                label="创建助理"
+                onClick={() => void onOpenSettings()}
+              />
+            </Flexbox>
+          </LobeSectionList>
+        </Flexbox>
+
+        <Flexbox gap={2}>
+          {FOOTER_NAV_ITEMS.map((item) => (
+            <LobeNavItem
+              key={item.key}
+              icon={item.icon}
+              label={item.label}
+              active={state.workbench.activeView === item.key}
+              onClick={() => onNavigate(item.key)}
+            />
+          ))}
+        </Flexbox>
+
+        <Flexbox horizontal align="center" gap={4}>
+          <ActionIcon
+            icon={CircleHelp}
+            title="帮助中心"
+            onClick={() => message.info('帮助中心占位中，当前可先在设置里管理 agent、MCP 和 Skills。')}
+          />
+        </Flexbox>
+      </Flexbox>
+    </DraggablePanel>
+  );
+}

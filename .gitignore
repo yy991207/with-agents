@@ -17,7 +17,7 @@ doc/
 .venv/
 venv/
 env/
-
+backend/tests/
 # 前端依赖与产物
 node_modules/
 web/dist/

@@ -1,6 +1,7 @@
 // 应用入口:挂载 React,注入 antd ConfigProvider 与 Chat Provider
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import { ThemeProvider } from 'antd-style';
 import { ConfigProvider } from 'antd';
 import 'antd/dist/reset.css';
 // 代码块高亮主题:在顶层 import 一次即可,所有 ReactMarkdown 实例共用
@@ -17,10 +18,16 @@ if (!rootEl) {
 
 ReactDOM.createRoot(rootEl).render(
   <React.StrictMode>
-    <ConfigProvider theme={themeConfig}>
-      <ChatProvider>
-        <App />
-      </ChatProvider>
-    </ConfigProvider>
+    <ThemeProvider
+      appearance="light"
+      themeMode="light"
+      theme={themeConfig}
+    >
+      <ConfigProvider theme={themeConfig}>
+        <ChatProvider>
+          <App />
+        </ChatProvider>
+      </ConfigProvider>
+    </ThemeProvider>
   </React.StrictMode>,
 );

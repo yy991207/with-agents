@@ -194,6 +194,24 @@ export interface SettingsState {
   activeAgentName: string | null;            // 当前选中 tab 对应的 agent.name
 }
 
+// 工作台页面壳状态：只控制当前看哪个页与侧栏展开，不参与业务任务流
+export type WorkbenchView =
+  | 'home'
+  | 'chat'
+  | 'tasks'
+  | 'page'
+  | 'image'
+  | 'community'
+  | 'resource';
+
+export interface WorkbenchState {
+  activeView: WorkbenchView;
+  sidebarCollapsed: boolean;
+  recentExpanded: boolean;
+  agentsExpanded: boolean;
+  recommendPage: number;
+}
+
 // 全局 Chat 状态
 export interface ChatState {
   sessionId: string | null;
@@ -203,6 +221,7 @@ export interface ChatState {
   taskState: TaskState;
   sseStatus: SSEStatus;
   settings: SettingsState;
+  workbench: WorkbenchState;
 }
 
 // reducer action 列表
@@ -221,6 +240,11 @@ export type ChatAction =
   | { type: 'sse.status'; status: SSEStatus }
   | { type: 'sse.event'; taskId?: string; event: SSEEvent }
   | { type: 'history.loaded'; sessionId: string; rounds: RoundView[] }
+  // 工作台 UI 壳层相关 action
+  | { type: 'ui.view.set'; view: WorkbenchView }
+  | { type: 'ui.sidebar.toggle'; collapsed?: boolean }
+  | { type: 'ui.section.toggle'; section: 'recent' | 'agents' }
+  | { type: 'ui.recommend.rotate' }
   // 配置抽屉相关 action
   | { type: 'settings.open' }
   | { type: 'settings.close' }

@@ -15,6 +15,7 @@ import type {
   ThinkState,
   ThinkView,
   ToolCallEvent,
+  WorkbenchState,
 } from './types';
 
 const initialSettings: SettingsState = {
@@ -26,6 +27,14 @@ const initialSettings: SettingsState = {
   activeAgentName: null,
 };
 
+const initialWorkbench: WorkbenchState = {
+  activeView: 'home',
+  sidebarCollapsed: false,
+  recentExpanded: true,
+  agentsExpanded: true,
+  recommendPage: 0,
+};
+
 export const initialState: ChatState = {
   sessionId: null,
   sessions: [],
@@ -34,6 +43,7 @@ export const initialState: ChatState = {
   taskState: 'PENDING',
   sseStatus: 'idle',
   settings: initialSettings,
+  workbench: initialWorkbench,
 };
 
 function patchRound(rounds: RoundView[], taskId: string, patch: Partial<RoundView>): RoundView[] {
@@ -269,17 +279,53 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
     case 'session.set': return { ...state, sessionId: action.sessionId };
     case 'session.switch':
-      return { ...state, sessionId: action.sessionId, rounds: [], activeTaskId: null, taskState: 'PENDING', sseStatus: 'idle' };
+      return {
+        ...state,
+        sessionId: action.sessionId,
+        rounds: [],
+        activeTaskId: null,
+        taskState: 'PENDING',
+        sseStatus: 'idle',
+        workbench: {
+          ...state.workbench,
+          activeView: action.sessionId ? 'chat' : 'home',
+        },
+      };
     case 'session.deleted': {
       const sessions = state.sessions.filter((s) => s.sessionId !== action.sessionId);
       if (state.sessionId === action.sessionId)
-        return { ...state, sessions, sessionId: null, rounds: [], activeTaskId: null, taskState: 'DONE', sseStatus: 'idle' };
+        return {
+          ...state,
+          sessions,
+          sessionId: null,
+          rounds: [],
+          activeTaskId: null,
+          taskState: 'DONE',
+          sseStatus: 'idle',
+          workbench: {
+            ...state.workbench,
+            activeView: 'home',
+          },
+        };
       return { ...state, sessions };
     }
     case 'sessions.set': return { ...state, sessions: action.sessions };
     case 'rounds.set': return { ...state, rounds: action.rounds };
     case 'history.loaded':
-      return { ...state, sessionId: action.sessionId, rounds: action.rounds, activeTaskId: null, taskState: 'DONE' };
+      return {
+        ...state,
+        sessionId: action.sessionId,
+        rounds: action.rounds,
+        activeTaskId: null,
+        taskState: 'DONE',
+        workbench: {
+          ...state.workbench,
+          activeView:
+            action.rounds.length > 0 || state.workbench.activeView === 'chat'
+              ? 'chat'
+              : 'home',
+        },
+      };
     case 'round.append': return { ...state, rounds: [...state.rounds, action.round] };
     case 'round.update':
       return { ...state, rounds: patchRound(state.rounds, action.taskId, action.patch) };
@@ -289,9 +335,16 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ? [{ sessionId: action.sessionId, title: action.userMessage.slice(0, 40) || '新会话', updatedAt: new Date().toISOString() }, ...state.sessions]
         : state.sessions;
       return {
-        ...state, sessionId: action.sessionId, activeTaskId: action.taskId, taskState: 'PENDING',
+        ...state,
+        sessionId: action.sessionId,
+        activeTaskId: action.taskId,
+        taskState: 'PENDING',
         rounds: [...state.rounds, createEmptyRound(action.taskId, action.userMessage, state.settings.drafts)],
         sessions: updatedSessions,
+        workbench: {
+          ...state.workbench,
+          activeView: 'chat',
+        },
       };
     }
     case 'task.resume': {
@@ -302,6 +355,46 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case 'task.state': return { ...state, taskState: action.state };
     case 'sse.status': return { ...state, sseStatus: action.status };
     case 'sse.event': return applySSEEvent(state, action.event, action.taskId);
+
+    case 'ui.view.set':
+      return {
+        ...state,
+        workbench: {
+          ...state.workbench,
+          activeView: action.view,
+        },
+      };
+    case 'ui.sidebar.toggle':
+      return {
+        ...state,
+        workbench: {
+          ...state.workbench,
+          sidebarCollapsed: action.collapsed ?? !state.workbench.sidebarCollapsed,
+        },
+      };
+    case 'ui.section.toggle':
+      return {
+        ...state,
+        workbench: {
+          ...state.workbench,
+          recentExpanded:
+            action.section === 'recent'
+              ? !state.workbench.recentExpanded
+              : state.workbench.recentExpanded,
+          agentsExpanded:
+            action.section === 'agents'
+              ? !state.workbench.agentsExpanded
+              : state.workbench.agentsExpanded,
+        },
+      };
+    case 'ui.recommend.rotate':
+      return {
+        ...state,
+        workbench: {
+          ...state.workbench,
+          recommendPage: state.workbench.recommendPage + 1,
+        },
+      };
 
     case 'settings.open': return { ...state, settings: { ...state.settings, open: true } };
     case 'settings.close':

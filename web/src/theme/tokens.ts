@@ -23,22 +23,40 @@ export function getAgentColor(name: string): string {
 }
 
 // antd 5 ConfigProvider 主题配置
-// 主色用调色盘第一个蓝色 圆角与基础字号也在这里集中
+// 主色用调色盘第一个蓝色，同时补齐背景、边框和文本层级，后续 LobeHub 化页面统一复用
 export const themeConfig: ThemeConfig = {
   token: {
     colorPrimary: PALETTE[0],
-    borderRadius: 8,
+    colorBgBase: '#f3f5f8',
+    colorBgLayout: '#f3f5f8',
+    colorBgContainer: '#ffffff',
+    colorBorder: '#e5e7eb',
+    colorText: 'rgba(15, 23, 42, 0.92)',
+    colorTextSecondary: 'rgba(51, 65, 85, 0.72)',
+    colorTextTertiary: 'rgba(71, 85, 105, 0.56)',
+    borderRadius: 12,
+    borderRadiusLG: 16,
+    controlHeight: 36,
     fontFamily:
       '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif',
+    boxShadowSecondary: '0 12px 32px rgba(15, 23, 42, 0.08)',
   },
   components: {
     Layout: {
       headerBg: '#ffffff',
       siderBg: '#ffffff',
-      bodyBg: '#f5f7fa',
+      bodyBg: '#f3f5f8',
     },
     Button: {
-      borderRadius: 8,
+      borderRadius: 10,
+      controlHeight: 36,
+    },
+    Card: {
+      borderRadiusLG: 16,
+    },
+    Input: {
+      borderRadius: 12,
+      controlHeight: 40,
     },
   },
 };

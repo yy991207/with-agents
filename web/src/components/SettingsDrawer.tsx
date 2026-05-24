@@ -315,107 +315,151 @@ function AgentForm({
   };
 
   return (
-    <Form layout="vertical" disabled={saving}>
-      <Space style={{ marginBottom: 12 }} size="small" wrap>
-        <Tag color="blue">v{draft.version}</Tag>
-        <Tag style={{ background: headerColor, color: '#fff', borderColor: headerColor }}>
-          {draft.displayName || draft.name}
-        </Tag>
-        {draft.dirty ? <Tag color="orange">未保存</Tag> : <Tag>已同步</Tag>}
-        <Text type="secondary" style={{ fontSize: 12 }}>
-          内部 ID:{draft.name}
-        </Text>
-      </Space>
-
-      <Form.Item label="显示名" required>
-        <Input
-          value={draft.displayName}
-          maxLength={64}
-          placeholder="1-64 字符"
-          onChange={(e) => onPatch({ displayName: e.target.value })}
-        />
-      </Form.Item>
-
-      <Form.Item label="API 提供商">
-        <Select
-          value={draft.providerType || 'openai_compatible'}
-          disabled
-          options={[{ label: 'OpenAI Compatible', value: 'openai_compatible' }]}
-        />
-      </Form.Item>
-
-      <Form.Item label="Base URL" required>
-        <Input
-          value={draft.baseUrl}
-          placeholder="https://api.openai.com/v1"
-          onChange={(e) =>
-            onPatch({ baseUrl: e.target.value })
-          }
-          allowClear
-        />
-      </Form.Item>
-
-      <Form.Item
-        label="API Key"
-        help={
-          draft.apiKeyDirty
-            ? '将在保存时覆盖原 Key'
-            : draft.apiKeyMask
-              ? '输入新 Key 以覆盖当前密钥'
-              : '请设置 API Key'
-        }
+    <div
+      style={{
+        background: '#fff',
+        border: '1px solid #e5e7eb',
+        borderRadius: 18,
+        boxShadow: '0 10px 24px rgba(15, 23, 42, 0.04)',
+        overflow: 'hidden',
+      }}
+    >
+      <div
+        style={{
+          borderBottom: '1px solid #eef2f7',
+          padding: '14px 16px 12px',
+        }}
       >
-        <Input.Password
-          value={draft.apiKey}
-          placeholder={draft.apiKeyMask ? '输入新 Key 以覆盖' : 'sk-xxxxxxxx'}
-          onChange={(e) =>
-            onPatch({ apiKey: e.target.value })
-          }
-          autoComplete="new-password"
-        />
-      </Form.Item>
-
-      <Form.Item label="当前模型" required>
-        <Space.Compact style={{ width: '100%' }}>
-          <Select
-            style={{ width: '100%' }}
-            value={draft.model || undefined}
-            placeholder="选择模型"
-            showSearch
-            optionFilterProp="label"
-            options={modelOptions}
-            onChange={(v) => onPatch({ model: String(v) })}
-            disabled={modelOptions.length === 0}
-            notFoundContent="暂无模型 请刷新列表"
-          />
-          <Button
-            icon={<ReloadOutlined />}
-            loading={discovering}
-            onClick={handleDiscover}
+        <Space size="small" wrap>
+          <Tag color="blue" style={{ borderRadius: 999, marginInlineEnd: 0 }}>
+            v{draft.version}
+          </Tag>
+          <Tag
+            style={{
+              background: headerColor,
+              borderColor: headerColor,
+              borderRadius: 999,
+              color: '#fff',
+              marginInlineEnd: 0,
+            }}
           >
-            刷新模型
-          </Button>
-        </Space.Compact>
-      </Form.Item>
+            {draft.displayName || draft.name}
+          </Tag>
+          {draft.dirty ? (
+            <Tag color="orange" style={{ borderRadius: 999, marginInlineEnd: 0 }}>
+              未保存
+            </Tag>
+          ) : (
+            <Tag style={{ borderRadius: 999, marginInlineEnd: 0 }}>已同步</Tag>
+          )}
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            内部 ID：{draft.name}
+          </Text>
+        </Space>
+      </div>
 
-      <Form.Item label="System Prompt" required>
-        <Input.TextArea
-          value={draft.prompt}
-          rows={8}
-          placeholder="该 agent 的系统提示词 至少 5 个字"
-          onChange={(e) => onPatch({ prompt: e.target.value })}
-        />
-      </Form.Item>
+      <div style={{ padding: 16 }}>
+        <Form layout="vertical" disabled={saving}>
+          <Form.Item label="显示名" required>
+            <Input
+              value={draft.displayName}
+              maxLength={64}
+              placeholder="1-64 字符"
+              onChange={(e) => onPatch({ displayName: e.target.value })}
+            />
+          </Form.Item>
 
-      <Space>
-        <Button type="primary" onClick={onSave} loading={saving} disabled={!draft.dirty}>
-          保存
-        </Button>
-        <Button onClick={onReset} disabled={!draft.dirty}>
-          重置
-        </Button>
-      </Space>
-    </Form>
+          <Form.Item label="API 提供商">
+            <Select
+              value={draft.providerType || 'openai_compatible'}
+              disabled
+              options={[{ label: 'OpenAI Compatible', value: 'openai_compatible' }]}
+            />
+          </Form.Item>
+
+          <Form.Item label="Base URL" required>
+            <Input
+              value={draft.baseUrl}
+              placeholder="https://api.openai.com/v1"
+              onChange={(e) =>
+                onPatch({ baseUrl: e.target.value })
+              }
+              allowClear
+            />
+          </Form.Item>
+
+          <Form.Item
+            label="API Key"
+            help={
+              draft.apiKeyDirty
+                ? '将在保存时覆盖原 Key'
+                : draft.apiKeyMask
+                  ? '输入新 Key 以覆盖当前密钥'
+                  : '请设置 API Key'
+            }
+          >
+            <Input.Password
+              value={draft.apiKey}
+              placeholder={draft.apiKeyMask ? '输入新 Key 以覆盖' : 'sk-xxxxxxxx'}
+              onChange={(e) =>
+                onPatch({ apiKey: e.target.value })
+              }
+              autoComplete="new-password"
+            />
+          </Form.Item>
+
+          <Form.Item label="当前模型" required>
+            <Space.Compact style={{ width: '100%' }}>
+              <Select
+                style={{ width: '100%' }}
+                value={draft.model || undefined}
+                placeholder="选择模型"
+                showSearch
+                optionFilterProp="label"
+                options={modelOptions}
+                onChange={(v) => onPatch({ model: String(v) })}
+                disabled={modelOptions.length === 0}
+                notFoundContent="暂无模型 请刷新列表"
+              />
+              <Button
+                icon={<ReloadOutlined />}
+                loading={discovering}
+                onClick={handleDiscover}
+              >
+                刷新模型
+              </Button>
+            </Space.Compact>
+          </Form.Item>
+
+          <Form.Item label="System Prompt" required>
+            <Input.TextArea
+              value={draft.prompt}
+              rows={8}
+              placeholder="该 agent 的系统提示词 至少 5 个字"
+              onChange={(e) => onPatch({ prompt: e.target.value })}
+            />
+          </Form.Item>
+
+          <div
+            style={{
+              borderTop: '1px solid #eef2f7',
+              display: 'flex',
+              gap: 8,
+              justifyContent: 'flex-end',
+              marginTop: 20,
+              paddingTop: 14,
+            }}
+          >
+            <Button onClick={onReset} disabled={!draft.dirty}>
+              重置
+            </Button>
+            <Button type="primary" onClick={onSave} loading={saving} disabled={!draft.dirty}>
+              保存
+            </Button>
+          </div>
+        </Form>
+      </div>
+    </div>
   );
 }
 
@@ -462,15 +506,35 @@ export default function SettingsDrawer() {
     <Drawer
       title="设置"
       placement="right"
-      width={760}
+      width={820}
       open={open}
       onClose={closeDrawer}
       destroyOnClose={false}
     >
       <Spin spinning={loading} tip="加载配置中…">
-        <div style={{ display: 'flex', gap: 16, height: '100%' }}>
+        <div
+          style={{
+            background: '#f8fafc',
+            border: '1px solid #e5e7eb',
+            borderRadius: 18,
+            display: 'flex',
+            gap: 16,
+            height: '100%',
+            minHeight: 640,
+            padding: 12,
+          }}
+        >
           {/* 左侧类目菜单 */}
-          <div style={{ width: 140, flexShrink: 0 }}>
+          <div
+            style={{
+              background: '#fff',
+              border: '1px solid #e5e7eb',
+              borderRadius: 16,
+              flexShrink: 0,
+              padding: 8,
+              width: 168,
+            }}
+          >
             <Menu
               mode="inline"
               selectedKeys={[settingsCategory]}
@@ -486,12 +550,31 @@ export default function SettingsDrawer() {
           </div>
 
           {/* 右侧详情面板 */}
-          <div style={{ flex: 1, minWidth: 0 }}>
+          <div
+            style={{
+              background: '#fff',
+              border: '1px solid #e5e7eb',
+              borderRadius: 18,
+              flex: 1,
+              minWidth: 0,
+              overflowY: 'auto',
+              padding: 18,
+            }}
+          >
             {settingsCategory === 'agents' && (
               <>
                 {Object.keys(drafts).length > 0 ? (
                   <>
-                    <div style={{ display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center' }}>
+                    <div
+                      style={{
+                        alignItems: 'center',
+                        display: 'flex',
+                        gap: 8,
+                        marginBottom: 16,
+                        paddingBottom: 12,
+                        borderBottom: '1px solid #eef2f7',
+                      }}
+                    >
                       <Select
                         style={{ flex: 1 }}
                         value={activeAgentName ?? undefined}
@@ -540,8 +623,16 @@ export default function SettingsDrawer() {
                     )}
                   </>
                 ) : (
-                  <div style={{ padding: 24, textAlign: 'center', background: '#fafafa', borderRadius: 8 }}>
-                    <Paragraph type="secondary">暂无数字员工 点下方按钮新建一个</Paragraph>
+                  <div
+                    style={{
+                      background: '#f8fafc',
+                      border: '1px dashed #cbd5e1',
+                      borderRadius: 16,
+                      padding: 28,
+                      textAlign: 'center',
+                    }}
+                  >
+                    <Paragraph type="secondary">暂无数字员工，点下方按钮新建一个</Paragraph>
                     <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
                       新增数字员工
                     </Button>
@@ -549,16 +640,23 @@ export default function SettingsDrawer() {
                 )}
               </>
             )}
-{settingsCategory === 'mcp' && <McpSettingsPanel />}
+            {settingsCategory === 'mcp' && <McpSettingsPanel />}
 
-{settingsCategory === 'skills' && <SkillsPanel />}
-
+            {settingsCategory === 'skills' && <SkillsPanel />}
 
             {settingsCategory === 'judge' && (
-              <div>
+              <div
+                style={{
+                  background: '#fff',
+                  border: '1px solid #e5e7eb',
+                  borderRadius: 18,
+                  boxShadow: '0 10px 24px rgba(15, 23, 42, 0.04)',
+                  padding: 18,
+                }}
+              >
                 <Text strong style={{ fontSize: 16 }}>Judge 选择</Text>
-                <Paragraph type="secondary" style={{ marginTop: 4 }}>
-                  选中即生效 由该 agent 负责自动决策
+                <Paragraph type="secondary" style={{ marginTop: 6 }}>
+                  选中即生效，由该 agent 负责自动决策。
                 </Paragraph>
                 {Object.values(drafts).length === 0 ? (
                   <Text type="secondary">暂无候选</Text>
@@ -569,7 +667,7 @@ export default function SettingsDrawer() {
                     disabled={saving || loading}
                     style={{ marginTop: 12 }}
                   >
-                    <Space direction="vertical">
+                    <Space direction="vertical" size="middle">
                       {Object.values(drafts).map((d) => (
                         <Radio key={d.name} value={d.name}>
                           <span style={{ color: getAgentColor(d.name), fontWeight: 600 }}>

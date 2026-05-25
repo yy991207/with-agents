@@ -90,44 +90,12 @@ export default function ChatInput({ onSend, onStop }: ChatInputProps) {
         }}
       >
         <div style={{ alignItems: 'center', display: 'flex', gap: 8, minWidth: 0 }}>
-          <div
-            style={{
-              alignItems: 'center',
-              border: '1px solid #dbe1ea',
-              borderRadius: 999,
-              color: 'rgba(15, 23, 42, 0.82)',
-              display: 'inline-flex',
-              fontSize: 13,
-              fontWeight: 500,
-              gap: 6,
-              height: 30,
-              padding: '0 10px',
-            }}
-          >
-            <span>智能</span>
-          </div>
-          <Tooltip title="添加文件、技能和更多上下文（占位）">
+          <Tooltip title="添加文件、技能和更多上下文(占位)">
             <Button shape="circle" icon={<PlusOutlined />} type="text" />
           </Tooltip>
         </div>
 
         <div style={{ alignItems: 'center', display: 'flex', gap: 8, flexShrink: 0 }}>
-          <div
-            style={{
-              alignItems: 'center',
-              border: '1px solid #e5e7eb',
-              borderRadius: 999,
-              color: 'rgba(15, 23, 42, 0.82)',
-              display: 'inline-flex',
-              fontSize: 13,
-              fontWeight: 500,
-              gap: 6,
-              height: 30,
-              padding: '0 10px',
-            }}
-          >
-            <span>Claude Sonnet 4.6</span>
-          </div>
           {allowStop ? (
             <Tooltip title="停止当前任务">
               <Button

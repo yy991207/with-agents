@@ -1,13 +1,12 @@
-import { useMemo, useState } from 'react';
 import { message, Popconfirm } from 'antd';
-import { ActionIcon, Avatar, DraggablePanel, SearchBar } from '@lobehub/ui';
+import { ActionIcon, Avatar, DraggablePanel } from '@lobehub/ui';
 import {
   Bell,
   Bot,
-  CircleHelp,
   Ellipsis,
   Hash,
   PanelLeftClose,
+  PanelLeftOpen,
   Plus,
   Trash2,
 } from 'lucide-react';
@@ -17,7 +16,7 @@ import { useSession } from '../../hooks/useSession';
 import { useSettings } from '../../hooks/useSettings';
 import { useChat } from '../../state/ChatContext';
 import type { WorkbenchView } from '../../state/types';
-import { FOOTER_NAV_ITEMS, PRIMARY_NAV_ITEMS } from './lobeData';
+import { PRIMARY_NAV_ITEMS } from './lobeData';
 import LobeNavItem from './LobeNavItem';
 import LobeSectionList from './LobeSectionList';
 
@@ -35,24 +34,8 @@ export default function LobeSidebar({ onNavigate, onOpenSettings }: LobeSidebarP
   const { state, dispatch } = useChat();
   const { sessions, sessionId, switchSession, refreshSessions } = useSession();
   const { switchTab } = useSettings();
-  const [keyword, setKeyword] = useState('');
 
   const drafts = Object.values(state.settings.drafts);
-  const searchValue = keyword.trim().toLowerCase();
-
-  const filteredSessions = useMemo(() => {
-    if (!searchValue) return sessions;
-    return sessions.filter((session) =>
-      (session.title || '未命名').toLowerCase().includes(searchValue),
-    );
-  }, [searchValue, sessions]);
-
-  const filteredAgents = useMemo(() => {
-    if (!searchValue) return drafts;
-    return drafts.filter((draft) =>
-      (draft.displayName || draft.name).toLowerCase().includes(searchValue),
-    );
-  }, [drafts, searchValue]);
 
   const handleDeleteSession = async (targetSessionId: string): Promise<void> => {
     try {
@@ -78,6 +61,36 @@ export default function LobeSidebar({ onNavigate, onOpenSettings }: LobeSidebarP
     switchTab(agentName);
     void onOpenSettings();
   };
+
+  const collapsed = state.workbench.sidebarCollapsed;
+
+  const handleToggleSidebar = (): void => {
+    dispatch({ type: 'ui.sidebar.toggle' });
+  };
+
+  // 折叠态:整列收成 ~40px 细窄条 只有展开按钮  不影响主内容布局
+  if (collapsed) {
+    return (
+      <Flexbox
+        align="center"
+        gap={6}
+        height={'100%'}
+        padding={'12px 4px'}
+        style={{
+          background: 'var(--ant-color-bg-layout)',
+          borderInlineEnd: '1px solid rgba(15, 23, 42, 0.06)',
+          flex: '0 0 auto',
+        }}
+        width={40}
+      >
+        <ActionIcon
+          icon={PanelLeftOpen}
+          title="展开侧栏"
+          onClick={handleToggleSidebar}
+        />
+      </Flexbox>
+    );
+  }
 
   return (
     <DraggablePanel
@@ -120,17 +133,14 @@ export default function LobeSidebar({ onNavigate, onOpenSettings }: LobeSidebarP
               </Flexbox>
             </Flexbox>
             <Flexbox horizontal gap={4}>
-              <ActionIcon icon={PanelLeftClose} title="收起侧栏" />
+              <ActionIcon
+                icon={PanelLeftClose}
+                title="收起侧栏"
+                onClick={handleToggleSidebar}
+              />
               <ActionIcon icon={Bell} title="打开设置" onClick={() => void onOpenSettings()} />
             </Flexbox>
           </Flexbox>
-
-          <SearchBar
-            placeholder="搜索"
-            shortKey="k"
-            value={keyword}
-            onInputChange={setKeyword}
-          />
 
           <Flexbox gap={2}>
             {PRIMARY_NAV_ITEMS.map((item) => (
@@ -152,7 +162,7 @@ export default function LobeSidebar({ onNavigate, onOpenSettings }: LobeSidebarP
             onToggle={() => dispatch({ type: 'ui.section.toggle', section: 'recent' })}
           >
             <Flexbox gap={2}>
-              {filteredSessions.map((session) => (
+              {sessions.map((session) => (
                 <LobeNavItem
                   key={session.sessionId}
                   icon={Hash}
@@ -161,7 +171,7 @@ export default function LobeSidebar({ onNavigate, onOpenSettings }: LobeSidebarP
                   actions={
                     <Popconfirm
                       title="确认删除该会话"
-                      description="将一并删除所有对话内容，不可恢复"
+                      description="将一并删除所有对话内容,不可恢复"
                       okText="删除"
                       okButtonProps={{ danger: true }}
                       cancelText="取消"
@@ -178,7 +188,7 @@ export default function LobeSidebar({ onNavigate, onOpenSettings }: LobeSidebarP
                   }}
                 />
               ))}
-              {filteredSessions.length === 0 ? (
+              {sessions.length === 0 ? (
                 <div style={{ color: 'rgba(71, 85, 105, 0.56)', fontSize: 12, padding: '4px 12px 8px' }}>
                   暂无会话
                 </div>
@@ -193,7 +203,7 @@ export default function LobeSidebar({ onNavigate, onOpenSettings }: LobeSidebarP
             onToggle={() => dispatch({ type: 'ui.section.toggle', section: 'agents' })}
           >
             <Flexbox gap={2}>
-              {filteredAgents.map((draft) => (
+              {drafts.map((draft) => (
                 <LobeNavItem
                   key={draft.name}
                   icon={Bot}
@@ -216,33 +226,8 @@ export default function LobeSidebar({ onNavigate, onOpenSettings }: LobeSidebarP
                   actions={<ActionIcon icon={Ellipsis} title="打开助理设置" onClick={() => handleOpenAgent(draft.name)} />}
                 />
               ))}
-              <LobeNavItem
-                icon={Plus}
-                label="创建助理"
-                onClick={() => void onOpenSettings()}
-              />
             </Flexbox>
           </LobeSectionList>
-        </Flexbox>
-
-        <Flexbox gap={2}>
-          {FOOTER_NAV_ITEMS.map((item) => (
-            <LobeNavItem
-              key={item.key}
-              icon={item.icon}
-              label={item.label}
-              active={state.workbench.activeView === item.key}
-              onClick={() => onNavigate(item.key)}
-            />
-          ))}
-        </Flexbox>
-
-        <Flexbox horizontal align="center" gap={4}>
-          <ActionIcon
-            icon={CircleHelp}
-            title="帮助中心"
-            onClick={() => message.info('帮助中心占位中，当前可先在设置里管理 agent、MCP 和 Skills。')}
-          />
         </Flexbox>
       </Flexbox>
     </DraggablePanel>

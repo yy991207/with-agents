@@ -19,6 +19,7 @@ import { useChat } from './state/ChatContext';
 import { getAgents, getHistory } from './api/http';
 import { openTaskStream } from './api/sse';
 import { convertAgentView, convertRound } from './state/converters';
+import { parseContextUsage } from './state/reducer';
 import { findResumableTaskId } from './state/taskResume';
 import {
   clearPersisted,
@@ -70,9 +71,17 @@ export default function App() {
         // 后端返回 snake_case dict 必须经 convertRound 转成前端 RoundView
         // 否则 ReplyBubble 渲染历史 reply 时 toolCalls.map() 会崩
         const rounds = (hist.rounds as unknown as unknown[]).map(convertRound);
+        // history 接口里 session.context_usage 是上一次 reply / compact 的快照
+        // 刷新 / 切回旧会话时直接回灌进度条 不必等下一轮 reply 才显示
+        const sessRaw = (hist.session ?? {}) as unknown as Record<string, unknown>;
+        const usageRaw = sessRaw['context_usage'];
+        const contextUsage =
+          usageRaw && typeof usageRaw === 'object'
+            ? parseContextUsage(usageRaw as Record<string, unknown>)
+            : null;
         // 注意:history.loaded 会强制 activeTaskId=null / taskState=DONE
         // 后面如果有 activeTaskId,再用 task.resume 把它挂回去
-        dispatch({ type: 'history.loaded', sessionId, rounds });
+        dispatch({ type: 'history.loaded', sessionId, rounds, contextUsage });
 
         // 加载 agent 列表填充 settings.drafts，
         // 保证 Timeline 的 buildAgentLabelMap 能拿到 display_name 映射

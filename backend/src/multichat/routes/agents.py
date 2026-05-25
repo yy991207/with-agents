@@ -46,10 +46,16 @@ def _mask_key(k: str) -> str:
 
 
 class ModelView(BaseModel):
-    """agent.available_models 中的一项 对外视图"""
+    """agent.available_models 中的一项 对外视图
+
+    max_input_tokens 是该模型的最大输入 token 窗口  会话总 token 超过此值 80% 时
+    触发自动摘要压缩  必填字段 不传走默认 200000 兜底
+    discover 接口返回时也会补默认 让前端拿到一组合法值  用户保存前可在表单里改
+    """
 
     model_id: str
     label: str = ""
+    max_input_tokens: int = Field(default=200000, gt=0)
 
 
 class AgentView(BaseModel):
@@ -181,7 +187,11 @@ def _to_view(record) -> AgentView:
         api_key=_mask_key(record.api_key),
         model=record.model,
         available_models=[
-            ModelView(model_id=m.model_id, label=(m.label or m.model_id))
+            ModelView(
+                model_id=m.model_id,
+                label=(m.label or m.model_id),
+                max_input_tokens=m.max_input_tokens,
+            )
             for m in record.available_models
         ],
         prompt=record.prompt,
@@ -194,10 +204,21 @@ def _to_view(record) -> AgentView:
 
 
 def _models_payload(models: list[ModelView] | None) -> list[ModelCatalogEntry] | None:
-    """把对外 ModelView 列表转成内部 ModelCatalogEntry 列表  None 透传"""
+    """把对外 ModelView 列表转成内部 ModelCatalogEntry 列表  None 透传
+
+    max_input_tokens 直接透传  ModelCatalogEntry 自带 gt=0 校验
+    若前端传 0 或负数会在此处的 model_validate 抛 422 由 FastAPI 兜回去
+    """
     if models is None:
         return None
-    return [ModelCatalogEntry(model_id=m.model_id, label=m.label) for m in models]
+    return [
+        ModelCatalogEntry(
+            model_id=m.model_id,
+            label=m.label,
+            max_input_tokens=m.max_input_tokens,
+        )
+        for m in models
+    ]
 
 
 def _models_url(base_url: str) -> str:
@@ -471,7 +492,11 @@ async def update_agent(
             api_key=existing.api_key,
             model=existing.model,
             available_models=[
-                ModelCatalogEntry(model_id=m.model_id, label=m.label)
+                ModelCatalogEntry(
+                    model_id=m.model_id,
+                    label=m.label,
+                    max_input_tokens=m.max_input_tokens,
+                )
                 for m in existing.available_models
             ],
             prompt=existing.prompt,
@@ -523,6 +548,7 @@ async def list_agent_history(
                     ModelView(
                         model_id=str(m.get("model_id", "")),
                         label=str(m.get("label", "")) or str(m.get("model_id", "")),
+                        max_input_tokens=int(m.get("max_input_tokens") or 200000),
                     )
                     for m in (h.get("available_models") or [])
                 ],
@@ -556,7 +582,9 @@ async def revert_agent(
     # 把历史版本里的字段全量打回当前 agent 形成新版本
     target_models = [
         ModelCatalogEntry(
-            model_id=str(m.get("model_id", "")), label=str(m.get("label", ""))
+            model_id=str(m.get("model_id", "")),
+            label=str(m.get("label", "")),
+            max_input_tokens=int(m.get("max_input_tokens") or 200000),
         )
         for m in (target.get("available_models") or [])
     ]
@@ -582,7 +610,11 @@ async def revert_agent(
             api_key=current.api_key,
             model=current.model,
             available_models=[
-                ModelCatalogEntry(model_id=m.model_id, label=m.label)
+                ModelCatalogEntry(
+                    model_id=m.model_id,
+                    label=m.label,
+                    max_input_tokens=m.max_input_tokens,
+                )
                 for m in current.available_models
             ],
             prompt=current.prompt,

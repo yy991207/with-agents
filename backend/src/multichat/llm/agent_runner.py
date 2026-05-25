@@ -17,7 +17,7 @@ import asyncio
 from typing import Any, Awaitable, Callable
 
 import structlog
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from ..core.events import TaskEvent
 from .deep_agents import DeepAgentRegistry
@@ -185,7 +185,11 @@ def _build_messages(history: list[dict[str, Any]], user_message: str) -> list[An
     """从 history 拼 langchain messages 调用方负责裁剪到 history_max_rounds
 
     history 由 task_manager 传入 已含历史 user_message 与 reply.content
-    支持的角色 user / assistant 其他角色一律忽略
+    支持的角色:
+        - system: 通常是 _build_history 注入的会话摘要  转 SystemMessage 排在最前
+        - user: 用户提问 转 HumanMessage
+        - assistant: 上一轮 reply 转 AIMessage
+        - 其它角色一律忽略
     """
     out: list[Any] = []
     for h in history:
@@ -193,7 +197,10 @@ def _build_messages(history: list[dict[str, Any]], user_message: str) -> list[An
         content = h.get("content", "")
         if not isinstance(content, str):
             continue
-        if role == "user":
+        if role == "system":
+            # 摘要注入  排序由 history 列表本身决定 调用方应将摘要放在首位
+            out.append(SystemMessage(content=content))
+        elif role == "user":
             out.append(HumanMessage(content=content))
         elif role == "assistant":
             out.append(AIMessage(content=content))

@@ -7,6 +7,7 @@ import { message } from 'antd';
 import { getHistory, listSessions } from '../api/http';
 import { useChat } from '../state/ChatContext';
 import { convertRound, convertSession } from '../state/converters';
+import { parseContextUsage } from '../state/reducer';
 
 function describeError(err: unknown): string {
   if (err instanceof Error) return err.message;
@@ -42,7 +43,15 @@ export function useSession() {
         // 后端返回的是 snake_case dict 不能直接当 RoundView 用
         // 必须经 convertRound 转成前端结构  补齐 toolCalls 等字段
         const rounds = (resp.rounds as unknown as unknown[]).map(convertRound);
-        dispatch({ type: 'history.loaded', sessionId, rounds });
+        // history 接口里 session.context_usage 是上一次 reply / compact 落库的快照
+        // 切回旧会话时直接回灌进度条 不必等下一轮 reply 才显示
+        const sessRaw = (resp.session ?? {}) as unknown as Record<string, unknown>;
+        const usageRaw = sessRaw['context_usage'];
+        const contextUsage =
+          usageRaw && typeof usageRaw === 'object'
+            ? parseContextUsage(usageRaw as Record<string, unknown>)
+            : null;
+        dispatch({ type: 'history.loaded', sessionId, rounds, contextUsage });
       } catch (e) {
         message.error(`加载历史失败:${describeError(e)}`);
       }

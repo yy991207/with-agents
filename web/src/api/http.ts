@@ -150,6 +150,42 @@ export function batchDeleteSessions(
   });
 }
 
+// ====== 会话上下文压缩 ======
+
+// POST /api/sessions/{session_id}/compact 一键压缩响应
+// 同步路由  等后端摘要写入并落库后返回  耗时通常 30-90s
+//   summary               最新累计摘要文本
+//   summary_until_round   摘要覆盖到的轮次序号  含
+//   summary_updated_at    摘要写入时间 ISO8601
+//   used_tokens_before    压缩前 token 用量
+//   used_tokens_after     压缩后 token 用量  通常远小于 before
+//   max_input_tokens      当前模型最大输入窗口  用于重组 ContextUsage
+//   model_id              当前模型 ID
+export interface CompactResponse {
+  summary: string;
+  summary_until_round: number;
+  summary_updated_at: string;
+  used_tokens_before: number;
+  used_tokens_after: number;
+  max_input_tokens: number;
+  model_id: string;
+}
+
+// POST /sessions/{session_id}/compact 触发一键压缩
+// 路径与 list/delete sessions 一致 不带 /api 前缀  vite 代理已覆盖 /sessions
+// 错误码语义:
+//   404 session 不存在
+//   409 有进行中的 round
+//   422 没有可压缩的 round
+//   503 LLM 调用失败
+// 这些错误统一以 Error.message 形式抛出  含 "HTTP 4xx/5xx: detail" 由调用方处理
+export function compactSession(sessionId: string): Promise<CompactResponse> {
+  return request<CompactResponse>(
+    `/sessions/${encodeURIComponent(sessionId)}/compact`,
+    { method: 'POST' },
+  );
+}
+
 // ====== 数字员工 agent 配置相关 API ======
 
 // GET /api/agents 拉取所有 agent 与 judge 指向

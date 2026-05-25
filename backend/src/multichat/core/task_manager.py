@@ -25,6 +25,12 @@ import structlog
 
 from ..llm.agent_runner import run_judge, run_reply, run_think
 from ..llm.deep_agents import DeepAgentRegistry
+from ..llm.summarization import run_session_summary
+from ..llm.token_counter import (
+    count_history_tokens,
+    should_trigger_summary,
+    usage_payload,
+)
 from .errors import humanize_llm_error
 from .events import TaskEvent, TaskEventHub
 from .mention_parser import parse_single_mention
@@ -66,6 +72,10 @@ class TaskManager:
         self._decision_results: dict[str, str] = {}
         # 单 think 子任务索引 用于 cancel scope=AgentName
         self._think_subtasks: dict[str, dict[str, asyncio.Task[None]]] = {}
+        # 同 session 摘要互斥锁  按 session_id 索引
+        # 防止两次 _run_task_loop 并发触发同一 session 的自动压缩 跑两次冗余 LLM
+        # 与 routes/sessions.py compact 路由不共享锁  那条路径靠 mongo $set 原子覆盖兜底
+        self._compact_locks: dict[str, asyncio.Lock] = {}
 
     # ============================================================ 对外 API
     async def create_task(
@@ -181,6 +191,10 @@ class TaskManager:
         """
         hub = self._hubs[task_id]
         try:
+            # 请求到来时先静默检查会话上下文 token 是否超阈值
+            # 超了就同步触发一次摘要再继续  失败也不阻塞 task  靠 except 捕获不让 reply 卡住
+            await self._maybe_auto_compact(session_id)
+
             history = await self._build_history(session_id, current_task_id=task_id)
 
             if mention:
@@ -660,6 +674,9 @@ class TaskManager:
                     },
                 )
             )
+            # reply 完成后立刻推一次 context.usage  让前端进度条与摘要状态同步刷新
+            # 失败被 except 吞  不阻塞主流  task.state DONE 仍照常发
+            await self._publish_context_usage(task_id, agent_name, hub)
             await hub.publish(
                 TaskEvent(type="task.state", data={"state": "DONE"})
             )
@@ -748,7 +765,22 @@ class TaskManager:
             - 当前正在跑的 task 不进 history
             - reply 状态必须 done 否则跳过 防止把空回复喂回 LLM
             - 取最近 history_max_rounds 轮
+            - 若 session 已生成摘要 在最前面注入一条 system message 承载摘要
+              并跳过 round_index <= summary_until_round 的旧轮次 避免重复喂
+
+        摘要注入策略:
+            - 摘要文本以 "[会话摘要]\n..." 开头  让 LLM 一眼识别这是浓缩历史
+            - 摘要消息不进 history_max_rounds 计数  独立占一条
+            - agent_runner._build_messages 必须识别 role=system 转 SystemMessage
+              否则摘要会被当成噪声丢弃
         """
+        # 先拿 session 看看有没有摘要
+        session = await self._storage.get_session(session_id)
+        summary_text = (session.summary or "") if session is not None else ""
+        summary_until = (
+            int(session.summary_until_round) if session is not None else 0
+        )
+
         all_rounds = await self._storage.list_rounds(session_id)
         usable = [
             r
@@ -757,10 +789,24 @@ class TaskManager:
             and r.reply
             and r.reply.get("state") == "done"
         ]
+        # 已被摘要覆盖的 round 不再单独喂  避免与摘要内容重复占 token
+        if summary_text:
+            usable = [r for r in usable if r.round_index > summary_until]
+
         n = self._settings.runtime.history_max_rounds
         if n > 0:
             usable = usable[-n:]
+
         out: list[dict[str, Any]] = []
+        if summary_text:
+            # 摘要在最前 用 system 角色  agent_runner 会转成 SystemMessage
+            out.append(
+                {
+                    "role": "system",
+                    "content": f"[会话摘要]\n{summary_text}",
+                    "is_summary": True,
+                }
+            )
         for r in usable:
             out.append({"role": "user", "content": r.question})
             reply_dict = r.reply or {}
@@ -780,3 +826,199 @@ class TaskManager:
         self._decision_events.pop(task_id, None)
         self._decision_results.pop(task_id, None)
         self._think_subtasks.pop(task_id, None)
+
+    # ============================================================ 上下文压缩与用量
+    def _resolve_compaction_agent_name(
+        self,
+        done_rounds: list[Any],
+    ) -> str | None:
+        """挑选用作摘要 / 用量评估的 agent 名
+
+        策略:
+            1 优先取最近一轮 reply 的 agent  通常就是用户期望的"当前模型"
+            2 不在 registry 时回退到 judge 指针
+            3 都拿不到返回 None  上层判断不可压缩
+
+        说明:
+            judge 指针由 storage.get_judge_target 提供  缺失时静默忽略不抛
+            registry.names 反映当前已注册 agent 防止取到刚被删除的 agent
+        """
+        registered = set(self._registry.names())
+        for r in reversed(done_rounds):
+            reply_dict = getattr(r, "reply", None) or {}
+            cand = reply_dict.get("agent")
+            if isinstance(cand, str) and cand in registered:
+                return cand
+        return None  # 调用方再尝试 judge 指针
+
+    async def _maybe_auto_compact(self, session_id: str) -> None:
+        """请求到来时静默检查并按需压缩  失败不阻塞主流
+
+        触发条件:
+            未摘要部分(round_index > summary_until_round)的 token 估算 >= 80% 阈值
+
+        互斥:
+            self._compact_locks 按 session_id 索引  防止同 session 并发跑两次摘要
+            与 routes/sessions.py compact 路由不共享锁  那边靠 mongo $set 原子覆盖兜底
+
+        agent 选择:
+            优先最近一轮 reply.agent  fallback judge 指针  都拿不到则跳过
+
+        失败处理:
+            任何异常 一律 except + log 不向上抛  保证 think/reply 主流程不被影响
+        """
+        try:
+            lock = self._compact_locks.setdefault(session_id, asyncio.Lock())
+            async with lock:
+                session = await self._storage.get_session(session_id)
+                if session is None:
+                    return
+
+                all_rounds = await self._storage.list_rounds(session_id)
+                done_rounds = [
+                    r
+                    for r in all_rounds
+                    if r.reply and r.reply.get("state") == "done"
+                ]
+                if not done_rounds:
+                    return
+
+                summary = session.summary or ""
+                summary_until = int(session.summary_until_round or 0)
+                # 未被覆盖的轮次  这部分才参与 token 估算
+                uncovered = [r for r in done_rounds if r.round_index > summary_until]
+                if not uncovered:
+                    return
+
+                agent_name = self._resolve_compaction_agent_name(done_rounds)
+                if agent_name is None:
+                    try:
+                        judge = await self._storage.get_judge_target()
+                        if judge in self._registry.names():
+                            agent_name = judge
+                    except KeyError:
+                        agent_name = None
+                if agent_name is None:
+                    return
+
+                record = await self._storage.get_agent(agent_name)
+                if record is None:
+                    return
+                max_tokens = next(
+                    (
+                        m.max_input_tokens
+                        for m in record.available_models
+                        if m.model_id == record.model
+                    ),
+                    200000,
+                )
+
+                # 拼"未摘要部分"的 history dict  含旧摘要前缀  口径与 _build_history 一致
+                history_dicts: list[dict[str, Any]] = []
+                if summary:
+                    history_dicts.append(
+                        {"role": "system", "content": f"[会话摘要]\n{summary}"}
+                    )
+                for r in uncovered:
+                    history_dicts.append({"role": "user", "content": r.question})
+                    history_dicts.append(
+                        {
+                            "role": "assistant",
+                            "content": (r.reply or {}).get("content", "") or "",
+                        }
+                    )
+
+                used = count_history_tokens(history_dicts)
+                if not should_trigger_summary(used, max_tokens):
+                    return  # 没到 80% 阈值不动
+
+                # 触发摘要  传给 run_session_summary 的 history 不带 system 摘要前缀
+                # 因为 summarization 内部会把 old_summary 单独排版  避免重复注入
+                comp_history: list[dict[str, Any]] = []
+                for r in uncovered:
+                    comp_history.append({"role": "user", "content": r.question})
+                    comp_history.append(
+                        {
+                            "role": "assistant",
+                            "content": (r.reply or {}).get("content", "") or "",
+                        }
+                    )
+                _logger.info(
+                    "auto_compact 触发  开始 LLM 摘要",
+                    session_id=session_id,
+                    used_tokens=used,
+                    max_tokens=max_tokens,
+                    agent=agent_name,
+                    uncovered_rounds=len(uncovered),
+                )
+                new_summary = await run_session_summary(
+                    history=comp_history,
+                    old_summary=summary,
+                    agent_record=record,
+                    timeout_s=120.0,
+                )
+                new_until = int(uncovered[-1].round_index)
+                await self._storage.update_session_summary(
+                    session_id,
+                    summary=new_summary,
+                    summary_until_round=new_until,
+                )
+                _logger.info(
+                    "auto_compact 完成",
+                    session_id=session_id,
+                    summary_until=new_until,
+                    new_summary_len=len(new_summary),
+                )
+        except Exception:
+            # 摘要失败不影响后续 think/reply  只 log 不向上抛
+            _logger.exception("auto_compact 失败 忽略", session_id=session_id)
+
+    async def _publish_context_usage(
+        self, task_id: str, agent_name: str, hub: TaskEventHub
+    ) -> None:
+        """每轮 reply 完成后推一次 context.usage  让前端进度条同步
+
+        字段约定见 multichat.llm.token_counter.usage_payload  与前端 ContextUsage 对齐
+        agent_name 通常是这一轮 reply 用的 agent  用它的 max_input_tokens 算阈值
+        失败 except 吞掉 不阻塞 task 主流
+
+        持久化:
+            payload 同时写到 sessions.context_usage 字段  让前端刷新 / 切会话后
+            通过 GET /history/{id} 拿到上一次的状态  无需等下一轮 reply 才显示进度条
+            写库失败 except 吞掉  不影响 SSE 推流
+        """
+        try:
+            round_obj = await self._storage.get_round(task_id)
+            if round_obj is None:
+                return
+            session_id = round_obj.session_id
+            # _build_history 默认会过滤 current_task_id  这里我们要算"含本轮"
+            # 故传一个空 task_id  让 list_rounds 返回的全部 done round 都进来
+            history = await self._build_history(session_id, current_task_id="")
+
+            record = await self._storage.get_agent(agent_name)
+            if record is None:
+                return
+            max_tokens = next(
+                (
+                    m.max_input_tokens
+                    for m in record.available_models
+                    if m.model_id == record.model
+                ),
+                200000,
+            )
+            used = count_history_tokens(history)
+            payload = usage_payload(used, max_tokens, model_id=record.model)
+            await hub.publish(TaskEvent(type="context.usage", data=payload))
+            # 写库快照  失败仅 log 不阻塞流
+            try:
+                await self._storage.update_session_context_usage(session_id, payload)
+            except Exception:
+                _logger.exception(
+                    "update_session_context_usage 失败 不阻塞流",
+                    session_id=session_id,
+                )
+        except Exception:
+            _logger.exception(
+                "publish context.usage 失败 不阻塞流", task_id=task_id
+            )

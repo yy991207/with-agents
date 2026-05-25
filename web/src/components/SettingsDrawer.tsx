@@ -8,6 +8,7 @@ import {
   Drawer,
   Form,
   Input,
+  InputNumber,
   Menu,
   message,
   Modal,
@@ -132,6 +133,15 @@ function CreateAgentModal({
         });
         models = resp.models;
       }
+      // discover 接口拿到的模型列表  max_input_tokens 字段后端默认给 200000
+      // 这里再做一遍兜底  防止后端响应缺字段时前端类型不一致
+      models = models.map((m) => ({
+        ...m,
+        max_input_tokens:
+          typeof m.max_input_tokens === 'number' && m.max_input_tokens > 0
+            ? m.max_input_tokens
+            : 200000,
+      }));
       setAvailableModels(models);
       setModel((cur) =>
         models.some((m) => m.model_id === cur)
@@ -245,6 +255,31 @@ function CreateAgentModal({
             </Button>
           </Space.Compact>
         </Form.Item>
+        <Form.Item
+          label="上下文窗口 (tokens)"
+          required
+          help="该模型的最大输入 token 数  会话总 token 超过此值 80% 时触发自动摘要压缩  默认 200000  实际值请参考模型供应商文档"
+        >
+          <InputNumber
+            style={{ width: '100%' }}
+            min={1}
+            step={1000}
+            placeholder="200000"
+            value={
+              availableModels.find((m) => m.model_id === model)
+                ?.max_input_tokens ?? 200000
+            }
+            disabled={!model}
+            onChange={(v) => {
+              const next = typeof v === 'number' && v > 0 ? Math.floor(v) : 200000;
+              setAvailableModels((cur) =>
+                cur.map((m) =>
+                  m.model_id === model ? { ...m, max_input_tokens: next } : m,
+                ),
+              );
+            }}
+          />
+        </Form.Item>
         <Form.Item label="System Prompt" required>
           <Input.TextArea
             value={prompt}
@@ -310,11 +345,20 @@ function AgentForm({
         api_key: draft.apiKeyDirty ? draft.apiKey : undefined,
         provider_type: draft.providerType || 'openai_compatible',
       });
-      const nextModel = resp.models.some((m) => m.model_id === draft.model)
+      // discover 拿到的模型列表  max_input_tokens 字段后端默认给 200000
+      // 这里再做一遍兜底  防止后端响应缺字段时前端类型不一致
+      const normalized = resp.models.map((m) => ({
+        ...m,
+        max_input_tokens:
+          typeof m.max_input_tokens === 'number' && m.max_input_tokens > 0
+            ? m.max_input_tokens
+            : 200000,
+      }));
+      const nextModel = normalized.some((m) => m.model_id === draft.model)
         ? draft.model
-        : resp.models[0]?.model_id ?? '';
-      onPatch({ availableModels: resp.models, model: nextModel });
-      message.success(`已获取 ${resp.models.length} 个可用模型`);
+        : normalized[0]?.model_id ?? '';
+      onPatch({ availableModels: normalized, model: nextModel });
+      message.success(`已获取 ${normalized.length} 个可用模型`);
     } catch (e) {
       message.error(`获取模型失败:${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -513,6 +557,35 @@ function AgentForm({
             </Space.Compact>
           </Form.Item>
 
+          <Form.Item
+            label="上下文窗口 (tokens)"
+            required
+            help="该模型的最大输入 token 数  会话总 token 超过此值 80% 时触发自动摘要压缩  默认 200000  实际值请参考模型供应商文档"
+          >
+            <InputNumber
+              style={{ width: '100%' }}
+              min={1}
+              step={1000}
+              placeholder="200000"
+              value={
+                draft.availableModels.find((m) => m.model_id === draft.model)
+                  ?.max_input_tokens ?? 200000
+              }
+              disabled={!draft.model}
+              onChange={(v) => {
+                const next =
+                  typeof v === 'number' && v > 0 ? Math.floor(v) : 200000;
+                onPatch({
+                  availableModels: draft.availableModels.map((m) =>
+                    m.model_id === draft.model
+                      ? { ...m, max_input_tokens: next }
+                      : m,
+                  ),
+                });
+              }}
+            />
+          </Form.Item>
+
           <Form.Item label="System Prompt" required>
             <Input.TextArea
               value={draft.prompt}
@@ -623,8 +696,8 @@ export default function SettingsDrawer() {
               items={[
                 { key: 'agents', label: 'agent' },
                 { key: 'judge', label: 'Judge 选择' },
-                { key: 'mcp', label: 'MCP 配置' },
-                { key: 'skills', label: 'Skills 配置' },
+                { key: 'mcp', label: 'MCP' },
+                { key: 'skills', label: 'Skills' },
               ]}
               style={{ border: 'none', background: 'transparent' }}
             />

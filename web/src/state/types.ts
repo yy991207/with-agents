@@ -104,9 +104,12 @@ export interface HistoryResponse {
 export type SSEStatus = 'idle' | 'open' | 'closed' | 'reconnecting';
 
 // agent 子模型视图(provider 候选模型 也用同一结构)
+// max_input_tokens 是该模型最大输入 token 窗口  会话总 token 超过此值 80% 时
+// 触发自动摘要压缩  必填字段 表单默认 200000  用户可改
 export interface ModelView {
   model_id: string;
   label: string;
+  max_input_tokens: number;
 }
 
 // POST /api/models/discover 动态拉取 OpenAI 兼容 provider 的模型列表
@@ -221,6 +224,21 @@ export interface WorkbenchState {
   recommendPage: number;
 }
 
+// 当前会话的上下文 token 用量快照
+// 后端在每轮 reply 完成后通过 SSE context.usage 事件下发  字段全部沿用 snake_case
+//   used_tokens     已用 token 数
+//   threshold_tokens 自动摘要触发阈值  通常等于 max_input_tokens 的 80%
+//   max_input_tokens 当前模型的最大输入 token 窗口
+//   ratio           used_tokens / max_input_tokens  范围 0~1+
+//   model_id        当前模型 ID  仅用于展示参考  不参与计算
+export interface ContextUsage {
+  used_tokens: number;
+  threshold_tokens: number;
+  max_input_tokens: number;
+  ratio: number;
+  model_id: string;
+}
+
 // 全局 Chat 状态
 export interface ChatState {
   sessionId: string | null;
@@ -231,6 +249,10 @@ export interface ChatState {
   sseStatus: SSEStatus;
   settings: SettingsState;
   workbench: WorkbenchState;
+  // 当前会话上下文用量  没收到过 context.usage 事件时为 null  整条进度条隐藏
+  contextUsage: ContextUsage | null;
+  // 一键压缩进行中  期间禁用输入与发送  按钮 loading
+  compacting: boolean;
 }
 
 // reducer action 列表
@@ -248,7 +270,7 @@ export type ChatAction =
   | { type: 'task.state'; state: TaskState }
   | { type: 'sse.status'; status: SSEStatus }
   | { type: 'sse.event'; taskId?: string; event: SSEEvent }
-  | { type: 'history.loaded'; sessionId: string; rounds: RoundView[] }
+  | { type: 'history.loaded'; sessionId: string; rounds: RoundView[]; contextUsage?: ContextUsage | null }
   // 工作台 UI 壳层相关 action
   | { type: 'ui.view.set'; view: WorkbenchView }
   | { type: 'ui.sidebar.toggle'; collapsed?: boolean }
@@ -268,7 +290,14 @@ export type ChatAction =
   | { type: 'settings.agent.tab.switch'; name: string }
   // 头像上传 / 删除走独立路径  不参与 draft.dirty 也不需要 save 按钮触发
   | { type: 'settings.agent.avatar.set'; agentName: string; avatarDataUrl: string | null }
-  | { type: 'settings.error'; message: string };
+  | { type: 'settings.error'; message: string }
+  // 上下文用量与一键压缩相关 action
+  // context.usage 来自 SSE 事件  payload 即后端字段
+  | { type: 'context.usage'; usage: ContextUsage }
+  | { type: 'compact.start' }
+  // 一键压缩成功  把后端返回的 used_tokens_after / max_input_tokens 重组成 ContextUsage
+  | { type: 'compact.done'; usage: ContextUsage }
+  | { type: 'compact.fail' };
 
 // 任务忙碌态判定:THINKING / THINK_DONE / DECIDED / REPLYING 视为忙
 // 不含 PENDING 不含 DONE / CANCELLED

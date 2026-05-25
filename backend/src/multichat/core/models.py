@@ -119,13 +119,36 @@ class Round(BaseModel):
 
 
 class Session(BaseModel):
-    """一次会话 含若干轮 Round"""
+    """一次会话 含若干轮 Round
+
+    摘要相关字段:
+        - summary: 已压缩内容 LLM 生成 单条覆盖更新 不存历史摘要
+        - summary_until_round: 摘要覆盖到的 round_index 拼 history 时只追加该值之后的 round
+        - summary_updated_at: 最近一次摘要时间 None 表示尚未做过摘要
+
+    上下文用量字段:
+        - context_usage: 最近一次 SSE context.usage 事件 payload 落库快照
+          字段与 token_counter.usage_payload 对齐 None 表示未上报过
+          供前端刷新 / 切会话时从 history 接口直接恢复进度条状态
+    """
 
     session_id: str
     title: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
+    summary: str = ""
+    summary_until_round: int = 0
+    summary_updated_at: datetime | None = None
+    context_usage: dict[str, Any] | None = None
+
+    @field_validator("summary_updated_at", mode="before")
+    @classmethod
+    def _ensure_utc_tz_optional(cls, v: Any) -> Any:
+        """与 Round 同款 mongo 取出来 naive 给打 UTC tz_info"""
+        if isinstance(v, datetime) and v.tzinfo is None:
+            return v.replace(tzinfo=timezone.utc)
+        return v
 
 
 class SessionMeta(BaseModel):
@@ -141,10 +164,13 @@ class ModelCatalogEntry(BaseModel):
     """agent.available_models 中一项可选模型的元信息
 
     label 用于前端下拉显示 缺省同 model_id
+    max_input_tokens 用户在 agent 表单里手动维护 摘要触发阈值 = 此值 × 80%
+        必填字段 历史数据若缺失走路由层兜底校验
     """
 
     model_id: str
     label: str = ""
+    max_input_tokens: int = Field(..., gt=0, description="模型最大输入 token 窗口")
 
 
 class AgentRecord(BaseModel):

@@ -6,6 +6,7 @@ import type {
   AgentView,
   ChatAction,
   ChatState,
+  ContextUsage,
   DecisionView,
   ReplyView,
   RoundView,
@@ -44,6 +45,9 @@ export const initialState: ChatState = {
   sseStatus: 'idle',
   settings: initialSettings,
   workbench: initialWorkbench,
+  // 上下文用量初始为 null  等后端首次 context.usage 事件下发后才显示进度条
+  contextUsage: null,
+  compacting: false,
 };
 
 function patchRound(rounds: RoundView[], taskId: string, patch: Partial<RoundView>): RoundView[] {
@@ -98,6 +102,33 @@ function readAgentList(data: Record<string, unknown>, ...keys: string[]): AgentN
   return undefined;
 }
 
+// 解析 SSE context.usage 事件 payload  字段名沿用后端 snake_case
+// 任一数值字段缺失 / 非法时返回 null  调用方丢弃此次更新避免脏数据进 UI
+// 导出供 App.tsx / useSession 在 GET /history 响应里直接解析 session.context_usage 字段
+export function parseContextUsage(data: Record<string, unknown>): ContextUsage | null {
+  const used = data['used_tokens'];
+  const threshold = data['threshold_tokens'];
+  const maxInput = data['max_input_tokens'];
+  const ratio = data['ratio'];
+  const modelId = data['model_id'];
+  if (
+    typeof used !== 'number' ||
+    typeof threshold !== 'number' ||
+    typeof maxInput !== 'number' ||
+    typeof ratio !== 'number' ||
+    typeof modelId !== 'string'
+  ) {
+    return null;
+  }
+  return {
+    used_tokens: used,
+    threshold_tokens: threshold,
+    max_input_tokens: maxInput,
+    ratio,
+    model_id: modelId,
+  };
+}
+
 function updateThink(round: RoundView, agent: AgentName, patch: Partial<ThinkView>): RoundView {
   const cur = round.thinks[agent] ?? { agent, state: 'pending' as ThinkState };
   return { ...round, thinks: { ...round.thinks, [agent]: { ...cur, ...patch } } };
@@ -108,6 +139,15 @@ function applySSEEvent(
   event: SSEEvent,
   sourceTaskId?: string,
 ): ChatState {
+  // context.usage 是会话级事件  不挂在某轮 round 上  直接更新 state.contextUsage
+  // 必须在 round 校验之前拦截  否则 activeTaskId 为空时会被丢弃
+  if (event.type === 'context.usage') {
+    const data = event.data ?? {};
+    const usage = parseContextUsage(data);
+    if (!usage) return state;
+    return { ...state, contextUsage: usage };
+  }
+
   const taskId = sourceTaskId ?? state.activeTaskId;
   if (!taskId) return state;
   const idx = state.rounds.findIndex((r) => r.taskId === taskId);
@@ -293,6 +333,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         activeTaskId: null,
         taskState: 'PENDING',
         sseStatus: 'idle',
+        // 切会话清空上一会话的 token 用量  避免视觉串扰
+        contextUsage: null,
+        compacting: false,
         workbench: {
           ...state.workbench,
           activeView: action.sessionId ? 'chat' : 'home',
@@ -309,6 +352,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           activeTaskId: null,
           taskState: 'DONE',
           sseStatus: 'idle',
+          contextUsage: null,
+          compacting: false,
           workbench: {
             ...state.workbench,
             activeView: 'home',
@@ -325,6 +370,11 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         rounds: action.rounds,
         activeTaskId: null,
         taskState: 'DONE',
+        // 切到不同会话  优先用 history 接口带回的 session.context_usage 持久化快照
+        // 这样刷新页面 / 切回旧会话能立刻显示进度条 不必等下一轮 reply 再下发事件
+        // action.contextUsage 为 undefined 表示调用方未带快照  退回 null 不显示
+        contextUsage: action.contextUsage ?? null,
+        compacting: false,
         workbench: {
           ...state.workbench,
           activeView:
@@ -462,6 +512,16 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       };
     }
     case 'settings.error': return { ...state, settings: { ...state.settings, loading: false, saving: false } };
+
+    // 上下文用量事件透传  允许直接覆盖  保留 compacting 状态不被冲掉
+    case 'context.usage': return { ...state, contextUsage: action.usage };
+    // 一键压缩开始  仅置 loading 标志  期间 UI 禁用输入
+    case 'compact.start': return { ...state, compacting: true };
+    // 压缩完成  使用后端返回的 used_tokens_after 等数据刷新 contextUsage
+    case 'compact.done': return { ...state, compacting: false, contextUsage: action.usage };
+    // 压缩失败  仅清 loading  不动 contextUsage  让用户能再次尝试
+    case 'compact.fail': return { ...state, compacting: false };
+
     default: return state;
   }
 }

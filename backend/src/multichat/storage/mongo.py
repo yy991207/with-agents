@@ -69,6 +69,8 @@ def _normalize_models(models: list | None) -> list[dict[str, Any]] | None:
     """把 ModelCatalogEntry / dict 混合列表统一转成 dict 列表
 
     None 直接透传 表示"不更新此字段"
+    max_input_tokens 必填 dict 形式传入时缺失或 <=0 抛 ValueError
+        让路由层 422 而不是落库后 reload 时才炸
     """
     if models is None:
         return None
@@ -77,10 +79,22 @@ def _normalize_models(models: list | None) -> list[dict[str, Any]] | None:
         if isinstance(m, ModelCatalogEntry):
             out.append(m.model_dump(mode="json"))
         elif isinstance(m, dict):
+            tokens_raw = m.get("max_input_tokens")
+            try:
+                tokens = int(tokens_raw)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"available_models[{m.get('model_id')}] 缺 max_input_tokens 或非整数"
+                ) from exc
+            if tokens <= 0:
+                raise ValueError(
+                    f"available_models[{m.get('model_id')}] max_input_tokens 必须 >0"
+                )
             out.append(
                 {
                     "model_id": str(m.get("model_id", "")),
                     "label": str(m.get("label", "")),
+                    "max_input_tokens": tokens,
                 }
             )
         else:
@@ -89,7 +103,34 @@ def _normalize_models(models: list | None) -> list[dict[str, Any]] | None:
 
 
 def _agent_doc_to_record(doc: dict[str, Any]) -> AgentRecord:
-    """把数据库文档转成 AgentRecord  补默认值兜底老数据"""
+    """把数据库文档转成 AgentRecord  补默认值兜底老数据
+
+    available_models 兼容老数据:
+        历史文档没有 max_input_tokens 字段 直接验证会 422
+        读取阶段补一个保守默认 200000 让 agent 能加载起来
+        前端在配置页能看到默认值 提醒用户改成实际值
+        只兜底读取 不主动回写 避免错值固化到 DB
+    """
+    raw_models = doc.get("available_models", []) or []
+    legacy_default_tokens = 200000
+    fixed_models: list[dict[str, Any]] = []
+    for m in raw_models:
+        if not isinstance(m, dict):
+            continue
+        item = {
+            "model_id": str(m.get("model_id", "")),
+            "label": str(m.get("label", "")),
+        }
+        tokens_raw = m.get("max_input_tokens")
+        try:
+            tokens = int(tokens_raw) if tokens_raw is not None else legacy_default_tokens
+        except (TypeError, ValueError):
+            tokens = legacy_default_tokens
+        if tokens <= 0:
+            tokens = legacy_default_tokens
+        item["max_input_tokens"] = tokens
+        fixed_models.append(item)
+
     return AgentRecord.model_validate(
         {
             "name": doc["name"],
@@ -98,7 +139,7 @@ def _agent_doc_to_record(doc: dict[str, Any]) -> AgentRecord:
             "base_url": doc.get("base_url", ""),
             "api_key": doc.get("api_key", ""),
             "model": doc.get("model", ""),
-            "available_models": doc.get("available_models", []),
+            "available_models": fixed_models,
             "prompt": doc.get("prompt", ""),
             "version": int(doc.get("version", 1)),
             "updated_at": doc.get("updated_at", _utcnow()),
@@ -247,6 +288,68 @@ class MotorMongoStorage:
         )
         if result.matched_count == 0:
             raise KeyError(f"session 不存在 session_id={session_id}")
+
+    async def update_session_summary(
+        self,
+        session_id: str,
+        *,
+        summary: str,
+        summary_until_round: int,
+    ) -> None:
+        """覆盖更新会话摘要  单条 session 只保留一份摘要 不存历史
+
+        参数:
+            session_id: 会话 id  不存在抛 KeyError
+            summary: 新摘要正文  允许空字符串(等价于"清空摘要")
+            summary_until_round: 摘要覆盖到的 round_index
+                后续 _build_history 拼回时只追加该 round_index 之后的轮次
+                必须 >=0  否则抛 ValueError 防止误传 -1 之类把全部历史都当成"未摘要"
+
+        约束:
+            - 同 session 并发触发摘要靠 task_manager 端 asyncio.Lock 兜底
+              这里不重入  $set 是原子操作 后写覆盖前写
+            - summary_updated_at 一并刷新  方便前端展示"上次摘要时间"
+            - 顶层 updated_at 也刷  保证会话列表能反映最近活动
+        """
+        if summary_until_round < 0:
+            raise ValueError(
+                f"summary_until_round 不能为负 实际 {summary_until_round}"
+            )
+        now = _utcnow()
+        result = await self._db["sessions"].update_one(
+            {"session_id": session_id},
+            {
+                "$set": {
+                    "summary": summary,
+                    "summary_until_round": int(summary_until_round),
+                    "summary_updated_at": now,
+                    "updated_at": now,
+                }
+            },
+        )
+        if result.matched_count == 0:
+            raise KeyError(f"session 不存在 session_id={session_id}")
+
+    async def update_session_context_usage(
+        self,
+        session_id: str,
+        usage: dict[str, Any] | None,
+    ) -> None:
+        """覆盖更新会话上下文用量快照  用于刷新页面时恢复进度条状态
+
+        参数:
+            session_id: 会话 id  不存在静默忽略  避免给 task_manager 主流加 try
+            usage: token_counter.usage_payload 输出  None 表示清空
+
+        说明:
+            - 这是展示数据  失败不该阻塞 reply 流  上层 task_manager 已 except 兜底
+            - $set 原子操作  并发竞态由 mongo 自身保证  无需上层 lock
+            - 不刷顶层 updated_at  避免每轮 reply 都让会话列表抖动 (会话排序按 updated_at)
+        """
+        await self._db["sessions"].update_one(
+            {"session_id": session_id},
+            {"$set": {"context_usage": usage}},
+        )
 
     async def delete_session(self, session_id: str) -> int:
         """删除 session 与其下所有 rounds 返回删除的 round 数
@@ -791,6 +894,9 @@ class MotorMongoStorage:
             return 0
 
         # 默认模型池 = yaml.agents 中出现的所有 model 去重 + 常用扩展模型
+        # max_input_tokens 不在 seed 阶段写入  让用户在前端表单首次配置时显式填值
+        # 读取阶段 _agent_doc_to_record 兜底 200000 保证服务能起 但 DB 里这个字段为空
+        # 用户进入 agent 表单看到默认值后保存 才把真实值写进 DB
         yaml_models: list[str] = []
         for cfg in settings.agents.values():
             if cfg.model and cfg.model not in yaml_models:
@@ -799,7 +905,13 @@ class MotorMongoStorage:
         for m in extra_models:
             if m not in yaml_models:
                 yaml_models.append(m)
-        models_pool = [{"model_id": m, "label": m} for m in yaml_models]
+        models_pool = [
+            {
+                "model_id": m,
+                "label": m,
+            }
+            for m in yaml_models
+        ]
 
         now = _utcnow()
         docs: list[dict[str, Any]] = []

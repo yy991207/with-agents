@@ -91,9 +91,17 @@ export function convertAgentView(raw: unknown): AgentView {
   const ams = (r.available_models as unknown[]) ?? [];
   const available_models: ModelView[] = ams.map((m) => {
     const mr = (m ?? {}) as Record<string, unknown>;
+    // max_input_tokens 老数据可能没字段 兜底 200000  后端读取层也会兜底
+    // 此处与 backend/src/multichat/storage/mongo.py _agent_doc_to_record 保持一致
+    const tokensRaw = mr.max_input_tokens;
+    const tokens =
+      typeof tokensRaw === 'number' && tokensRaw > 0
+        ? Math.floor(tokensRaw)
+        : 200000;
     return {
       model_id: (mr.model_id as string) ?? '',
       label: (mr.label as string) ?? '',
+      max_input_tokens: tokens,
     };
   });
   const avatarRaw = r.avatar_data_url;

@@ -33,6 +33,9 @@ class AskResponse(BaseModel):
 
     session_id: str
     task_id: str
+    # ISO8601 字符串  来自 round.created_at  前端用它在用户气泡右侧显示创建时间
+    # 不传给前端就只能 client 时间近似  会和数据库不一致
+    created_at: str
 
 
 @router.post("/ask", response_model=AskResponse)
@@ -48,4 +51,8 @@ async def ask(body: AskRequest, request: Request) -> AskResponse:
     if round_obj is None:
         # 创建任务后立刻查不到 round 说明 task_manager 内部出了一致性问题
         raise HTTPException(500, "round not found after create")
-    return AskResponse(session_id=round_obj.session_id, task_id=task_id)
+    return AskResponse(
+        session_id=round_obj.session_id,
+        task_id=task_id,
+        created_at=round_obj.created_at.isoformat(),
+    )

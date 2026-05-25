@@ -78,6 +78,8 @@ export interface AskPayload {
 export interface AskResponse {
   session_id: string;
   task_id: string;
+  // 后端 round.created_at 透传  ISO8601 字符串  用于用户气泡显示创建时间
+  created_at: string;
 }
 
 // 发起一次问答任务

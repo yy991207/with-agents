@@ -636,6 +636,7 @@ class TaskManager:
                 )
                 flush_buf.clear()
             # 写入 reply.done 终态 保证 content 与最终一致
+            finished_at_iso = _now_iso()
             await self._storage.update_round_field(
                 task_id,
                 "reply",
@@ -644,14 +645,19 @@ class TaskManager:
                     "state": "done",
                     "content": full_text,
                     "started_at": _now_iso(),
-                    "finished_at": _now_iso(),
+                    "finished_at": finished_at_iso,
                 },
             )
             await self._set_state(task_id, TaskState.DONE)
             await hub.publish(
                 TaskEvent(
                     type="reply.done",
-                    data={"agent": agent_name, "content": full_text},
+                    data={
+                        "agent": agent_name,
+                        "content": full_text,
+                        # 前端流式刚结束就要显示时间  不传就得等下次 history 刷新
+                        "finished_at": finished_at_iso,
+                    },
                 )
             )
             await hub.publish(

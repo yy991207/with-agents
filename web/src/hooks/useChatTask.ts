@@ -26,7 +26,7 @@ export function useChatTask() {
       if (!trimmed) return;
 
       try {
-        const { task_id, session_id } = await ask({
+        const { task_id, session_id, created_at } = await ask({
           session_id: state.sessionId ?? undefined,
           user_message: trimmed,
         });
@@ -36,6 +36,7 @@ export function useChatTask() {
           sessionId: session_id,
           taskId: task_id,
           userMessage: trimmed,
+          createdAt: created_at,
         });
 
         const ctrl = new AbortController();

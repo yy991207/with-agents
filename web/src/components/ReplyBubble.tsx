@@ -178,11 +178,23 @@ function TextBlock({ html }: { html: string }) {
   );
 }
 
+// ISO 字符串 → 本地 HH:mm 显示  失败兜底空串避免渲染异常
+// 兼容性: 如果后端字符串没带时区  按 UTC 解释  防止历史 mongo naive datetime 导致显示晚 8 小时
+function formatTime(iso?: string): string {
+  if (!iso) return '';
+  const hasTZ = /[Zz]$|[+-]\d{2}:?\d{2}$/.test(iso);
+  const d = new Date(hasTZ ? iso : iso + 'Z');
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
 export default function ReplyBubble({ reply, agentLabel, avatarUrl, onRetry }: ReplyBubbleProps) {
   const color = getAgentColor(reply.agent);
   const title = agentLabel || reply.agent;
   const initials = title.slice(0, 1).toUpperCase();
   const isStreaming = reply.state === 'streaming' || reply.state === 'pending';
+  // reply 完成时间 来自后端 reply.finished_at  流式期间没值不显示
+  const timeText = formatTime(reply.finishedAt);
 
   const timeline = useMemo(() => buildTimeline(reply.segments), [reply.segments]);
 
@@ -273,7 +285,7 @@ export default function ReplyBubble({ reply, agentLabel, avatarUrl, onRetry }: R
       paddingBlock={8}
       style={{ width: '100%' }}
     >
-      {/* 头部:头像 + 名字 + 状态 */}
+      {/* 头部:头像 + 名字 + 时间 + 状态 */}
       <Flexbox horizontal align="center" gap={8}>
         {avatarUrl ? (
           <Avatar
@@ -296,6 +308,11 @@ export default function ReplyBubble({ reply, agentLabel, avatarUrl, onRetry }: R
         <span style={{ color: 'rgba(15, 23, 42, 0.92)', fontSize: 14, fontWeight: 500 }}>
           {title}
         </span>
+        {timeText ? (
+          <span style={{ color: 'rgba(71, 85, 105, 0.5)', fontSize: 11 }}>
+            {timeText}
+          </span>
+        ) : null}
         {isStreaming ? (
           <span style={{ color: 'rgba(71, 85, 105, 0.56)', fontSize: 12 }}>
             <LoadingOutlined spin /> 生成中

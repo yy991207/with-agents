@@ -48,6 +48,7 @@ export function convertRound(raw: unknown): RoundView {
     (r.user_message as string) ?? (r.question as string) ?? '';
 
   // reply 字段补全 toolCalls 历史不存中间过程  一律为空数组
+  // finishedAt 来自 round.reply.finished_at  历史轮次 reply 完成时落库
   const replyRaw = r.reply as Record<string, unknown> | undefined;
   const reply = replyRaw
     ? {
@@ -59,6 +60,7 @@ export function convertRound(raw: unknown): RoundView {
         toolCalls: [],
         segments: [],
         error: replyRaw.error as string | undefined,
+        finishedAt: typeof replyRaw.finished_at === 'string' ? (replyRaw.finished_at as string) : undefined,
       }
     : undefined;
 
@@ -78,6 +80,7 @@ export function convertRound(raw: unknown): RoundView {
     thinks,
     decision,
     reply,
+    createdAt: typeof r.created_at === 'string' ? (r.created_at as string) : undefined,
   };
 }
 

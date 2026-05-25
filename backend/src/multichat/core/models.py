@@ -107,6 +107,16 @@ class Round(BaseModel):
             return _LEGACY_STATE_MAP[v]
         return v
 
+    @field_validator("created_at", "updated_at", mode="before")
+    @classmethod
+    def _ensure_utc_tz(cls, v: Any) -> Any:
+        """mongo BSON datetime 取出来是 naive  统一打上 UTC tz_info
+        否则 model_dump(mode='json') 输出 '2026-05-25T08:10:00' 不带时区
+        前端 new Date 会当本地时间解析  导致用户气泡少 8 小时"""
+        if isinstance(v, datetime) and v.tzinfo is None:
+            return v.replace(tzinfo=timezone.utc)
+        return v
+
 
 class Session(BaseModel):
     """一次会话 含若干轮 Round"""

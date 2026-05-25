@@ -64,6 +64,8 @@ export interface ReplyView {
   toolCalls: ToolCallEvent[];
   segments: ReplySegment[];   // 按时间顺序排列的文本+工具调用
   error?: string;
+  // reply 写完时的 ISO8601  用于在 reply 头部显示完成时间  没值就不显示
+  finishedAt?: string;
 }
 
 // 一轮完整对话(用户消息 + N 个 think + 决策 + 回答)
@@ -81,6 +83,8 @@ export interface RoundView {
   judgePick?: AgentName;
   // 任务被取消时 前端展示一个简短原因
   cancelReason?: string;
+  // 用户气泡显示用的 ISO8601  来自 round.created_at  POST /ask 创建时落库
+  createdAt?: string;
 }
 
 // 会话元信息(列表用)
@@ -238,7 +242,7 @@ export type ChatAction =
   | { type: 'rounds.set'; rounds: RoundView[] }
   | { type: 'round.append'; round: RoundView }
   | { type: 'round.update'; taskId: string; patch: Partial<RoundView> }
-  | { type: 'task.created'; sessionId: string; taskId: string; userMessage: string }
+  | { type: 'task.created'; sessionId: string; taskId: string; userMessage: string; createdAt?: string }
   // 抗刷新重连场景:把 activeTaskId 重新挂回去 准备接收 snapshot 帧
   | { type: 'task.resume'; taskId: string; taskState?: TaskState }
   | { type: 'task.state'; state: TaskState }

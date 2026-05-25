@@ -1,5 +1,5 @@
 import { message, Popconfirm } from 'antd';
-import { ActionIcon, Avatar, DraggablePanel } from '@lobehub/ui';
+import { ActionIcon } from '@lobehub/ui';
 import {
   Bell,
   Bot,
@@ -78,7 +78,6 @@ export default function LobeSidebar({ onNavigate, onOpenSettings }: LobeSidebarP
         padding={'12px 4px'}
         style={{
           background: 'var(--ant-color-bg-layout)',
-          borderInlineEnd: '1px solid rgba(15, 23, 42, 0.06)',
           flex: '0 0 auto',
         }}
         width={40}
@@ -93,28 +92,18 @@ export default function LobeSidebar({ onNavigate, onOpenSettings }: LobeSidebarP
   }
 
   return (
-    <DraggablePanel
-      defaultSize={{ width: 320, height: '100%' }}
-      expandable={false}
-      headerHeight={0}
-      maxWidth={400}
-      minWidth={240}
-      mode="fixed"
-      placement="left"
-      showHandlerWhenUnexpand={false}
-      size={{ height: '100%' }}
-      style={{ background: 'var(--ant-color-bg-layout)', height: '100%' }}
+    <Flexbox
+      height={'100%'}
+      style={{
+        background: 'var(--ant-color-bg-layout)',
+        flex: '0 0 auto',
+      }}
+      width={320}
     >
       <Flexbox gap={8} height={'100%'} style={{ overflow: 'hidden', padding: 8 }}>
         <Flexbox gap={8}>
           <Flexbox horizontal align="center" justify="space-between" gap={8} width={'100%'} padding={'0 2px'}>
             <Flexbox horizontal align="center" gap={8} style={{ minWidth: 0, overflow: 'hidden' }}>
-              <Avatar
-                shape="square"
-                size={28}
-                icon={<Bot size={14} />}
-                style={{ background: 'rgba(15, 23, 42, 0.92)', color: '#fff' }}
-              />
               <Flexbox horizontal align="center" gap={4} style={{ minWidth: 0, overflow: 'hidden' }}>
                 <div
                   style={{
@@ -128,7 +117,7 @@ export default function LobeSidebar({ onNavigate, onOpenSettings }: LobeSidebarP
                     whiteSpace: 'nowrap',
                   }}
                 >
-                  Multi Chat
+                  With agents
                 </div>
               </Flexbox>
             </Flexbox>
@@ -230,6 +219,6 @@ export default function LobeSidebar({ onNavigate, onOpenSettings }: LobeSidebarP
           </LobeSectionList>
         </Flexbox>
       </Flexbox>
-    </DraggablePanel>
+    </Flexbox>
   );
 }

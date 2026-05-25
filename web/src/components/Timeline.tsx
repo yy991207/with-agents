@@ -93,6 +93,7 @@ export default function Timeline({
               cancelReason={round.cancelReason}
               cancelled={round.state === 'CANCELLED'}
               content={round.userMessage}
+              createdAt={round.createdAt}
             />
 
             {showThinkPanel ? (

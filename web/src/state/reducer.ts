@@ -246,7 +246,13 @@ function applySSEEvent(
     case 'reply.done': {
       if (!round.reply) return state;
       const content = readString(data, 'content');
-      const reply: ReplyView = { ...round.reply, state: 'done', content: content ?? round.reply.content };
+      const finishedAt = readString(data, 'finished_at');
+      const reply: ReplyView = {
+        ...round.reply,
+        state: 'done',
+        content: content ?? round.reply.content,
+        finishedAt: finishedAt ?? round.reply.finishedAt,
+      };
       return apply({ ...round, reply, state: 'DONE' }, 'DONE');
     }
     case 'reply.error': {
@@ -340,7 +346,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         sessionId: action.sessionId,
         activeTaskId: action.taskId,
         taskState: 'PENDING',
-        rounds: [...state.rounds, createEmptyRound(action.taskId, action.userMessage, state.settings.drafts)],
+        rounds: [...state.rounds, createEmptyRound(action.taskId, action.userMessage, state.settings.drafts, action.createdAt)],
         sessions: updatedSessions,
         workbench: {
           ...state.workbench,
@@ -464,10 +470,11 @@ export function createEmptyRound(
   taskId: string,
   userMessage: string,
   drafts?: Record<string, AgentEditDraft>,
+  createdAt?: string,
 ): RoundView {
   const empty: Record<string, ThinkView> = {};
   if (drafts) {
     for (const name of Object.keys(drafts)) empty[name] = { agent: name, state: 'pending' };
   }
-  return { taskId, state: 'PENDING', userMessage, thinks: empty };
+  return { taskId, state: 'PENDING', userMessage, thinks: empty, createdAt };
 }

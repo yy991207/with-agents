@@ -1,4 +1,7 @@
-// 用户消息气泡:右对齐,更贴近 LobeHub 的圆角卡片外观
+// 用户消息气泡:右对齐,LobeChat ChatItem 风格的浅灰底气泡
+// 无边框/无阴影,padding 适中,圆角与 LobeChat 的 colorFillTertiary 一致
+import { Flexbox } from 'react-layout-kit';
+
 export interface UserBubbleProps {
   content: string;
   cancelled?: boolean;
@@ -11,36 +14,41 @@ export default function UserBubble({
   cancelReason,
 }: UserBubbleProps) {
   return (
-    <div style={{ alignItems: 'flex-end', display: 'flex', flexDirection: 'column', gap: 8, margin: '8px 0' }}>
+    <Flexbox
+      align="flex-end"
+      className="lobe-chat-item-right"
+      gap={6}
+      paddingBlock={8}
+      style={{ paddingInlineStart: 36 }}
+    >
       {cancelled ? (
         <div
           style={{
             background: 'rgba(239, 68, 68, 0.08)',
-            border: '1px solid rgba(239, 68, 68, 0.16)',
             borderRadius: 999,
             color: 'rgba(185, 28, 28, 0.9)',
             fontSize: 12,
-            padding: '4px 10px',
+            padding: '2px 10px',
           }}
         >
-          已取消{cancelReason ? `：${cancelReason}` : ''}
+          已取消{cancelReason ? `:${cancelReason}` : ''}
         </div>
       ) : null}
       <div
         style={{
-          background: 'linear-gradient(180deg, #f8fbff 0%, #edf5ff 100%)',
-          border: '1px solid #dbeafe',
-          borderRadius: '22px 22px 8px 22px',
-          boxShadow: '0 10px 24px rgba(59, 130, 246, 0.08)',
+          background: 'rgba(15, 23, 42, 0.06)',
+          borderRadius: 16,
           color: 'rgba(15, 23, 42, 0.92)',
+          fontSize: 14,
+          lineHeight: 1.7,
           maxWidth: 720,
-          padding: '14px 16px',
+          padding: '8px 14px',
           whiteSpace: 'pre-wrap',
           wordBreak: 'break-word',
         }}
       >
         {content}
       </div>
-    </div>
+    </Flexbox>
   );
 }

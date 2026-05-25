@@ -3,7 +3,6 @@
 import { Button } from 'antd';
 import UserBubble from './UserBubble';
 import ThinkPanel from './ThinkPanel';
-import ThinkCardChip from './ThinkCardChip';
 import DecisionCard from './DecisionCard';
 import ReplyBubble from './ReplyBubble';
 import { useChat } from '../state/ChatContext';
@@ -90,8 +89,8 @@ export default function Timeline({
               content={round.userMessage}
             />
 
-            <div style={{ marginTop: 10 }}>
-              {showThinkPanel ? (
+            {showThinkPanel ? (
+              <div style={{ marginTop: 10 }}>
                 <ThinkPanel
                   round={round}
                   agentLabels={agentLabels}
@@ -101,10 +100,8 @@ export default function Timeline({
                       : undefined
                   }
                 />
-              ) : (
-                <ThinkCardChip round={round} agentLabels={agentLabels} />
-              )}
-            </div>
+              </div>
+            ) : null}
 
             {showDecision && onChoose ? (
               <div style={{ marginTop: 10 }}>

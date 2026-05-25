@@ -45,36 +45,58 @@ body {
   background-color: rgba(0, 0, 0, 0.32);
 }
 
-/* HTML 回复内容的基础样式 dangerousSetInnerHTML 渲染时使用 */
+/* HTML 回复内容的基础样式:对齐 LobeChat Markdown(article[data-code-type=markdown])
+ * font-size 14 / line-height 1.6 / 标题与段落间距适中 / 代码与表格圆角 8 */
+.reply-html {
+  color: rgba(15, 23, 42, 0.92);
+  font-size: 14px;
+  line-height: 1.6;
+  word-break: break-word;
+}
 .reply-html p {
   margin: 4px 0;
 }
-.reply-html h2 {
-  margin: 12px 0 6px;
-  font-size: 18px;
+.reply-html h1,
+.reply-html h2,
+.reply-html h3,
+.reply-html h4 {
   font-weight: 600;
+  line-height: 1.4;
+  margin: 12px 0 4px;
+}
+.reply-html h1 {
+  font-size: 20px;
+}
+.reply-html h2 {
+  font-size: 18px;
 }
 .reply-html h3 {
-  margin: 10px 0 4px;
   font-size: 16px;
-  font-weight: 600;
+}
+.reply-html h4 {
+  font-size: 15px;
 }
 .reply-html ul,
 .reply-html ol {
   margin: 4px 0;
-  padding-left: 20px;
+  padding-left: 22px;
 }
 .reply-html li {
   margin: 2px 0;
 }
+.reply-html hr {
+  border: 0;
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+  margin: 12px 0;
+}
 .reply-html pre {
-  margin: 8px 0;
-  padding: 12px;
-  background: #f6f8fa;
-  border-radius: 10px;
-  overflow-x: auto;
+  background: rgba(15, 23, 42, 0.04);
+  border-radius: 8px;
   font-size: 13px;
   line-height: 1.6;
+  margin: 8px 0;
+  overflow-x: auto;
+  padding: 12px;
 }
 .reply-html code {
   font-family: Menlo, Monaco, 'Courier New', monospace;
@@ -82,12 +104,12 @@ body {
 }
 .reply-html p code,
 .reply-html li code {
-  padding: 2px 6px;
-  background: #f0f4f8;
+  background: rgba(15, 23, 42, 0.06);
   border-radius: 4px;
+  padding: 2px 6px;
 }
 .reply-html a {
-  color: #1677ff;
+  color: var(--ant-color-link, #1677ff);
   text-decoration: none;
 }
 .reply-html a:hover {
@@ -98,24 +120,32 @@ body {
 }
 .reply-html table {
   border-collapse: collapse;
+  border-radius: 8px;
   margin: 8px 0;
+  overflow: hidden;
   width: 100%;
 }
 .reply-html th,
 .reply-html td {
-  border: 1px solid #e5e7eb;
+  border: 1px solid rgba(15, 23, 42, 0.08);
   padding: 6px 12px;
   text-align: left;
 }
 .reply-html th {
-  background: #f6f8fa;
+  background: rgba(15, 23, 42, 0.04);
   font-weight: 600;
 }
 .reply-html blockquote {
+  border-left: 3px solid rgba(15, 23, 42, 0.12);
+  color: rgba(51, 65, 85, 0.72);
   margin: 8px 0;
   padding: 4px 12px;
-  border-left: 3px solid #dbe4f0;
-  color: rgba(51, 65, 85, 0.72);
+}
+.reply-html > *:first-child {
+  margin-top: 0;
+}
+.reply-html > *:last-child {
+  margin-bottom: 0;
 }
 
 @keyframes reply-cursor-blink {

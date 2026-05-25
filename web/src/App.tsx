@@ -10,6 +10,7 @@ import LobeChatView from './components/lobehub/LobeChatView';
 import LobeHomeView from './components/lobehub/LobeHomeView';
 import LobePlaceholderView from './components/lobehub/LobePlaceholderView';
 import LobeSidebar from './components/lobehub/LobeSidebar';
+import LobeTaskView from './components/lobehub/LobeTaskView';
 import LobeWorkbenchShell from './components/lobehub/LobeWorkbenchShell';
 import type { RecommendCardDefinition } from './components/lobehub/lobeData';
 import { useChatTask, isFatalSSEError } from './hooks/useChatTask';
@@ -152,13 +153,6 @@ export default function App() {
     }
   };
 
-  const activeAgentLabel = (() => {
-    const agentName = state.settings.activeAgentName ?? state.settings.judgeTarget;
-    if (!agentName) return 'Lobe AI';
-    const draft = state.settings.drafts[agentName];
-    return draft?.displayName || agentName;
-  })();
-
   const handleNavigate = (view: WorkbenchView) => {
     dispatch({ type: 'ui.view.set', view });
   };
@@ -191,11 +185,9 @@ export default function App() {
     if (state.workbench.activeView === 'home') {
       return (
         <LobeHomeView
-          agentLabel={activeAgentLabel}
           input={inputNode}
           recommendPage={state.workbench.recommendPage}
           onAction={handleRecommendAction}
-          onOpenView={handleNavigate}
           onRotateRecommendations={() => dispatch({ type: 'ui.recommend.rotate' })}
         />
       );
@@ -207,6 +199,15 @@ export default function App() {
           input={inputNode}
           scrollRef={scrollRef}
           timeline={timelineNode}
+        />
+      );
+    }
+
+    if (state.workbench.activeView === 'tasks') {
+      return (
+        <LobeTaskView
+          onOpenChat={() => handleNavigate('chat')}
+          onNavigate={handleNavigate}
         />
       );
     }

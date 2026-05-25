@@ -597,6 +597,13 @@ class TaskManager:
         节流策略: 把 LLM 吐的小 chunk 缓冲在内存 buf 中
         每 reply_flush_interval_ms 一次或回复结束时把 buf 一次性 append 到 mongo
         既减少写库次数 又保证最终内容完整
+
+        段时间线持久化:
+            除了节流追加 reply_content 之外  还按时间顺序维护 reply.segments
+            chunk 累积到 current_text_buf  tool_call / tool_result 到来时
+            先把当前文本封成 text 段 push 到 segments_buf 再 push tool 段并整组写库
+            reply.done 终态前把残余 text 封段  最后把 segments 一并落到 reply 终态文档里
+            这样刷新页面 / 切回旧会话时  可以从 mongo 完整还原文本与工具调用的交错顺序
         """
         await self._set_state(task_id, TaskState.REPLYING)
         await hub.publish(TaskEvent(type="reply.start", data={"agent": agent_name}))
@@ -608,23 +615,51 @@ class TaskManager:
                 "state": "streaming",
                 "content": "",
                 "started_at": _now_iso(),
+                # 初始化 segments 为空数组  后续按时间顺序追加  避免 update_reply_segments
+                # 在 reply 还没建出来的瞬间写到不存在的父对象上
+                "segments": [],
             },
         )
 
         flush_buf: list[str] = []
+        # segments_buf  按时间顺序的段时间线  最终覆盖写到 reply.segments
+        # current_text_buf  当前还没封段的文本累积  遇到 tool 事件或 reply 结束时封段
+        segments_buf: list[dict[str, Any]] = []
+        current_text_buf: list[str] = []
         loop = asyncio.get_event_loop()
         last_flush_ts = loop.time()
         flush_interval_s = self._settings.runtime.reply_flush_interval_ms / 1000.0
 
+        def _flush_text_segment() -> bool:
+            """把 current_text_buf 里的文本封成一个 text 段 push 到 segments_buf
+
+            空文本不封段  返回是否真的产生了新段  调用方据此决定要不要写库
+            """
+            if not current_text_buf:
+                return False
+            text = "".join(current_text_buf)
+            current_text_buf.clear()
+            if not text:
+                return False
+            # 与最后一个段同为 text 时  直接合并  避免 LLM 切片粒度过细产出空文本段
+            if segments_buf and segments_buf[-1].get("type") == "text":
+                segments_buf[-1]["content"] = (
+                    segments_buf[-1].get("content", "") + text
+                )
+            else:
+                segments_buf.append({"type": "text", "content": text})
+            return True
+
         async def on_event(ev: TaskEvent) -> None:
             # 先把事件原样推到 hub 给前端流式
             await hub.publish(ev)
-            # reply.chunk 单独走节流写库
+            # reply.chunk 单独走节流写库  同时累积进 current_text_buf 等待封段
             if ev.type == "reply.chunk":
                 nonlocal last_flush_ts
                 chunk_text = ev.data.get("chunk", "") or ""
                 if chunk_text:
                     flush_buf.append(chunk_text)
+                    current_text_buf.append(chunk_text)
                 now = loop.time()
                 if now - last_flush_ts >= flush_interval_s and flush_buf:
                     await self._storage.append_reply_chunk(
@@ -632,6 +667,48 @@ class TaskManager:
                     )
                     flush_buf.clear()
                     last_flush_ts = now
+                return
+
+            # 工具调用事件  按时间顺序封段  先把累积文本封成 text 段再 push tool_call
+            # 写库整组覆盖一次 让刷新后能完整还原顺序
+            if ev.type == "reply.tool_call":
+                _flush_text_segment()
+                tool = ev.data.get("tool", "") or ""
+                tool_input = ev.data.get("input", "") or ""
+                segments_buf.append(
+                    {
+                        "type": "tool_call",
+                        "tool": tool,
+                        "input": tool_input,
+                    }
+                )
+                try:
+                    await self._storage.update_reply_segments(task_id, segments_buf)
+                except Exception:
+                    # 段写库失败不阻塞 reply 主流程  日志保留即可
+                    _logger.exception(
+                        "reply.tool_call 段持久化失败 忽略", task_id=task_id
+                    )
+                return
+
+            if ev.type == "reply.tool_result":
+                _flush_text_segment()
+                tool = ev.data.get("tool", "") or ""
+                tool_result = ev.data.get("result", "") or ""
+                segments_buf.append(
+                    {
+                        "type": "tool_result",
+                        "tool": tool,
+                        "result": tool_result,
+                    }
+                )
+                try:
+                    await self._storage.update_reply_segments(task_id, segments_buf)
+                except Exception:
+                    _logger.exception(
+                        "reply.tool_result 段持久化失败 忽略", task_id=task_id
+                    )
+                return
 
         try:
             full_text = await run_reply(
@@ -649,7 +726,9 @@ class TaskManager:
                     task_id, "".join(flush_buf)
                 )
                 flush_buf.clear()
-            # 写入 reply.done 终态 保证 content 与最终一致
+            # reply 完成前把尾部残余文本封段  保证 segments 是完整时间线
+            _flush_text_segment()
+            # 写入 reply.done 终态 保证 content 与最终一致  segments 同步落
             finished_at_iso = _now_iso()
             await self._storage.update_round_field(
                 task_id,
@@ -660,6 +739,7 @@ class TaskManager:
                     "content": full_text,
                     "started_at": _now_iso(),
                     "finished_at": finished_at_iso,
+                    "segments": segments_buf,
                 },
             )
             await self._set_state(task_id, TaskState.DONE)

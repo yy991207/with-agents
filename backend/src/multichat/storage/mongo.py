@@ -503,6 +503,29 @@ class MotorMongoStorage:
         if result.matched_count == 0:
             raise KeyError(f"round 不存在 task_id={task_id}")
 
+    async def update_reply_segments(
+        self, task_id: str, segments: list[dict[str, Any]]
+    ) -> None:
+        """整组覆盖写 round.reply.segments 用于持久化按时间顺序的 reply 段时间线
+
+        segments 形如:
+            [
+                {"type": "text", "content": "..."},
+                {"type": "tool_call", "tool": "Read", "input": "..."},
+                {"type": "tool_result", "tool": "Read", "result": "..."},
+                ...
+            ]
+
+        实现细节:
+            - 走 update_round_field 复用同一份 dot path 写法 保持一致性
+            - 不在这里做去重 / 合并 调用方 _do_reply 自己负责段顺序与文本封段
+            - reply 字段在创建时已经存在 直接写 reply.segments 不会因为父字段 null 报错
+              因为 _do_reply 在写 segments 之前已经先写过 reply={...}
+
+        失败抛 KeyError 由调用方决定是否上抛
+        """
+        await self.update_round_field(task_id, "reply.segments", segments)
+
     async def cancel_orphan_rounds(self, reason: str = "server_restart") -> int:
         """启动时清理孤儿 round 把"进行中"状态的 round 一律置为 cancelled
 

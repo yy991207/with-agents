@@ -5,11 +5,13 @@ import type {
   AgentName,
   AgentView,
   ModelView,
+  ReplySegment,
   RoundView,
   SessionMeta,
   TaskState,
   ThinkState,
   ThinkView,
+  ToolCallEvent,
 } from './types';
 
 // /sessions 返回的 snake_case dict → SessionMeta
@@ -20,6 +22,63 @@ export function convertSession(raw: unknown): SessionMeta {
     title: (r.title as string) ?? '',
     updatedAt: (r.updated_at as string) ?? (r.updatedAt as string) ?? '',
   };
+}
+
+// 把后端落库的 reply.segments 转成前端 ReplySegment[]
+// 后端字段名与前端一致 (type / content / tool / input / result)  这里只做安全 cast
+// 任何无法识别的段一律跳过 不抛异常 保证历史数据缺字段时也能渲染
+function convertSegments(raw: unknown): ReplySegment[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ReplySegment[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const seg = item as Record<string, unknown>;
+    const type = seg.type;
+    if (type === 'text') {
+      out.push({ type: 'text', content: (seg.content as string) ?? '' });
+    } else if (type === 'tool_call') {
+      out.push({
+        type: 'tool_call',
+        tool: (seg.tool as string) ?? '',
+        input: typeof seg.input === 'string' ? (seg.input as string) : undefined,
+      });
+    } else if (type === 'tool_result') {
+      out.push({
+        type: 'tool_result',
+        tool: (seg.tool as string) ?? '',
+        result: (seg.result as string) ?? '',
+      });
+    }
+  }
+  return out;
+}
+
+// 从 segments 反推 toolCalls 列表  老组件按 toolCalls 数组渲染
+// 同名工具按时间顺序配对 tool_call → tool_result  没匹配上的 tool_result 单独追加一项
+// 与 reducer 里 reply.tool_call / reply.tool_result 实时合并的逻辑保持一致
+function deriveToolCalls(segments: ReplySegment[]): ToolCallEvent[] {
+  const calls: ToolCallEvent[] = [];
+  for (const seg of segments) {
+    if (seg.type === 'tool_call') {
+      calls.push({ tool: seg.tool ?? '', input: seg.input });
+    } else if (seg.type === 'tool_result') {
+      const tool = seg.tool ?? '';
+      // 从后往前找第一个同名且没填 result 的 tool_call  填 result
+      let matched = false;
+      for (let i = calls.length - 1; i >= 0; i--) {
+        if (calls[i].tool === tool && !calls[i].result) {
+          calls[i] = { ...calls[i], result: seg.result };
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) {
+        // 没匹配上的孤儿 result  保留为独立项 避免丢信息
+        calls.push({ tool, result: seg.result });
+      }
+    }
+  }
+  return calls;
 }
 
 // /history 返回的 mongo round 文档 → RoundView
@@ -47,9 +106,12 @@ export function convertRound(raw: unknown): RoundView {
   const userMessage =
     (r.user_message as string) ?? (r.question as string) ?? '';
 
-  // reply 字段补全 toolCalls 历史不存中间过程  一律为空数组
+  // reply 还原  segments 来自后端 reply.segments  老数据里没这字段就给空数组
+  // toolCalls 从 segments 反推  保证刷新页面后历史轮次工具调用按时间顺序还原
   // finishedAt 来自 round.reply.finished_at  历史轮次 reply 完成时落库
   const replyRaw = r.reply as Record<string, unknown> | undefined;
+  const segments = replyRaw ? convertSegments(replyRaw.segments) : [];
+  const toolCalls = deriveToolCalls(segments);
   const reply = replyRaw
     ? {
         agent: (replyRaw.agent as AgentName) ?? '',
@@ -57,8 +119,8 @@ export function convertRound(raw: unknown): RoundView {
           (replyRaw.state as 'streaming' | 'done' | 'failed' | 'cancelled') ??
           'done',
         content: (replyRaw.content as string) ?? '',
-        toolCalls: [],
-        segments: [],
+        toolCalls,
+        segments,
         error: replyRaw.error as string | undefined,
         finishedAt: typeof replyRaw.finished_at === 'string' ? (replyRaw.finished_at as string) : undefined,
       }

@@ -100,6 +100,7 @@ export default function Timeline({
                 <ThinkPanel
                   round={round}
                   agentLabels={agentLabels}
+                  agentMetas={agentMetas}
                   onRetry={
                     onRetryThink
                       ? (agent) => onRetryThink(round.taskId, agent)

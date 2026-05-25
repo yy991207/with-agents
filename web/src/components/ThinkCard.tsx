@@ -1,12 +1,17 @@
 // 单个 think 卡片:展示某个 agent 的思考要点,根据状态切换不同呈现
+// 头部头像优先用 agent 上传的 avatarUrl,否则回退首字母 + 配色色块
+// 视觉风格与 ReplyBubble 保持一致
 import { Alert, Button, Space, Spin, Tag } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
+import { Avatar } from '@lobehub/ui';
 import { getAgentColor } from '../theme/tokens';
 import type { ThinkView } from '../state/types';
 
 export interface ThinkCardProps {
   think: ThinkView;
   agentLabel?: string;
+  // agent 配置里设置的头像 data URL  没有时回退到首字母色块
+  avatarUrl?: string | null;
   onRetry?: () => void;
 }
 
@@ -27,10 +32,11 @@ function stateMeta(state: ThinkView['state']): { text: string; color: string } {
   }
 }
 
-export default function ThinkCard({ think, agentLabel, onRetry }: ThinkCardProps) {
+export default function ThinkCard({ think, agentLabel, avatarUrl, onRetry }: ThinkCardProps) {
   const color = getAgentColor(think.agent);
   const meta = stateMeta(think.state);
   const title = agentLabel || think.agent;
+  const initials = title.slice(0, 1).toUpperCase();
 
   return (
     <div
@@ -54,16 +60,25 @@ export default function ThinkCard({ think, agentLabel, onRetry }: ThinkCardProps
         }}
       >
         <div style={{ alignItems: 'center', display: 'flex', gap: 8, minWidth: 0 }}>
-          <span
-            style={{
-              background: color,
-              borderRadius: '50%',
-              display: 'inline-block',
-              flex: '0 0 auto',
-              height: 8,
-              width: 8,
-            }}
-          />
+          {avatarUrl ? (
+            <Avatar
+              avatar={avatarUrl}
+              shape="square"
+              size={24}
+              title={title}
+              style={{ flex: '0 0 auto' }}
+            />
+          ) : (
+            <Avatar
+              background={color}
+              shape="square"
+              size={24}
+              title={title}
+              style={{ color: '#fff', flex: '0 0 auto', fontSize: 12, fontWeight: 600 }}
+            >
+              {initials}
+            </Avatar>
+          )}
           <span
             style={{
               color: 'rgba(15, 23, 42, 0.92)',

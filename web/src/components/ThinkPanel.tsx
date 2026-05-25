@@ -2,12 +2,19 @@
 // 数字员工模型重构后:agent 数量动态 渲染基于 round.thinks 的 keys
 import { Col, Row } from 'antd';
 import ThinkCard from './ThinkCard';
-import { agentLabelOf, type AgentLabelMap } from '../state/agentLabels';
+import {
+  agentAvatarOf,
+  agentLabelOf,
+  type AgentLabelMap,
+  type AgentMetaMap,
+} from '../state/agentLabels';
 import type { AgentName, RoundView } from '../state/types';
 
 export interface ThinkPanelProps {
   round: RoundView;
   agentLabels?: AgentLabelMap;
+  // 给每张 ThinkCard 拿头像用  没传走 ThinkCard 内部首字母兜底
+  agentMetas?: AgentMetaMap;
   onRetry?: (agent: AgentName) => void;
 }
 
@@ -23,6 +30,7 @@ function spanFor(count: number): number {
 export default function ThinkPanel({
   round,
   agentLabels,
+  agentMetas,
   onRetry,
 }: ThinkPanelProps) {
   // 用 round.thinks 的 key 顺序保持稳定 后端塞进来什么顺序就什么顺序
@@ -36,6 +44,7 @@ export default function ThinkPanel({
           <ThinkCard
             think={round.thinks[agent]}
             agentLabel={agentLabelOf(agentLabels, agent)}
+            avatarUrl={agentAvatarOf(agentMetas, agent)}
             onRetry={onRetry ? () => onRetry(agent) : undefined}
           />
         </Col>

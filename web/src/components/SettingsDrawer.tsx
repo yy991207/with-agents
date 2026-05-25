@@ -15,7 +15,6 @@ import {
   Select,
   Space,
   Spin,
-  Tag,
   Typography,
 } from 'antd';
 import {
@@ -370,40 +369,6 @@ function AgentForm({
         overflow: 'hidden',
       }}
     >
-      <div
-        style={{
-          borderBottom: '1px solid #eef2f7',
-          padding: '14px 16px 12px',
-        }}
-      >
-        <Space size="small" wrap>
-          <Tag color="blue" style={{ borderRadius: 999, marginInlineEnd: 0 }}>
-            v{draft.version}
-          </Tag>
-          <Tag
-            style={{
-              background: headerColor,
-              borderColor: headerColor,
-              borderRadius: 999,
-              color: '#fff',
-              marginInlineEnd: 0,
-            }}
-          >
-            {draft.displayName || draft.name}
-          </Tag>
-          {draft.dirty ? (
-            <Tag color="orange" style={{ borderRadius: 999, marginInlineEnd: 0 }}>
-              未保存
-            </Tag>
-          ) : (
-            <Tag style={{ borderRadius: 999, marginInlineEnd: 0 }}>已同步</Tag>
-          )}
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            内部 ID：{draft.name}
-          </Text>
-        </Space>
-      </div>
-
       <div style={{ padding: 16 }}>
         {/* 头像区:独立于 Form  上传/移除直连后端  不参与 dirty/save */}
         <input
@@ -629,18 +594,15 @@ export default function SettingsDrawer() {
       open={open}
       onClose={closeDrawer}
       destroyOnClose={false}
+      styles={{ header: { borderBottom: 'none' } }}
     >
       <Spin spinning={loading} tip="加载配置中…">
         <div
           style={{
-            background: '#f8fafc',
-            border: '1px solid #e5e7eb',
-            borderRadius: 18,
             display: 'flex',
             gap: 16,
             height: '100%',
             minHeight: 640,
-            padding: 12,
           }}
         >
           {/* 左侧类目菜单 */}
@@ -659,7 +621,7 @@ export default function SettingsDrawer() {
               selectedKeys={[settingsCategory]}
               onClick={({ key }) => setSettingsCategory(key)}
               items={[
-                { key: 'agents', label: '数字员工配置' },
+                { key: 'agents', label: 'agent' },
                 { key: 'judge', label: 'Judge 选择' },
                 { key: 'mcp', label: 'MCP 配置' },
                 { key: 'skills', label: 'Skills 配置' },
@@ -701,7 +663,7 @@ export default function SettingsDrawer() {
                         options={Object.values(drafts).map((d) => ({
                           value: d.name,
                           label: (
-                            <span style={{ color: getAgentColor(d.name), fontWeight: 600 }}>
+                            <span style={{ color: 'rgba(15, 23, 42, 0.92)', fontWeight: 500 }}>
                               {d.displayName || d.name}
                             </span>
                           ),
@@ -791,7 +753,7 @@ export default function SettingsDrawer() {
                     <Space direction="vertical" size="middle">
                       {Object.values(drafts).map((d) => (
                         <Radio key={d.name} value={d.name}>
-                          <span style={{ color: getAgentColor(d.name), fontWeight: 600 }}>
+                          <span style={{ color: 'rgba(15, 23, 42, 0.92)', fontWeight: 500 }}>
                             {d.displayName || d.name}
                           </span>
                         </Radio>

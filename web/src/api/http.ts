@@ -221,6 +221,38 @@ export function updateJudge(target: string): Promise<void> {
   });
 }
 
+// POST /api/agents/{name}/avatar 上传头像
+// 走 multipart/form-data 不能复用 request() 的 JSON 路径
+// 后端限制 ≤ 2MB png/jpeg/webp/gif  超了走 413  mime 不对走 415
+export async function uploadAgentAvatar(
+  name: string,
+  file: File,
+): Promise<AgentView> {
+  const form = new FormData();
+  form.append('file', file, file.name);
+  const resp = await fetch(
+    `${BASE}/api/agents/${encodeURIComponent(name)}/avatar`,
+    {
+      method: 'POST',
+      body: form,
+    },
+  );
+  if (!resp.ok) {
+    const detail = await extractErrorDetail(resp);
+    throw new Error(`HTTP ${resp.status}: ${detail}`);
+  }
+  return convertAgentView(await resp.json());
+}
+
+// DELETE /api/agents/{name}/avatar 清掉头像 返回最新 AgentView
+export async function deleteAgentAvatar(name: string): Promise<AgentView> {
+  const data = await request<unknown>(
+    `/api/agents/${encodeURIComponent(name)}/avatar`,
+    { method: 'DELETE' },
+  );
+  return convertAgentView(data);
+}
+
 // ====== MCP 配置相关 API (单文档 JSON) ======
 
 export interface McpConfigResponse {

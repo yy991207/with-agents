@@ -5,10 +5,12 @@ import { message } from 'antd';
 import {
   createAgent as apiCreateAgent,
   deleteAgent as apiDeleteAgent,
+  deleteAgentAvatar,
   getAgent,
   getAgents,
   updateAgent,
   updateJudge,
+  uploadAgentAvatar,
 } from '../api/http';
 import { convertAgentView } from '../state/converters';
 import { useChat } from '../state/ChatContext';
@@ -161,6 +163,7 @@ export function useSettings() {
               prompt: draft.prompt,
               version: updated.version,
               updated_at: new Date().toISOString(),
+              avatar_data_url: draft.avatarDataUrl,
             },
           });
           message.success(`已保存 当前版本 v${updated.version}`);
@@ -246,6 +249,58 @@ export function useSettings() {
     [dispatch],
   );
 
+  // 上传头像  独立路径  不走 save 不影响 dirty
+  // 后端 413 = 文件过大  415 = 格式不支持  404 = agent 不存在
+  const uploadAvatar = useCallback(
+    async (name: string, file: File): Promise<boolean> => {
+      try {
+        const updated = await uploadAgentAvatar(name, file);
+        dispatch({
+          type: 'settings.agent.avatar.set',
+          agentName: name,
+          avatarDataUrl: updated.avatar_data_url,
+        });
+        message.success('头像已更新');
+        return true;
+      } catch (e) {
+        const status = parseHttpStatus(e);
+        const msg = describeError(e);
+        if (status === 413) {
+          message.error('头像不能超过 2MB');
+        } else if (status === 415) {
+          message.error('仅支持 PNG / JPEG / WebP / GIF 格式');
+        } else if (status === 404) {
+          message.warning('该 agent 已不存在 请刷新');
+        } else {
+          message.error(`头像上传失败:${msg}`);
+        }
+        return false;
+      }
+    },
+    [dispatch],
+  );
+
+  // 删除头像 走独立路径不影响 dirty
+  const removeAvatar = useCallback(
+    async (name: string): Promise<boolean> => {
+      try {
+        await deleteAgentAvatar(name);
+        dispatch({
+          type: 'settings.agent.avatar.set',
+          agentName: name,
+          avatarDataUrl: null,
+        });
+        message.success('头像已移除');
+        return true;
+      } catch (e) {
+        const msg = describeError(e);
+        message.error(`头像移除失败:${msg}`);
+        return false;
+      }
+    },
+    [dispatch],
+  );
+
   return {
     state: state.settings,
     openDrawer,
@@ -257,5 +312,7 @@ export function useSettings() {
     setJudge,
     createAgent,
     removeAgent,
+    uploadAvatar,
+    removeAvatar,
   };
 }

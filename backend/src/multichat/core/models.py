@@ -164,6 +164,10 @@ class AgentRecord(BaseModel):
     prompt: str
     version: int = 1
     updated_at: datetime = Field(default_factory=_utcnow)
+    # 头像 data URL 形如 data:image/png;base64,xxx 没设置时为 None
+    # 直接 base64 内联存进 agent doc 不走对象存储 体积上限由路由层校验 ≤2MB
+    # 头像变更不触发 version 自增也不进 agent_history  它是展示数据不是配置
+    avatar_data_url: str | None = None
 
 
 # ============================================================ MCP 服务器配置

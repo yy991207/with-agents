@@ -6,7 +6,12 @@ import ThinkPanel from './ThinkPanel';
 import DecisionCard from './DecisionCard';
 import ReplyBubble from './ReplyBubble';
 import { useChat } from '../state/ChatContext';
-import { agentLabelOf, buildAgentLabelMap } from '../state/agentLabels';
+import {
+  agentAvatarOf,
+  agentLabelOf,
+  buildAgentLabelMap,
+  buildAgentMetaMap,
+} from '../state/agentLabels';
 import type { AgentName, RoundView } from '../state/types';
 
 function isActive(round: RoundView, activeTaskId: string | null): boolean {
@@ -27,6 +32,7 @@ export default function Timeline({
 }: TimelineProps) {
   const { state, dispatch } = useChat();
   const agentLabels = buildAgentLabelMap(state.settings.drafts);
+  const agentMetas = buildAgentMetaMap(state.settings.drafts);
 
   if (state.rounds.length === 0) {
     return (
@@ -122,6 +128,7 @@ export default function Timeline({
                 <ReplyBubble
                   reply={round.reply}
                   agentLabel={agentLabelOf(agentLabels, round.reply.agent)}
+                  avatarUrl={agentAvatarOf(agentMetas, round.reply.agent)}
                   onRetry={
                     onCancel
                       ? () => onCancel(round.taskId)

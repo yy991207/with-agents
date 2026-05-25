@@ -102,6 +102,8 @@ def _agent_doc_to_record(doc: dict[str, Any]) -> AgentRecord:
             "prompt": doc.get("prompt", ""),
             "version": int(doc.get("version", 1)),
             "updated_at": doc.get("updated_at", _utcnow()),
+            # 老数据可能没这个字段 兜底 None
+            "avatar_data_url": doc.get("avatar_data_url"),
         }
     )
 
@@ -587,6 +589,35 @@ class MotorMongoStorage:
 
         await self._db["agents"].update_one({"name": name}, {"$set": updates})
         merged = {**existing, **updates}
+        return _agent_doc_to_record(merged)
+
+    # --------------------------------------------------------- Agent Avatar
+    # 头像变更不触发 version 自增也不归档进 agent_history
+    # 因为头像是展示数据  和 prompt/model/api_key 这些会影响 LLM 行为的字段不同
+    async def set_agent_avatar(
+        self, name: str, avatar_data_url: str
+    ) -> AgentRecord:
+        """更新 agent 头像  data URL 直接覆盖  不存在抛 KeyError"""
+        existing = await self._db["agents"].find_one({"name": name}, {"_id": 0})
+        if existing is None:
+            raise KeyError(f"agent 不存在 name={name}")
+        await self._db["agents"].update_one(
+            {"name": name},
+            {"$set": {"avatar_data_url": avatar_data_url}},
+        )
+        merged = {**existing, "avatar_data_url": avatar_data_url}
+        return _agent_doc_to_record(merged)
+
+    async def clear_agent_avatar(self, name: str) -> AgentRecord:
+        """清掉 agent 头像  字段置 None  不存在抛 KeyError"""
+        existing = await self._db["agents"].find_one({"name": name}, {"_id": 0})
+        if existing is None:
+            raise KeyError(f"agent 不存在 name={name}")
+        await self._db["agents"].update_one(
+            {"name": name},
+            {"$set": {"avatar_data_url": None}},
+        )
+        merged = {**existing, "avatar_data_url": None}
         return _agent_doc_to_record(merged)
 
     # --------------------------------------------------------- Agent History

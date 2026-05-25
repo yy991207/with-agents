@@ -93,6 +93,7 @@ export function convertAgentView(raw: unknown): AgentView {
       label: (mr.label as string) ?? '',
     };
   });
+  const avatarRaw = r.avatar_data_url;
   return {
     name: (r.name as string) ?? '',
     display_name:
@@ -105,5 +106,6 @@ export function convertAgentView(raw: unknown): AgentView {
     prompt: (r.prompt as string) ?? '',
     version: (r.version as number) ?? 1,
     updated_at: (r.updated_at as string) ?? '',
+    avatar_data_url: typeof avatarRaw === 'string' && avatarRaw ? avatarRaw : null,
   };
 }

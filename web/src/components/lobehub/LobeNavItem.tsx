@@ -4,6 +4,8 @@ import { Flexbox } from 'react-layout-kit';
 
 export interface LobeNavItemProps {
   icon: LucideIcon;
+  // 可选自定义 icon  传了优先用这个  比如助理列表渲染头像
+  iconNode?: ReactNode;
   label: string;
   active?: boolean;
   dimmed?: boolean;
@@ -14,6 +16,7 @@ export interface LobeNavItemProps {
 
 export default function LobeNavItem({
   icon: Icon,
+  iconNode,
   label,
   active = false,
   dimmed = false,
@@ -51,9 +54,10 @@ export default function LobeNavItem({
               borderRadius: 8,
               color: active ? 'rgba(15, 23, 42, 0.92)' : 'rgba(51, 65, 85, 0.72)',
               flex: '0 0 auto',
+              overflow: 'hidden',
             }}
           >
-            <Icon size={18} />
+            {iconNode ?? <Icon size={18} />}
           </Flexbox>
           <div
             style={{

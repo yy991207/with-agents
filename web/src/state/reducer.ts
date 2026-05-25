@@ -64,6 +64,7 @@ function viewToDraft(a: AgentView): AgentEditDraft {
     prompt: a.prompt,
     version: a.version,
     dirty: false,
+    avatarDataUrl: a.avatar_data_url ?? null,
   };
 }
 
@@ -440,6 +441,20 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       };
     }
     case 'settings.agent.tab.switch': return { ...state, settings: { ...state.settings, activeAgentName: action.name } };
+    // 头像上传/删除直连 mongo  这里只把 server 返回的 avatarDataUrl 同步到本地 draft
+    // 不动 dirty / version  保留用户其它字段的编辑稿
+    case 'settings.agent.avatar.set': {
+      const cur = state.settings.drafts[action.agentName];
+      if (!cur) return state;
+      const next: AgentEditDraft = { ...cur, avatarDataUrl: action.avatarDataUrl };
+      return {
+        ...state,
+        settings: {
+          ...state.settings,
+          drafts: { ...state.settings.drafts, [action.agentName]: next },
+        },
+      };
+    }
     case 'settings.error': return { ...state, settings: { ...state.settings, loading: false, saving: false } };
     default: return state;
   }

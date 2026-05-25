@@ -1,8 +1,9 @@
 // 配置抽屉:数字员工管理 + MCP 服务器配置
 // 左侧菜单: 数字员工配置 | Judge 选择 | MCP 配置
 // 右侧面板: 根据选中类目切换内容
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Avatar as AntAvatar,
   Button,
   Drawer,
   Form,
@@ -21,6 +22,7 @@ import {
   ReloadOutlined,
   PlusOutlined,
   DeleteOutlined,
+  UploadOutlined,
 } from '@ant-design/icons';
 import {
   discoverAgentModels,
@@ -264,6 +266,9 @@ interface AgentFormProps {
   onPatch: (patch: Partial<AgentEditDraft>) => void;
   onSave: () => void;
   onReset: () => void;
+  // 头像上传 / 移除 走独立路径  和 dirty / save 解耦
+  onAvatarUpload: (file: File) => Promise<boolean>;
+  onAvatarRemove: () => Promise<boolean>;
 }
 
 function AgentForm({
@@ -272,8 +277,12 @@ function AgentForm({
   onPatch,
   onSave,
   onReset,
+  onAvatarUpload,
+  onAvatarRemove,
 }: AgentFormProps) {
   const [discovering, setDiscovering] = useState(false);
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const modelOptions = useMemo(
     () =>
@@ -313,6 +322,43 @@ function AgentForm({
       setDiscovering(false);
     }
   };
+
+  // 头像上传:本地先校验大小/格式 再走 onAvatarUpload
+  // 后端有同样校验  这里只是优化体验避免无谓的 2MB 网络往返
+  const _AVATAR_MAX = 2 * 1024 * 1024;
+  const _AVATAR_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif'];
+  const handlePickFile = () => {
+    fileInputRef.current?.click();
+  };
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    // 选完一次就 reset value 让选同一个文件也能再次触发 onChange
+    e.target.value = '';
+    if (!file) return;
+    if (!_AVATAR_TYPES.includes(file.type)) {
+      message.error('仅支持 PNG / JPEG / WebP / GIF 格式');
+      return;
+    }
+    if (file.size > _AVATAR_MAX) {
+      message.error('头像不能超过 2MB');
+      return;
+    }
+    setAvatarBusy(true);
+    try {
+      await onAvatarUpload(file);
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
+  const handleRemoveAvatar = async () => {
+    setAvatarBusy(true);
+    try {
+      await onAvatarRemove();
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
+  const avatarInitial = (draft.displayName || draft.name).slice(0, 1).toUpperCase();
 
   return (
     <div
@@ -359,6 +405,77 @@ function AgentForm({
       </div>
 
       <div style={{ padding: 16 }}>
+        {/* 头像区:独立于 Form  上传/移除直连后端  不参与 dirty/save */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          onChange={handleFileChange}
+          style={{ display: 'none' }}
+        />
+        <div
+          style={{
+            alignItems: 'center',
+            background: 'rgba(15, 23, 42, 0.02)',
+            border: '1px solid #eef2f7',
+            borderRadius: 12,
+            display: 'flex',
+            gap: 16,
+            marginBottom: 16,
+            padding: 12,
+          }}
+        >
+          {draft.avatarDataUrl ? (
+            <AntAvatar
+              src={draft.avatarDataUrl}
+              shape="circle"
+              size={64}
+              alt={draft.displayName || draft.name}
+            />
+          ) : (
+            <AntAvatar
+              shape="circle"
+              size={64}
+              style={{
+                background: headerColor,
+                color: '#fff',
+                fontSize: 24,
+                fontWeight: 600,
+              }}
+            >
+              {avatarInitial}
+            </AntAvatar>
+          )}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ color: 'rgba(15, 23, 42, 0.92)', fontSize: 14, fontWeight: 600 }}>
+              头像
+            </div>
+            <div style={{ color: 'rgba(71, 85, 105, 0.72)', fontSize: 12, marginTop: 2 }}>
+              用于对话和会话列表展示  PNG / JPEG / WebP / GIF  ≤ 2MB
+            </div>
+          </div>
+          <Space size={8}>
+            <Button
+              icon={<UploadOutlined />}
+              size="small"
+              loading={avatarBusy}
+              onClick={handlePickFile}
+            >
+              {draft.avatarDataUrl ? '更换' : '上传'}
+            </Button>
+            {draft.avatarDataUrl ? (
+              <Button
+                size="small"
+                danger
+                disabled={avatarBusy}
+                onClick={handleRemoveAvatar}
+              >
+                移除
+              </Button>
+            ) : null}
+          </Space>
+        </div>
+
         <Form layout="vertical" disabled={saving}>
           <Form.Item label="显示名" required>
             <Input
@@ -475,6 +592,8 @@ export default function SettingsDrawer() {
     setJudge,
     createAgent,
     removeAgent,
+    uploadAvatar,
+    removeAvatar,
   } = useSettings();
   const { open, loading, saving, drafts, judgeTarget, activeAgentName } = state;
 
@@ -619,6 +738,8 @@ export default function SettingsDrawer() {
                         onPatch={(patch) => setDraftField(activeAgentName, patch)}
                         onSave={() => save(activeAgentName)}
                         onReset={() => reset(activeAgentName)}
+                        onAvatarUpload={(file) => uploadAvatar(activeAgentName, file)}
+                        onAvatarRemove={() => removeAvatar(activeAgentName)}
                       />
                     )}
                   </>

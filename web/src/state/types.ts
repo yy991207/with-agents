@@ -129,6 +129,9 @@ export interface AgentView {
   prompt: string;
   version: number;
   updated_at: string;
+  // 头像 data URL 形如 data:image/png;base64,xxx 没设置时 null
+  // 直出给 <img src=> 用 后端 base64 内联存进 mongo agent doc
+  avatar_data_url: string | null;
 }
 
 // /api/agents 列表响应
@@ -182,6 +185,8 @@ export interface AgentEditDraft {
   prompt: string;
   version: number;             // 服务端版本 用于乐观锁
   dirty: boolean;              // 是否有未保存改动
+  // 头像 data URL  null = 未设置  上传 / 删除走独立接口  不参与 dirty / save
+  avatarDataUrl: string | null;
 }
 
 // Settings 抽屉的子状态
@@ -257,6 +262,8 @@ export type ChatAction =
   | { type: 'settings.agent.created'; agent: AgentView }
   | { type: 'settings.agent.deleted'; name: string }
   | { type: 'settings.agent.tab.switch'; name: string }
+  // 头像上传 / 删除走独立路径  不参与 draft.dirty 也不需要 save 按钮触发
+  | { type: 'settings.agent.avatar.set'; agentName: string; avatarDataUrl: string | null }
   | { type: 'settings.error'; message: string };
 
 // 任务忙碌态判定:THINKING / THINK_DONE / DECIDED / REPLYING 视为忙

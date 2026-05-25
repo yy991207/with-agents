@@ -197,6 +197,20 @@ export default function LobeSidebar({ onNavigate, onOpenSettings }: LobeSidebarP
                 <LobeNavItem
                   key={draft.name}
                   icon={Bot}
+                  iconNode={
+                    draft.avatarDataUrl ? (
+                      <img
+                        src={draft.avatarDataUrl}
+                        alt={draft.displayName || draft.name}
+                        style={{
+                          borderRadius: 8,
+                          height: 24,
+                          objectFit: 'cover',
+                          width: 24,
+                        }}
+                      />
+                    ) : undefined
+                  }
                   label={draft.displayName || draft.name}
                   onClick={() => handleOpenAgent(draft.name)}
                   actions={<ActionIcon icon={Ellipsis} title="打开助理设置" onClick={() => handleOpenAgent(draft.name)} />}

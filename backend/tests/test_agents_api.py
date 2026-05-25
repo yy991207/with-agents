@@ -416,3 +416,120 @@ async def test_history_for_unknown_agent_404(app_client) -> None:
     ac, _s, _r = app_client
     resp = await ac.get("/api/agents/NoSuchAgent/history")
     assert resp.status_code == 404
+
+
+# ------------------------------------------------------- 头像上传 / 删除
+# 1x1 透明 PNG 最小完整文件 用于测试上传  实际渲染浏览器能识别
+_SMALL_PNG = (
+    b"\x89PNG\r\n\x1a\n"
+    b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+    b"\x00\x00\x00\rIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01"
+    b"\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
+@pytest.mark.asyncio
+async def test_upload_avatar_ok(app_client) -> None:
+    """上传 PNG 后 agent.avatar_data_url 形如 data:image/png;base64,xxx
+    返回的 AgentView 也应该带这个字段
+    持久化进 mongo 后再 GET /api/agents 仍可看到
+    """
+    ac, storage, _r = app_client
+    files = {"file": ("avatar.png", _SMALL_PNG, "image/png")}
+    resp = await ac.post("/api/agents/GLM/avatar", files=files)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert isinstance(data.get("avatar_data_url"), str)
+    assert data["avatar_data_url"].startswith("data:image/png;base64,")
+
+    # 存储层持久化
+    rec = await storage.get_agent("GLM")
+    assert rec is not None
+    assert rec.avatar_data_url == data["avatar_data_url"]
+
+    # 列表接口也应携带
+    list_resp = await ac.get("/api/agents")
+    glm = next(a for a in list_resp.json()["agents"] if a["name"] == "GLM")
+    assert glm["avatar_data_url"] == data["avatar_data_url"]
+
+
+@pytest.mark.asyncio
+async def test_upload_avatar_too_large_413(app_client) -> None:
+    """超过 2MB 必须 413  防止把巨图塞进 mongo 把 doc 撑爆"""
+    ac, _s, _r = app_client
+    big = b"\x89PNG\r\n\x1a\n" + b"\x00" * (2 * 1024 * 1024 + 100)
+    files = {"file": ("big.png", big, "image/png")}
+    resp = await ac.post("/api/agents/GLM/avatar", files=files)
+    assert resp.status_code == 413
+
+
+@pytest.mark.asyncio
+async def test_upload_avatar_unsupported_mime_415(app_client) -> None:
+    """非 png/jpeg/webp/gif 应 415"""
+    ac, _s, _r = app_client
+    files = {"file": ("bad.txt", b"not an image at all", "text/plain")}
+    resp = await ac.post("/api/agents/GLM/avatar", files=files)
+    assert resp.status_code == 415
+
+
+@pytest.mark.asyncio
+async def test_upload_avatar_unknown_agent_404(app_client) -> None:
+    """目标 agent 不存在  返回 404"""
+    ac, _s, _r = app_client
+    files = {"file": ("a.png", _SMALL_PNG, "image/png")}
+    resp = await ac.post("/api/agents/NoSuchAgent/avatar", files=files)
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_avatar_clears_field(app_client) -> None:
+    """先上传后删除  字段回到 None"""
+    ac, storage, _r = app_client
+    files = {"file": ("a.png", _SMALL_PNG, "image/png")}
+    up = await ac.post("/api/agents/GLM/avatar", files=files)
+    assert up.status_code == 200
+
+    resp = await ac.delete("/api/agents/GLM/avatar")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["avatar_data_url"] is None
+
+    rec = await storage.get_agent("GLM")
+    assert rec is not None
+    assert rec.avatar_data_url is None
+
+
+@pytest.mark.asyncio
+async def test_delete_avatar_unknown_agent_404(app_client) -> None:
+    """删除不存在 agent 的头像  404"""
+    ac, _s, _r = app_client
+    resp = await ac.delete("/api/agents/NoSuchAgent/avatar")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_avatar_change_does_not_bump_version(app_client) -> None:
+    """头像变更不应影响 version  agent_history 不应新增归档
+    头像是展示数据  不是 agent 配置变更
+    """
+    ac, storage, _r = app_client
+    before = await storage.get_agent("GLM")
+    assert before is not None
+    before_version = before.version
+    before_history = await storage.list_agent_history("GLM", limit=10)
+    before_history_count = len(before_history)
+
+    # 上传 + 删除各一次
+    await ac.post(
+        "/api/agents/GLM/avatar",
+        files={"file": ("a.png", _SMALL_PNG, "image/png")},
+    )
+    await ac.delete("/api/agents/GLM/avatar")
+
+    after = await storage.get_agent("GLM")
+    assert after is not None
+    assert after.version == before_version, "头像变更不应让 version +1"
+
+    after_history = await storage.list_agent_history("GLM", limit=10)
+    assert len(after_history) == before_history_count, "头像变更不应进 agent_history"

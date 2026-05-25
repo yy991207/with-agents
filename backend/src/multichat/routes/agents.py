@@ -21,9 +21,11 @@ POST   /api/agents/{name}/revert   回滚到指定历史版本
 
 from __future__ import annotations
 
+import base64
+
 import structlog
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 
 from ..core.models import ModelCatalogEntry
@@ -63,6 +65,8 @@ class AgentView(BaseModel):
     prompt: str
     version: int
     updated_at: str
+    # 头像 data URL 形如 data:image/png;base64,xxx 没设过为 None
+    avatar_data_url: str | None = None
 
 
 class AgentsListResponse(BaseModel):
@@ -185,6 +189,7 @@ def _to_view(record) -> AgentView:
         updated_at=record.updated_at.isoformat()
         if hasattr(record.updated_at, "isoformat")
         else str(record.updated_at),
+        avatar_data_url=getattr(record, "avatar_data_url", None),
     )
 
 
@@ -587,3 +592,79 @@ async def revert_agent(
     return UpdateAgentResponse(
         name=new_record.name, version=new_record.version, reloaded=reloaded
     )
+
+
+# ============================================================ 头像上传 / 删除
+# 设计要点
+#   - 头像直接以 data URL 形式 base64 内联存进 agent doc 不引入对象存储
+#   - 体积上限 2MB 防止把 mongo doc 撑过 16MB 硬限制
+#   - 仅接受 png/jpeg/webp/gif 四种主流格式 其它一律 415
+#   - 头像变更不触发 deep_agent 热替换 它不影响 LLM 行为
+#   - 头像变更不进 agent_history  它是展示数据  和 prompt/model 不同
+_AVATAR_MAX_BYTES = 2 * 1024 * 1024
+_ALLOWED_IMAGE_MIMES: dict[str, str] = {
+    "image/png": "image/png",
+    "image/jpeg": "image/jpeg",
+    "image/jpg": "image/jpeg",
+    "image/webp": "image/webp",
+    "image/gif": "image/gif",
+}
+
+
+@router.post("/agents/{name}/avatar", response_model=AgentView)
+async def upload_agent_avatar(
+    name: str, request: Request, file: UploadFile = File(...)
+) -> AgentView:
+    """上传 agent 头像  返回更新后的 AgentView
+
+    错误码
+        - 404 agent 不存在
+        - 413 图片超过 2MB
+        - 415 mime 不在白名单
+    """
+    storage = request.app.state.storage
+    existing = await storage.get_agent(name)
+    if existing is None:
+        raise HTTPException(404, f"agent not found: {name}")
+
+    # 校验 mime  浏览器有时给的 mime 不规范  做一层归一化
+    raw_mime = (file.content_type or "").lower().split(";")[0].strip()
+    canon_mime = _ALLOWED_IMAGE_MIMES.get(raw_mime)
+    if canon_mime is None:
+        raise HTTPException(
+            415,
+            f"unsupported image type: {raw_mime or 'unknown'} 仅支持 png/jpeg/webp/gif",
+        )
+
+    # 读全部字节做大小校验  超过上限直接 413
+    payload = await file.read()
+    if len(payload) > _AVATAR_MAX_BYTES:
+        raise HTTPException(
+            413,
+            f"image too large: {len(payload)} bytes 上限 {_AVATAR_MAX_BYTES} bytes (2MB)",
+        )
+    if not payload:
+        raise HTTPException(400, "empty file")
+
+    encoded = base64.b64encode(payload).decode("ascii")
+    data_url = f"data:{canon_mime};base64,{encoded}"
+
+    try:
+        record = await storage.set_agent_avatar(name, data_url)
+    except KeyError as exc:
+        # 极小概率上面查到了 但写时 agent 已被删  当 404 兜底
+        raise HTTPException(404, str(exc)) from exc
+    _logger.info("agent avatar uploaded", name=name, mime=canon_mime, bytes=len(payload))
+    return _to_view(record)
+
+
+@router.delete("/agents/{name}/avatar", response_model=AgentView)
+async def delete_agent_avatar(name: str, request: Request) -> AgentView:
+    """清除 agent 头像  返回更新后的 AgentView (avatar_data_url=None)"""
+    storage = request.app.state.storage
+    try:
+        record = await storage.clear_agent_avatar(name)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    _logger.info("agent avatar cleared", name=name)
+    return _to_view(record)

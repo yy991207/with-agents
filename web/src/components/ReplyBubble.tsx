@@ -19,6 +19,8 @@ import type { ReplySegment, ReplyView } from '../state/types';
 export interface ReplyBubbleProps {
   reply: ReplyView;
   agentLabel?: string;
+  // agent 配置里设置的头像 data URL  没有时回退到首字母色块
+  avatarUrl?: string | null;
   onRetry?: () => void;
 }
 
@@ -176,7 +178,7 @@ function TextBlock({ html }: { html: string }) {
   );
 }
 
-export default function ReplyBubble({ reply, agentLabel, onRetry }: ReplyBubbleProps) {
+export default function ReplyBubble({ reply, agentLabel, avatarUrl, onRetry }: ReplyBubbleProps) {
   const color = getAgentColor(reply.agent);
   const title = agentLabel || reply.agent;
   const initials = title.slice(0, 1).toUpperCase();
@@ -273,15 +275,24 @@ export default function ReplyBubble({ reply, agentLabel, onRetry }: ReplyBubbleP
     >
       {/* 头部:头像 + 名字 + 状态 */}
       <Flexbox horizontal align="center" gap={8}>
-        <Avatar
-          background={color}
-          shape="square"
-          size={28}
-          style={{ color: '#fff', fontSize: 13, fontWeight: 600 }}
-          title={title}
-        >
-          {initials}
-        </Avatar>
+        {avatarUrl ? (
+          <Avatar
+            avatar={avatarUrl}
+            shape="square"
+            size={28}
+            title={title}
+          />
+        ) : (
+          <Avatar
+            background={color}
+            shape="square"
+            size={28}
+            style={{ color: '#fff', fontSize: 13, fontWeight: 600 }}
+            title={title}
+          >
+            {initials}
+          </Avatar>
+        )}
         <span style={{ color: 'rgba(15, 23, 42, 0.92)', fontSize: 14, fontWeight: 500 }}>
           {title}
         </span>

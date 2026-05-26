@@ -16,7 +16,7 @@ export interface TransientScrollbarProps extends HTMLAttributes<HTMLDivElement> 
   visibleMs?: number;
   followResetKey?: unknown;
   followThresholdPx?: number;
-  resetPosition?: 'top' | 'bottom';
+  resetPosition?: 'top' | 'bottom' | 'preserve';
 }
 
 function buildClassName(baseClassName?: string, active?: boolean): string {
@@ -44,6 +44,7 @@ const TransientScrollbar = forwardRef<HTMLDivElement, TransientScrollbarProps>(
     const [scrolling, setScrolling] = useState(false);
     const [followBottom, setFollowBottom] = useState(true);
     const followBottomRef = useRef(true);
+    const resetPositionRef = useRef(resetPosition);
     const hideTimerRef = useRef<number | null>(null);
     const outerRef = useRef<HTMLDivElement | null>(null);
     const contentRef = useRef<HTMLDivElement | null>(null);
@@ -63,19 +64,29 @@ const TransientScrollbar = forwardRef<HTMLDivElement, TransientScrollbarProps>(
       el.scrollTop = 0;
     }, []);
 
+    const scheduleStickToBottom = useCallback(() => {
+      if (rafRef.current !== null) {
+        window.cancelAnimationFrame(rafRef.current);
+      }
+      rafRef.current = window.requestAnimationFrame(() => {
+        rafRef.current = null;
+        stickToBottom();
+      });
+    }, [stickToBottom]);
+
     const scheduleResetPosition = useCallback(() => {
       if (rafRef.current !== null) {
         window.cancelAnimationFrame(rafRef.current);
       }
       rafRef.current = window.requestAnimationFrame(() => {
         rafRef.current = null;
-        if (resetPosition === 'top') {
+        if (resetPositionRef.current === 'top') {
           stickToTop();
           return;
         }
         stickToBottom();
       });
-    }, [resetPosition, stickToBottom, stickToTop]);
+    }, [stickToBottom, stickToTop]);
 
     const markScrolling = useCallback(() => {
       setScrolling(true);
@@ -89,6 +100,7 @@ const TransientScrollbar = forwardRef<HTMLDivElement, TransientScrollbarProps>(
     }, [visibleMs]);
 
     useLayoutEffect(() => {
+      if (resetPosition === 'preserve') return;
       const nextFollowBottom = resetPosition === 'bottom';
       setFollowBottom(nextFollowBottom);
       followBottomRef.current = nextFollowBottom;
@@ -98,6 +110,10 @@ const TransientScrollbar = forwardRef<HTMLDivElement, TransientScrollbarProps>(
     useEffect(() => {
       followBottomRef.current = followBottom;
     }, [followBottom]);
+
+    useEffect(() => {
+      resetPositionRef.current = resetPosition;
+    }, [resetPosition]);
 
     useEffect(() => {
       return () => {
@@ -115,11 +131,11 @@ const TransientScrollbar = forwardRef<HTMLDivElement, TransientScrollbarProps>(
       if (!contentEl || typeof ResizeObserver === 'undefined') return;
       const observer = new ResizeObserver(() => {
         if (!followBottomRef.current) return;
-        scheduleResetPosition();
+        scheduleStickToBottom();
       });
       observer.observe(contentEl);
       return () => observer.disconnect();
-    }, [scheduleResetPosition]);
+    }, [scheduleStickToBottom]);
 
     const handleScroll = useCallback(
       (event: React.UIEvent<HTMLDivElement>) => {

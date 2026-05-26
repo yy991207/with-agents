@@ -158,6 +158,12 @@ export default function LobeSidebar({ onNavigate, onOpenSettings }: LobeSidebarP
                 void switchSession(session.sessionId);
                 onNavigate('chat');
               }}
+              draggable
+              onDragStart={(event) => {
+                event.dataTransfer.effectAllowed = 'copy';
+                event.dataTransfer.setData('application/x-session-id', session.sessionId);
+                event.dataTransfer.setData('text/plain', session.sessionId);
+              }}
             />
           </div>
         </div>

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import type { DragEvent, ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import { Flexbox } from 'react-layout-kit';
 
@@ -12,6 +12,8 @@ export interface LobeNavItemProps {
   badge?: ReactNode;
   actions?: ReactNode;
   onClick?: () => void;
+  draggable?: boolean;
+  onDragStart?: (event: DragEvent<HTMLDivElement>) => void;
 }
 
 export default function LobeNavItem({
@@ -23,12 +25,16 @@ export default function LobeNavItem({
   badge,
   actions,
   onClick,
+  draggable = false,
+  onDragStart,
 }: LobeNavItemProps) {
   return (
     <div
       role="button"
       tabIndex={0}
+      draggable={draggable}
       onClick={onClick}
+      onDragStart={onDragStart}
       onKeyDown={(event) => {
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();

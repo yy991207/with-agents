@@ -206,12 +206,21 @@ export type WorkbenchView =
   | 'community'
   | 'resource';
 
+export type ChatMultiViewLayout = 'single' | 'split-vertical' | 'split-horizontal';
+
+export interface ChatViewPane {
+  key: string;
+  sessionId: string | null;
+}
+
 export interface WorkbenchState {
   activeView: WorkbenchView;
   sidebarCollapsed: boolean;
   recentExpanded: boolean;
   agentsExpanded: boolean;
   recommendPage: number;
+  chatLayout: ChatMultiViewLayout;
+  chatPanes: ChatViewPane[];
 }
 
 // 当前会话的上下文 token 用量快照
@@ -292,6 +301,8 @@ export type ChatAction =
   | { type: 'ui.sidebar.toggle'; collapsed?: boolean }
   | { type: 'ui.section.toggle'; section: 'recent' | 'agents' }
   | { type: 'ui.recommend.rotate' }
+  | { type: 'ui.chat.layout.set'; layout: ChatMultiViewLayout }
+  | { type: 'ui.chat.panes.set'; panes: ChatViewPane[]; layout?: ChatMultiViewLayout }
   // 子窗全屏  agent 为空表示退出全屏
   | { type: 'ui.fullscreen.set'; fullscreen: FullscreenReply | null }
   | { type: 'ui.fullscreen.agent.set'; taskId: string; agent: AgentName }

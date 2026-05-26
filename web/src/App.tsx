@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import { message, Modal } from 'antd';
 import SettingsDrawer from './components/SettingsDrawer';
 import Timeline from './components/Timeline';
+import TimelineReadOnly from './components/TimelineReadOnly';
 import ChatInput from './components/ChatInput';
 import ReplyFullscreen from './components/ReplyFullscreen';
 import LobeChatView from './components/lobehub/LobeChatView';
@@ -28,13 +29,46 @@ import {
   loadPersisted,
   persistActiveTask,
 } from './state/persistence';
-import type { WorkbenchView } from './state/types';
+import type {
+  ContextUsage,
+  RoundView,
+  SessionMeta,
+  WorkbenchView,
+} from './state/types';
+
+function buildSessionMetaFromHistory(
+  sessionId: string,
+  raw: Record<string, unknown>,
+): SessionMeta {
+  return {
+    sessionId,
+    title: (raw.title as string) ?? '',
+    updatedAt: (raw.updated_at as string) ?? '',
+    parentSessionId: (raw.parent_session_id as string) ?? null,
+    branchFromTaskId: (raw.branch_from_task_id as string) ?? null,
+    branchFromRole:
+      ((raw.branch_from_role as 'user' | 'assistant' | null) ?? null),
+    branchFromAgent: (raw.branch_from_agent as string) ?? null,
+    draftMessage: (raw.draft_message as string) ?? null,
+  };
+}
 
 export default function App() {
   const { send, stop } = useChatTask();
   const { branch } = useBranchSession();
-  const { state, dispatch, registerSSEController } = useChat();
+  const { state, dispatch, registerSSEController, closeSSEController } = useChat();
   const [editingRoundId, setEditingRoundId] = useState<string | null>(null);
+  const [activePaneIndex, setActivePaneIndex] = useState(0);
+  const [paneHistories, setPaneHistories] = useState<
+    Record<
+      string,
+      {
+        rounds: RoundView[];
+        contextUsage: ContextUsage | null;
+        sessionMeta: SessionMeta | null;
+      }
+    >
+  >({});
   // 配置抽屉的开关入口由 useSettings 暴露
   const { openDrawer } = useSettings();
 
@@ -42,6 +76,41 @@ export default function App() {
   const bootstrappedRef = useRef(false);
   // 滚动容器 ref 用于自动滚到底部
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  const cachePaneHistory = (
+    sessionId: string,
+    rounds: RoundView[],
+    contextUsage: ContextUsage | null,
+    sessionMeta?: SessionMeta | null,
+  ) => {
+    setPaneHistories((prev) => ({
+      ...prev,
+      [sessionId]: {
+        rounds,
+        contextUsage,
+        sessionMeta: sessionMeta ?? null,
+      },
+    }));
+  };
+
+  const loadSessionSnapshot = async (sessionId: string) => {
+    const hist = await getHistory(sessionId);
+    const rounds = (hist.rounds as unknown as unknown[]).map(convertRound);
+    const sessRaw = (hist.session ?? {}) as unknown as Record<string, unknown>;
+    const usageRaw = sessRaw['context_usage'];
+    const contextUsage =
+      usageRaw && typeof usageRaw === 'object'
+        ? parseContextUsage(usageRaw as Record<string, unknown>)
+        : null;
+    const sessionMeta = buildSessionMetaFromHistory(sessionId, sessRaw);
+    cachePaneHistory(sessionId, rounds, contextUsage, sessionMeta);
+    return {
+      rounds,
+      contextUsage,
+      draftMessage: sessionMeta.draftMessage ?? null,
+      sessionMeta,
+    };
+  };
 
   // 首次 mount:读取 localStorage,尝试恢复 session + 重连 SSE
   useEffect(() => {
@@ -53,23 +122,13 @@ export default function App() {
       if (!sessionId) return;
 
       try {
-        const hist = await getHistory(sessionId);
-        const rounds = (hist.rounds as unknown as unknown[]).map(convertRound);
-        const sessRaw = (hist.session ?? {}) as unknown as Record<string, unknown>;
-        const usageRaw = sessRaw['context_usage'];
-        const contextUsage =
-          usageRaw && typeof usageRaw === 'object'
-            ? parseContextUsage(usageRaw as Record<string, unknown>)
-            : null;
+        const snapshot = await loadSessionSnapshot(sessionId);
         dispatch({
           type: 'history.loaded',
           sessionId,
-          rounds,
-          contextUsage,
-          draftMessage:
-            typeof sessRaw['draft_message'] === 'string'
-              ? (sessRaw['draft_message'] as string)
-              : null,
+          rounds: snapshot.rounds,
+          contextUsage: snapshot.contextUsage,
+          draftMessage: snapshot.draftMessage,
         });
 
         try {
@@ -84,7 +143,7 @@ export default function App() {
           // agent 列表加载失败不阻塞页面恢复
         }
 
-        const resumableTaskId = findResumableTaskId(rounds, activeTaskId);
+        const resumableTaskId = findResumableTaskId(snapshot.rounds, activeTaskId);
         if (activeTaskId && !resumableTaskId) {
           persistActiveTask(null);
           return;
@@ -121,7 +180,6 @@ export default function App() {
         } else {
           message.warning(`恢复历史失败:${msg}`);
         }
-        return;
       }
     })();
   }, [dispatch, registerSSEController]);
@@ -150,12 +208,16 @@ export default function App() {
     }
   }, [editingRoundId, state.taskState]);
 
-  const handleEditSend = (messageText: string, opts: { thinking?: boolean; agents: string[]; inputMode: 'single' | 'multi' }) => {
+  const handleEditSend = (
+    messageText: string,
+    opts: { thinking?: boolean; agents: string[]; inputMode: 'single' | 'multi' },
+  ) => {
     const currentRound = editingRound;
     if (!currentRound) return;
     Modal.confirm({
       title: '重新发送后会丢失后续历史',
-      content: '从这条消息之后的对话记录会被清空；如果这些内容已经压缩进上下文摘要，摘要也会一起删除。',
+      content:
+        '从这条消息之后的对话记录会被清空；如果这些内容已经压缩进上下文摘要，摘要也会一起删除。',
       okText: '继续发送',
       cancelText: '取消',
       onOk: async () => {
@@ -176,13 +238,73 @@ export default function App() {
     await branch(branchInput);
   };
 
+  const handleSelectPane = (index: number) => {
+    setActivePaneIndex(index);
+    const pane = state.workbench.chatPanes[index];
+    if (!pane?.sessionId || pane.sessionId === state.sessionId) return;
+    closeSSEController();
+    dispatch({ type: 'session.switch', sessionId: pane.sessionId });
+    void (async () => {
+      try {
+        const snapshot = await loadSessionSnapshot(pane.sessionId as string);
+        dispatch({
+          type: 'history.loaded',
+          sessionId: pane.sessionId as string,
+          rounds: snapshot.rounds,
+          contextUsage: snapshot.contextUsage,
+          draftMessage: snapshot.draftMessage,
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        message.error(`切换会话失败:${msg}`);
+      }
+    })();
+  };
+
+  const handleDropSession = async (droppedSessionId: string) => {
+    if (!droppedSessionId) return;
+    const existingIndex = state.workbench.chatPanes.findIndex(
+      (pane) => pane.sessionId === droppedSessionId,
+    );
+    if (existingIndex >= 0) {
+      setActivePaneIndex(existingIndex);
+      return;
+    }
+
+    const nextPanes =
+      state.workbench.chatLayout === 'single'
+        ? [
+            { key: 'primary', sessionId: state.sessionId },
+            { key: `pane-${Date.now()}`, sessionId: droppedSessionId },
+          ]
+        : [
+            state.workbench.chatPanes[0] ?? {
+              key: 'primary',
+              sessionId: state.sessionId,
+            },
+            { key: `pane-${Date.now()}`, sessionId: droppedSessionId },
+          ];
+    dispatch({
+      type: 'ui.chat.panes.set',
+      panes: nextPanes,
+      layout: 'split-vertical',
+    });
+    setActivePaneIndex(nextPanes.length - 1);
+    if (!paneHistories[droppedSessionId]) {
+      try {
+        await loadSessionSnapshot(droppedSessionId);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        message.error(`加载分屏会话失败:${msg}`);
+      }
+    }
+  };
+
   // 推荐卡片  默认走单 agent (judgeTarget 兜底  没设置就第一个 agent)
   const handleRecommendAction = (card: RecommendCardDefinition) => {
     if (card.action === 'send' && card.prompt) {
       const fallbackAgent =
-        state.settings.judgeTarget ||
-        Object.keys(state.settings.drafts)[0] ||
-        '';
+        state.settings.judgeTarget || Object.keys(state.settings.drafts)[0] || '';
       if (!fallbackAgent) {
         message.error('未配置 agent  请先在配置抽屉里新建一个 agent');
         return;
@@ -206,23 +328,68 @@ export default function App() {
     <ChatInput
       onSend={editingRound ? handleEditSend : send}
       onStop={stop}
-      initialValue={editingRound?.userMessage ?? state.sessionDraftMessage ?? undefined}
+      initialValue={
+        editingRound?.userMessage ?? state.sessionDraftMessage ?? undefined
+      }
     />
   );
+
   // 首页输入框  发送时强制新建会话(不带 session_id)  避免接着旧会话发言
-  // forceNewSession 在 useChatTask.send 里被识别  reducer 切 sessionId 时会清空旧 rounds
   const homeInputNode = (
     <ChatInput
       onSend={(msg, opts) => send(msg, { ...opts, forceNewSession: true })}
       onStop={stop}
     />
   );
+
   const timelineNode = (
-    <Timeline
-      onEditRound={handleStartEdit}
-      onBranchRound={handleBranchRound}
-    />
+    <Timeline onEditRound={handleStartEdit} onBranchRound={handleBranchRound} />
   );
+
+  const paneNodes =
+    state.workbench.chatLayout === 'single'
+      ? [timelineNode]
+      : state.workbench.chatPanes.map((pane) => {
+          if (!pane.sessionId || pane.sessionId === state.sessionId) return timelineNode;
+          const cached = paneHistories[pane.sessionId];
+          if (!cached) {
+            return (
+              <div
+                style={{
+                  color: 'rgba(71, 85, 105, 0.72)',
+                  fontSize: 13,
+                  padding: '24px 12px',
+                }}
+              >
+                正在加载会话…
+              </div>
+            );
+          }
+          return <TimelineReadOnly rounds={cached.rounds} />;
+        });
+
+  const paneResetKeys =
+    state.workbench.chatLayout === 'single'
+      ? [state.sessionId]
+      : state.workbench.chatPanes.map((pane, index) =>
+          index === activePaneIndex ? state.activeTaskId || pane.sessionId || pane.key : pane.key,
+        );
+
+  const paneResetPositions: Array<'top' | 'bottom' | 'preserve'> =
+    state.workbench.chatLayout === 'single'
+      ? [
+          (
+            state.taskState === 'PENDING' || state.taskState === 'REPLYING'
+              ? 'bottom'
+              : 'top'
+          ) as 'top' | 'bottom',
+        ]
+      : state.workbench.chatPanes.map<'top' | 'bottom' | 'preserve'>((pane, index) => {
+          const isActive = index === activePaneIndex;
+          const isMainPane = pane.sessionId === state.sessionId;
+          const busy = isActive && isMainPane && (state.taskState === 'PENDING' || state.taskState === 'REPLYING');
+          return busy ? 'bottom' : 'preserve';
+        });
 
   const renderWorkbenchContent = () => {
     if (state.workbench.activeView === 'home') {
@@ -231,7 +398,9 @@ export default function App() {
           input={homeInputNode}
           recommendPage={state.workbench.recommendPage}
           onAction={handleRecommendAction}
-          onRotateRecommendations={() => dispatch({ type: 'ui.recommend.rotate' })}
+          onRotateRecommendations={() =>
+            dispatch({ type: 'ui.recommend.rotate' })
+          }
         />
       );
     }
@@ -242,6 +411,15 @@ export default function App() {
           input={inputNode}
           scrollRef={scrollRef}
           timeline={timelineNode}
+          panes={paneNodes}
+          paneResetKeys={paneResetKeys}
+          paneResetPositions={paneResetPositions}
+          layout={state.workbench.chatLayout}
+          activePaneIndex={activePaneIndex}
+          onDropSession={(sessionId) => {
+            void handleDropSession(sessionId);
+          }}
+          onSelectPane={handleSelectPane}
           followResetKey={state.sessionId}
         />
       );

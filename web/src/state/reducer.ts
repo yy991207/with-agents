@@ -34,6 +34,8 @@ const initialWorkbench: WorkbenchState = {
   recentExpanded: true,
   agentsExpanded: true,
   recommendPage: 0,
+  chatLayout: 'single',
+  chatPanes: [{ key: 'primary', sessionId: null }],
 };
 
 export const initialState: ChatState = {
@@ -376,6 +378,13 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         workbench: {
           ...state.workbench,
           activeView: action.sessionId ? 'chat' : 'home',
+          chatLayout: action.sessionId ? state.workbench.chatLayout : 'single',
+          chatPanes:
+            action.sessionId === null
+              ? [{ key: 'primary', sessionId: null }]
+              : state.workbench.chatLayout === 'single'
+                ? [{ key: 'primary', sessionId: action.sessionId }]
+                : state.workbench.chatPanes,
         },
       };
     case 'session.deleted': {
@@ -396,9 +405,20 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           workbench: {
             ...state.workbench,
             activeView: 'home',
+            chatLayout: 'single',
+            chatPanes: [{ key: 'primary', sessionId: null }],
           },
         };
-      return { ...state, sessions };
+      return {
+        ...state,
+        sessions,
+        workbench: {
+          ...state.workbench,
+          chatPanes: state.workbench.chatPanes.map((pane) =>
+            pane.sessionId === action.sessionId ? { ...pane, sessionId: null } : pane,
+          ),
+        },
+      };
     }
     case 'sessions.set': return { ...state, sessions: action.sessions };
     case 'session.draft.set':
@@ -421,6 +441,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             action.rounds.length > 0 || state.workbench.activeView === 'chat'
               ? 'chat'
               : 'home',
+          chatPanes:
+            state.workbench.chatLayout === 'single'
+              ? [{ key: 'primary', sessionId: action.sessionId }]
+              : state.workbench.chatPanes,
         },
       };
     case 'round.append': return { ...state, rounds: [...state.rounds, action.round] };
@@ -463,6 +487,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         workbench: {
           ...state.workbench,
           activeView: 'chat',
+          chatPanes:
+            state.workbench.chatLayout === 'single'
+              ? [{ key: 'primary', sessionId: action.sessionId }]
+              : state.workbench.chatPanes,
         },
       };
     }
@@ -512,6 +540,23 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         workbench: {
           ...state.workbench,
           recommendPage: state.workbench.recommendPage + 1,
+        },
+      };
+    case 'ui.chat.layout.set':
+      return {
+        ...state,
+        workbench: {
+          ...state.workbench,
+          chatLayout: action.layout,
+        },
+      };
+    case 'ui.chat.panes.set':
+      return {
+        ...state,
+        workbench: {
+          ...state.workbench,
+          chatPanes: action.panes,
+          chatLayout: action.layout ?? state.workbench.chatLayout,
         },
       };
     case 'ui.fullscreen.set':

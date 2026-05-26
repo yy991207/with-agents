@@ -3,7 +3,7 @@
 // segments 里的 tool_call/tool_result 合并成可折叠 accordion 嵌入正文流
 import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Button, Collapse, Tooltip, Typography } from 'antd';
+import { Button, Collapse, Popover, Tooltip, Typography } from 'antd';
 import { Avatar } from '@lobehub/ui';
 import { Flexbox } from 'react-layout-kit';
 import {
@@ -13,10 +13,12 @@ import {
   ForkOutlined,
   LoadingOutlined,
   ReloadOutlined,
+  RetweetOutlined,
   StopOutlined,
 } from '@ant-design/icons';
 import { getAgentColor } from '../theme/tokens';
 import type { ReplySegment, ReplyView } from '../state/types';
+import type { AgentMetaMap } from '../state/agentLabels';
 
 export interface ReplyBubbleProps {
   reply: ReplyView;
@@ -31,6 +33,10 @@ export interface ReplyBubbleProps {
   onFullscreen?: () => void;
   // 从该 assistant 回复创建分支会话
   onBranch?: () => void;
+  // 同轮可切换查看的所有 replies  key=agent
+  replyOptions?: ReplyView[];
+  agentMetas?: AgentMetaMap;
+  onSwitchAgent?: (agent: string) => void;
   // 是否处于全屏模式  全屏模式下不再显示放大按钮  且 maxHeight 放大
   fullscreen?: boolean;
   // 该子窗是否为本轮选定的正式回答  multi 模式下用于在头像旁加灰色对号徽标
@@ -298,6 +304,98 @@ function ToolAccordion({ node }: { node: Extract<TimelineNode, { kind: 'tool' }>
   );
 }
 
+interface ReplyAgentSwitcherProps {
+  currentAgent: string;
+  replyOptions: ReplyView[];
+  agentMetas?: AgentMetaMap;
+  onSwitchAgent: (agent: string) => void;
+}
+function ReplyAgentSwitcher({
+  currentAgent,
+  replyOptions,
+  agentMetas,
+  onSwitchAgent,
+}: ReplyAgentSwitcherProps) {
+  const [open, setOpen] = useState(false);
+  if (replyOptions.length <= 1) return null;
+  const content = (
+    <div style={{ minWidth: 140, maxWidth: 220 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        {replyOptions.map((option) => {
+          const active = option.agent === currentAgent;
+          const avatarUrl = agentMetas?.[option.agent]?.avatarDataUrl ?? null;
+          const label = agentMetas?.[option.agent]?.displayName || option.agent;
+          return (
+            <button
+              key={option.agent}
+              type="button"
+              onClick={() => {
+                onSwitchAgent(option.agent);
+                setOpen(false);
+              }}
+              style={{
+                alignItems: 'center',
+                background: active ? 'rgba(15, 23, 42, 0.06)' : 'transparent',
+                border: 'none',
+                borderRadius: 8,
+                color: 'rgba(15, 23, 42, 0.88)',
+                cursor: 'pointer',
+                display: 'flex',
+                gap: 8,
+                padding: '6px 8px',
+                textAlign: 'left',
+                width: '100%',
+              }}
+            >
+              {avatarUrl ? (
+                <img
+                  src={avatarUrl}
+                  alt={label}
+                  style={{ borderRadius: 6, height: 20, objectFit: 'cover', width: 20 }}
+                />
+              ) : (
+                <span
+                  style={{
+                    alignItems: 'center',
+                    background: 'rgba(15, 23, 42, 0.08)',
+                    borderRadius: 6,
+                    display: 'inline-flex',
+                    fontSize: 11,
+                    fontWeight: 600,
+                    height: 20,
+                    justifyContent: 'center',
+                    width: 20,
+                  }}
+                >
+                  {label.slice(0, 1).toUpperCase()}
+                </span>
+              )}
+              <span style={{ flex: 1, fontSize: 13 }}>{label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+  return (
+    <Popover
+      content={content}
+      trigger="click"
+      open={open}
+      onOpenChange={setOpen}
+      placement="bottomLeft"
+    >
+      <Button
+        aria-label="切换本轮 agent 回复"
+        icon={<RetweetOutlined />}
+        size="small"
+        type="text"
+        shape="circle"
+      />
+    </Popover>
+  );
+}
+
 function TextBlock({ html }: { html: string }) {
   return (
     <article
@@ -422,6 +520,9 @@ export default function ReplyBubble({
   onCancel,
   onFullscreen,
   onBranch,
+  replyOptions,
+  agentMetas,
+  onSwitchAgent,
   fullscreen = false,
   selected = false,
 }: ReplyBubbleProps) {
@@ -588,6 +689,14 @@ export default function ReplyBubble({
           >
             <CheckOutlined style={{ fontSize: 9 }} />
           </span>
+        ) : null}
+        {fullscreen && replyOptions && onSwitchAgent ? (
+          <ReplyAgentSwitcher
+            currentAgent={reply.agent}
+            replyOptions={replyOptions}
+            agentMetas={agentMetas}
+            onSwitchAgent={onSwitchAgent}
+          />
         ) : null}
         {timeText ? (
           <span style={{ color: 'rgba(71, 85, 105, 0.5)', fontSize: 11 }}>

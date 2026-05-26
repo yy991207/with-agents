@@ -6,6 +6,7 @@ import { Flexbox } from 'react-layout-kit';
 import ReplyBubble from './ReplyBubble';
 import TransientScrollbar from './TransientScrollbar';
 import { useChat } from '../state/ChatContext';
+import { useBranchSession } from '../hooks/useBranchSession';
 import { useChatTask } from '../hooks/useChatTask';
 import {
   agentAvatarOf,
@@ -16,6 +17,7 @@ import {
 
 export default function ReplyFullscreen() {
   const { state, dispatch } = useChat();
+  const { branch } = useBranchSession();
   const { cancelReplyAgent, retryReplyAgent } = useChatTask();
   const fs = state.fullscreenReply;
   if (!fs) return null;
@@ -37,6 +39,14 @@ export default function ReplyFullscreen() {
 
   const handleRetry = () => {
     void retryReplyAgent(fs.taskId, fs.agent);
+  };
+
+  const handleSwitchAgent = (agent: string) => {
+    dispatch({ type: 'ui.fullscreen.agent.set', taskId: fs.taskId, agent });
+  };
+
+  const handleBranch = async () => {
+    await branch({ taskId: fs.taskId, role: 'assistant', agent: fs.agent });
   };
 
   return (
@@ -100,6 +110,10 @@ export default function ReplyFullscreen() {
             avatarUrl={agentAvatarOf(agentMetas, reply.agent)}
             onCancel={handleCancel}
             onRetry={handleRetry}
+            onBranch={handleBranch}
+            replyOptions={round.agents.map((name) => round.replies[name]).filter(Boolean)}
+            agentMetas={agentMetas}
+            onSwitchAgent={handleSwitchAgent}
             fullscreen
           />
         </TransientScrollbar>

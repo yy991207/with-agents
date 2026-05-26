@@ -294,6 +294,7 @@ export type ChatAction =
   | { type: 'ui.recommend.rotate' }
   // 子窗全屏  agent 为空表示退出全屏
   | { type: 'ui.fullscreen.set'; fullscreen: FullscreenReply | null }
+  | { type: 'ui.fullscreen.agent.set'; taskId: string; agent: AgentName }
   // 配置抽屉相关 action
   | { type: 'settings.open' }
   | { type: 'settings.close' }

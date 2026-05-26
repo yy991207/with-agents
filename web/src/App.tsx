@@ -15,11 +15,12 @@ import LobeTaskView from './components/lobehub/LobeTaskView';
 import LobeWorkbenchShell from './components/lobehub/LobeWorkbenchShell';
 import type { RecommendCardDefinition } from './components/lobehub/lobeData';
 import { useChatTask, isFatalSSEError } from './hooks/useChatTask';
+import { useBranchSession } from './hooks/useBranchSession';
 import { useSettings } from './hooks/useSettings';
 import { useChat } from './state/ChatContext';
-import { branchSession, getAgents, getHistory, listSessions } from './api/http';
+import { getAgents, getHistory } from './api/http';
 import { openTaskStream } from './api/sse';
-import { convertAgentView, convertRound, convertSession } from './state/converters';
+import { convertAgentView, convertRound } from './state/converters';
 import { parseContextUsage } from './state/reducer';
 import { findResumableTaskId } from './state/taskResume';
 import {
@@ -31,6 +32,7 @@ import type { WorkbenchView } from './state/types';
 
 export default function App() {
   const { send, stop } = useChatTask();
+  const { branch } = useBranchSession();
   const { state, dispatch, registerSSEController } = useChat();
   const [editingRoundId, setEditingRoundId] = useState<string | null>(null);
   // 配置抽屉的开关入口由 useSettings 暴露
@@ -166,53 +168,12 @@ export default function App() {
     });
   };
 
-  const handleBranchRound = async (branch: {
+  const handleBranchRound = async (branchInput: {
     taskId: string;
     role: 'user' | 'assistant';
     agent?: string;
   }) => {
-    if (!state.sessionId) return;
-    if (state.taskState === 'PENDING' || state.taskState === 'REPLYING') {
-      message.warning('当前还有回复进行中，请先暂停后再创建分支');
-      return;
-    }
-    try {
-      const resp = await branchSession(state.sessionId, {
-        source_task_id: branch.taskId,
-        source_role: branch.role,
-        source_agent: branch.agent,
-      });
-      const hist = await getHistory(resp.session_id);
-      const rounds = (hist.rounds as unknown as unknown[]).map(convertRound);
-      const sessRaw = (hist.session ?? {}) as unknown as Record<string, unknown>;
-      const usageRaw = sessRaw['context_usage'];
-      const contextUsage =
-        usageRaw && typeof usageRaw === 'object'
-          ? parseContextUsage(usageRaw as Record<string, unknown>)
-          : null;
-      dispatch({
-        type: 'history.loaded',
-        sessionId: resp.session_id,
-        rounds,
-        contextUsage,
-        draftMessage:
-          typeof sessRaw['draft_message'] === 'string'
-            ? (sessRaw['draft_message'] as string)
-            : (resp.draft_message ?? null),
-      });
-      try {
-        const metas = await listSessions();
-        dispatch({
-          type: 'sessions.set',
-          sessions: (metas as unknown as unknown[]).map(convertSession),
-        });
-      } catch {
-        // 刷新侧栏失败不阻塞主流程
-      }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      message.error(`创建分支失败:${msg}`);
-    }
+    await branch(branchInput);
   };
 
   // 推荐卡片  默认走单 agent (judgeTarget 兜底  没设置就第一个 agent)

@@ -516,6 +516,20 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       };
     case 'ui.fullscreen.set':
       return { ...state, fullscreenReply: action.fullscreen };
+    case 'ui.fullscreen.agent.set':
+      if (
+        !state.fullscreenReply ||
+        state.fullscreenReply.taskId !== action.taskId
+      ) {
+        return state;
+      }
+      return {
+        ...state,
+        fullscreenReply: {
+          ...state.fullscreenReply,
+          agent: action.agent,
+        },
+      };
 
     case 'settings.open': return { ...state, settings: { ...state.settings, open: true } };
     case 'settings.close':

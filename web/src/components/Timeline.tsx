@@ -90,8 +90,6 @@ export default function Timeline({
         return (
           <div key={round.taskId} style={{ marginBottom: 28 }}>
             <UserBubble
-              cancelReason={round.cancelReason}
-              cancelled={round.state === 'CANCELLED'}
               content={round.userMessage}
               createdAt={round.createdAt}
             />

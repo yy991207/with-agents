@@ -409,51 +409,43 @@ export default function ReplyBubble({ reply, agentLabel, avatarUrl, onRetry }: R
 
   let body: ReactNode;
   if (reply.state === 'failed') {
-    // 失败态简洁 chip 风  对齐 ToolAccordion 视觉  不再用 Alert 大卡片
-    //   一行: 红色 X 图标 + "回答失败" + 灰色 monospace 错误摘要(单行截断) + 右侧"重新回答"链接
-    //   错误信息超出会被 text-overflow: ellipsis 截断  鼠标悬停 title 看全文
+    // 失败态  纯文字风  无背景容器
+    //   第一行: 红色 X 图标 + "回答失败" + 灰色 monospace 错误摘要(单行截断 鼠标悬停看全文)
+    //   第二行: 重新回答 icon-only 圆形按钮  左对齐
     const errorText = reply.error || '未知错误';
     body = (
-      <Flexbox
-        horizontal
-        align="center"
-        gap={10}
-        style={{
-          background: 'rgba(15, 23, 42, 0.04)',
-          borderRadius: 8,
-          minWidth: 0,
-          padding: '6px 12px',
-        }}
-      >
-        <CloseCircleOutlined
-          style={{ color: 'var(--ant-color-error)', fontSize: 13, flexShrink: 0 }}
-        />
-        <span
-          style={{
-            color: 'rgba(15, 23, 42, 0.86)',
-            fontSize: 13,
-            fontWeight: 500,
-            flexShrink: 0,
-          }}
-        >
-          回答失败
-        </span>
-        <span
-          title={errorText}
-          style={{
-            color: 'rgba(71, 85, 105, 0.7)',
-            fontFamily:
-              'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-            fontSize: 12,
-            flex: 1,
-            minWidth: 0,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {errorText}
-        </span>
+      <Flexbox gap={8} style={{ minWidth: 0 }}>
+        <Flexbox horizontal align="center" gap={10} style={{ minWidth: 0 }}>
+          <CloseCircleOutlined
+            style={{ color: 'var(--ant-color-error)', fontSize: 13, flexShrink: 0 }}
+          />
+          <span
+            style={{
+              color: 'rgba(15, 23, 42, 0.86)',
+              fontSize: 13,
+              fontWeight: 500,
+              flexShrink: 0,
+            }}
+          >
+            回答失败
+          </span>
+          <span
+            title={errorText}
+            style={{
+              color: 'rgba(71, 85, 105, 0.7)',
+              fontFamily:
+                'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+              fontSize: 12,
+              flex: 1,
+              minWidth: 0,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {errorText}
+          </span>
+        </Flexbox>
         {onRetry ? (
           <Tooltip title="重新回答">
             <Button
@@ -463,7 +455,7 @@ export default function ReplyBubble({ reply, agentLabel, avatarUrl, onRetry }: R
               size="small"
               type="text"
               shape="circle"
-              style={{ flexShrink: 0 }}
+              style={{ alignSelf: 'flex-start' }}
             />
           </Tooltip>
         ) : null}

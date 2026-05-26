@@ -5,8 +5,6 @@ import { Flexbox } from 'react-layout-kit';
 
 export interface UserBubbleProps {
   content: string;
-  cancelled?: boolean;
-  cancelReason?: string;
   // ISO8601 字符串 来自后端 round.created_at  没值表示历史数据缺字段不渲染
   createdAt?: string;
 }
@@ -24,8 +22,6 @@ function formatTime(iso?: string): string {
 
 export default function UserBubble({
   content,
-  cancelled = false,
-  cancelReason,
   createdAt,
 }: UserBubbleProps) {
   const timeText = formatTime(createdAt);
@@ -37,19 +33,6 @@ export default function UserBubble({
       paddingBlock={8}
       style={{ paddingInlineStart: 36 }}
     >
-      {cancelled ? (
-        <div
-          style={{
-            background: 'rgba(239, 68, 68, 0.08)',
-            borderRadius: 999,
-            color: 'rgba(185, 28, 28, 0.9)',
-            fontSize: 12,
-            padding: '2px 10px',
-          }}
-        >
-          已取消{cancelReason ? `:${cancelReason}` : ''}
-        </div>
-      ) : null}
       <Flexbox horizontal align="flex-end" gap={8}>
         {timeText ? (
           <span

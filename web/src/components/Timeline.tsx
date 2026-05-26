@@ -180,6 +180,7 @@ function RoundBlock({
               key={`${round.taskId}-${agent}`}
               className={isMulti ? 'reply-grid-card' : undefined}
               followResetKey={`${round.taskId}:${agent}`}
+              resetPosition={inProgress ? 'bottom' : 'top'}
               style={wrapperStyle}
             >
               <ReplyBubble

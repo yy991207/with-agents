@@ -95,6 +95,7 @@ export default function ReplyFullscreen() {
         </Flexbox>
         <TransientScrollbar
           followResetKey={`${fs.taskId}:${fs.agent}:fullscreen`}
+          resetPosition="top"
           style={{
             background: '#fff',
             borderRadius: 12,

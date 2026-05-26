@@ -187,9 +187,6 @@ export interface ChatInputProps {
   ) => void | Promise<void>;
   onStop?: () => void | Promise<void>;
   initialValue?: string;
-  sendLabel?: string;
-  editMode?: boolean;
-  onCancelEdit?: () => void;
 }
 
 function getPlaceholder(state: TaskState): string {
@@ -333,9 +330,6 @@ export default function ChatInput({
   onSend,
   onStop,
   initialValue,
-  sendLabel,
-  editMode = false,
-  onCancelEdit,
 }: ChatInputProps) {
   const [value, setValue] = useState('');
   const { state } = useChat();
@@ -694,11 +688,11 @@ export default function ChatInput({
               title={
                 compacting
                 ? '压缩中 暂不可发送'
-                  : overLimit
+                      : overLimit
                     ? `超过 ${MAX_CHARS} 字 无法发送`
                     : inputMode === 'multi' && selectedMulti.size < 2
                       ? '多 agent 模式至少选 2 个'
-                      : sendLabel || '发送消息'
+                      : '发送消息'
               }
             >
               <Button
@@ -707,19 +701,10 @@ export default function ChatInput({
                 onClick={handleSend}
                 size="large"
                 disabled={sendDisabled}
-                shape={editMode ? 'round' : 'circle'}
-              >
-                {editMode ? sendLabel || '重新发送' : null}
-              </Button>
+                shape="circle"
+              />
             </Tooltip>
           )}
-          {editMode ? (
-            <Tooltip title="取消编辑">
-              <Button onClick={onCancelEdit} size="large">
-                取消
-              </Button>
-            </Tooltip>
-          ) : null}
         </div>
       </div>
     </div>

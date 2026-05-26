@@ -41,23 +41,6 @@ export default function App() {
   // 滚动容器 ref 用于自动滚到底部
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // 自动滚到底部: 新 round 追加 / reply 流式增长 / 切换会话时触发
-  const scrollToBottom = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  };
-
-  // 流式回复时 content 持续变化 每次 rounds 刷新都滚到底
-  useEffect(() => {
-    scrollToBottom();
-  }, [state.rounds]);
-
-  // 切换会话时滚到底（rounds.set 不单独触发 靠 sessionId 变化驱动）
-  useEffect(() => {
-    scrollToBottom();
-  }, [state.sessionId]);
-
   // 首次 mount:读取 localStorage,尝试恢复 session + 重连 SSE
   useEffect(() => {
     if (bootstrappedRef.current) return;
@@ -149,10 +132,6 @@ export default function App() {
     setEditingRoundId(round.taskId);
   };
 
-  const handleCancelEdit = () => {
-    setEditingRoundId(null);
-  };
-
   useEffect(() => {
     if (!editingRoundId) return;
     if (state.taskState === 'PENDING' || state.taskState === 'REPLYING') {
@@ -209,9 +188,6 @@ export default function App() {
       onSend={editingRound ? handleEditSend : send}
       onStop={stop}
       initialValue={editingRound?.userMessage}
-      editMode={editingRound !== null}
-      sendLabel="重新发送"
-      onCancelEdit={handleCancelEdit}
     />
   );
   // 首页输入框  发送时强制新建会话(不带 session_id)  避免接着旧会话发言
@@ -242,6 +218,7 @@ export default function App() {
           input={inputNode}
           scrollRef={scrollRef}
           timeline={timelineNode}
+          followResetKey={state.sessionId}
         />
       );
     }

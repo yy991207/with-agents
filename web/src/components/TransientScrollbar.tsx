@@ -2,15 +2,20 @@ import {
   forwardRef,
   useCallback,
   useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
   useRef,
   useState,
   type HTMLAttributes,
+  type ReactNode,
   type WheelEvent,
   type TouchEvent,
 } from 'react';
 
 export interface TransientScrollbarProps extends HTMLAttributes<HTMLDivElement> {
   visibleMs?: number;
+  followResetKey?: unknown;
+  followThresholdPx?: number;
 }
 
 function buildClassName(baseClassName?: string, active?: boolean): string {
@@ -23,15 +28,42 @@ const TransientScrollbar = forwardRef<HTMLDivElement, TransientScrollbarProps>(
   function TransientScrollbar(
     {
       className,
+      children,
       onTouchMove,
       onWheel,
+      onScroll,
+      followResetKey,
+      followThresholdPx = 8,
       visibleMs = 720,
       ...rest
     },
     ref,
   ) {
     const [scrolling, setScrolling] = useState(false);
+    const [followBottom, setFollowBottom] = useState(true);
+    const followBottomRef = useRef(true);
     const hideTimerRef = useRef<number | null>(null);
+    const outerRef = useRef<HTMLDivElement | null>(null);
+    const contentRef = useRef<HTMLDivElement | null>(null);
+    const rafRef = useRef<number | null>(null);
+
+    useImperativeHandle(ref, () => outerRef.current as HTMLDivElement, []);
+
+    const stickToBottom = useCallback(() => {
+      const el = outerRef.current;
+      if (!el) return;
+      el.scrollTop = el.scrollHeight;
+    }, []);
+
+    const scheduleStickToBottom = useCallback(() => {
+      if (rafRef.current !== null) {
+        window.cancelAnimationFrame(rafRef.current);
+      }
+      rafRef.current = window.requestAnimationFrame(() => {
+        rafRef.current = null;
+        stickToBottom();
+      });
+    }, [stickToBottom]);
 
     const markScrolling = useCallback(() => {
       setScrolling(true);
@@ -44,13 +76,48 @@ const TransientScrollbar = forwardRef<HTMLDivElement, TransientScrollbarProps>(
       }, visibleMs);
     }, [visibleMs]);
 
+    useLayoutEffect(() => {
+      setFollowBottom(true);
+      followBottomRef.current = true;
+      scheduleStickToBottom();
+    }, [followResetKey, scheduleStickToBottom]);
+
+    useEffect(() => {
+      followBottomRef.current = followBottom;
+    }, [followBottom]);
+
     useEffect(() => {
       return () => {
         if (hideTimerRef.current !== null) {
           window.clearTimeout(hideTimerRef.current);
         }
+        if (rafRef.current !== null) {
+          window.cancelAnimationFrame(rafRef.current);
+        }
       };
     }, []);
+
+    useEffect(() => {
+      const contentEl = contentRef.current;
+      if (!contentEl || typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(() => {
+        if (!followBottomRef.current) return;
+        scheduleStickToBottom();
+      });
+      observer.observe(contentEl);
+      return () => observer.disconnect();
+    }, [scheduleStickToBottom]);
+
+    const handleScroll = useCallback(
+      (event: React.UIEvent<HTMLDivElement>) => {
+        onScroll?.(event);
+        const el = event.currentTarget;
+        const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= followThresholdPx;
+        setFollowBottom(atBottom);
+        followBottomRef.current = atBottom;
+      },
+      [followThresholdPx, onScroll],
+    );
 
     const handleWheel = useCallback(
       (event: WheelEvent<HTMLDivElement>) => {
@@ -71,11 +138,14 @@ const TransientScrollbar = forwardRef<HTMLDivElement, TransientScrollbarProps>(
     return (
       <div
         {...rest}
-        ref={ref}
+        ref={outerRef}
         className={buildClassName(className, scrolling)}
+        onScroll={handleScroll}
         onTouchMove={handleTouchMove}
         onWheel={handleWheel}
-      />
+      >
+        <div ref={contentRef}>{children as ReactNode}</div>
+      </div>
     );
   },
 );

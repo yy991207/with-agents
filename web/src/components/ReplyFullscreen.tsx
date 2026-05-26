@@ -4,6 +4,7 @@ import { Button, Tooltip } from 'antd';
 import { CloseOutlined } from '@ant-design/icons';
 import { Flexbox } from 'react-layout-kit';
 import ReplyBubble from './ReplyBubble';
+import TransientScrollbar from './TransientScrollbar';
 import { useChat } from '../state/ChatContext';
 import { useChatTask } from '../hooks/useChatTask';
 import {
@@ -82,7 +83,8 @@ export default function ReplyFullscreen() {
             />
           </Tooltip>
         </Flexbox>
-        <div
+        <TransientScrollbar
+          followResetKey={`${fs.taskId}:${fs.agent}:fullscreen`}
           style={{
             background: '#fff',
             borderRadius: 12,
@@ -100,7 +102,7 @@ export default function ReplyFullscreen() {
             onRetry={handleRetry}
             fullscreen
           />
-        </div>
+        </TransientScrollbar>
       </Flexbox>
     </div>
   );

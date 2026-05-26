@@ -166,6 +166,7 @@ function RoundBlock({
             <TransientScrollbar
               key={`${round.taskId}-${agent}`}
               className={isMulti ? 'reply-grid-card' : undefined}
+              followResetKey={`${round.taskId}:${agent}`}
               style={wrapperStyle}
             >
               <ReplyBubble

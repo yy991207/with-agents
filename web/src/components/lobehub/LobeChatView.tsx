@@ -6,17 +6,20 @@ export interface LobeChatViewProps {
   scrollRef: RefObject<HTMLDivElement>;
   timeline: ReactNode;
   input: ReactNode;
+  followResetKey?: unknown;
 }
 
 export default function LobeChatView({
   scrollRef,
   timeline,
   input,
+  followResetKey,
 }: LobeChatViewProps) {
   return (
     <Flexbox width={'100%'} height={'100%'} style={{ minHeight: 0 }}>
       <TransientScrollbar
         ref={scrollRef}
+        followResetKey={followResetKey}
         style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '16px 0 12vh' }}
       >
         <Flexbox width={'100%'} align="center">

@@ -36,6 +36,9 @@ function convertSegments(raw: unknown): ReplySegment[] {
     const type = seg.type;
     if (type === 'text') {
       out.push({ type: 'text', content: (seg.content as string) ?? '' });
+    } else if (type === 'thinking') {
+      // reasoning model 的深度思考段  历史数据回灌时也要保留
+      out.push({ type: 'thinking', content: (seg.content as string) ?? '' });
     } else if (type === 'tool_call') {
       out.push({
         type: 'tool_call',

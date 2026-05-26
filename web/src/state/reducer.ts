@@ -251,6 +251,28 @@ function applySSEEvent(
       return apply({ ...round, reply });
     }
 
+    case 'reply.thinking': {
+      // reasoning model 的深度思考流  与 reply.chunk 对称  追加到 segments 的 thinking 段
+      // 不参与 reply.content 拼接  正文与思考分离  渲染端走 ThinkingBlock 折叠
+      const agent = readAgent(data, 'agent');
+      const chunk = readString(data, 'chunk', 'content') ?? '';
+      if (!round.reply || !agent || !chunk) return state;
+      const segments = [...round.reply.segments];
+      const last = segments[segments.length - 1];
+      if (last && last.type === 'thinking') {
+        segments[segments.length - 1] = { ...last, content: (last.content ?? '') + chunk };
+      } else {
+        segments.push({ type: 'thinking', content: chunk });
+      }
+      const reply: ReplyView = {
+        ...round.reply,
+        agent,
+        segments,
+        state: 'streaming',
+      };
+      return apply({ ...round, reply });
+    }
+
     case 'reply.tool_call': {
       const tool = readString(data, 'tool', 'name');
       const input = readString(data, 'input', 'arguments');

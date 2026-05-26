@@ -82,10 +82,12 @@ class TaskManager:
         self,
         session_id: str | None,
         user_message: str,
+        thinking_enabled: bool = False,
     ) -> str:
         """收到用户消息 创建 round 并启动后台驱动 task
 
         若 session_id 为空 自动新建会话
+        thinking_enabled 跟随前端输入框大脑开关  落到 round 顶层  reply 阶段读取
         返回 task_id 路由层立刻拿去订阅 SSE
         """
         if not session_id:
@@ -96,7 +98,7 @@ class TaskManager:
         agent_names = self._registry.names()
         mention = parse_single_mention(user_message, agent_names)
         task_id = await self._storage.create_round(
-            session_id, user_message, mention
+            session_id, user_message, mention, thinking_enabled=thinking_enabled
         )
 
         # hub 必须在当前 loop 创建 才能被同一 loop 上的 publish/subscribe 安全消费
@@ -607,6 +609,15 @@ class TaskManager:
         """
         await self._set_state(task_id, TaskState.REPLYING)
         await hub.publish(TaskEvent(type="reply.start", data={"agent": agent_name}))
+        # 取一次 round.thinking_enabled  本轮 reply 是否走深度思考  存储入参
+        # 失败兜底 false  不阻塞主流程
+        try:
+            round_obj_for_thinking = await self._storage.get_round(task_id)
+            thinking_enabled = bool(
+                getattr(round_obj_for_thinking, "thinking_enabled", False)
+            )
+        except Exception:
+            thinking_enabled = False
         await self._storage.update_round_field(
             task_id,
             "reply",
@@ -624,8 +635,10 @@ class TaskManager:
         flush_buf: list[str] = []
         # segments_buf  按时间顺序的段时间线  最终覆盖写到 reply.segments
         # current_text_buf  当前还没封段的文本累积  遇到 tool 事件或 reply 结束时封段
+        # current_thinking_buf  当前还没封段的 reasoning 累积  遇到 chunk / tool / reply.done 时封段
         segments_buf: list[dict[str, Any]] = []
         current_text_buf: list[str] = []
+        current_thinking_buf: list[str] = []
         loop = asyncio.get_event_loop()
         last_flush_ts = loop.time()
         flush_interval_s = self._settings.runtime.reply_flush_interval_ms / 1000.0
@@ -650,12 +663,66 @@ class TaskManager:
                 segments_buf.append({"type": "text", "content": text})
             return True
 
+        def _flush_thinking_segment() -> bool:
+            """把 current_thinking_buf 里的 reasoning 封成一个 thinking 段
+
+            与 text 段对称  与最后一个段同为 thinking 时合并
+            空 reasoning 不封段
+            """
+            if not current_thinking_buf:
+                return False
+            text = "".join(current_thinking_buf)
+            current_thinking_buf.clear()
+            if not text:
+                return False
+            if segments_buf and segments_buf[-1].get("type") == "thinking":
+                segments_buf[-1]["content"] = (
+                    segments_buf[-1].get("content", "") + text
+                )
+            else:
+                segments_buf.append({"type": "thinking", "content": text})
+            return True
+
         async def on_event(ev: TaskEvent) -> None:
+            # 闭包内统一声明 nonlocal  避免在不同 if 分支重复声明导致 SyntaxError
+            nonlocal last_flush_ts
             # 先把事件原样推到 hub 给前端流式
             await hub.publish(ev)
+
+            # reply.thinking 是 reasoning 流  累积到 current_thinking_buf  封段策略与 text 对称
+            # 节流上同 text  reasoning 比正文先到  不参与 reply.content 拼接
+            if ev.type == "reply.thinking":
+                think_chunk = ev.data.get("chunk", "") or ""
+                if think_chunk:
+                    current_thinking_buf.append(think_chunk)
+                # 节流写库  reasoning 封段后整组写一次
+                now = loop.time()
+                if now - last_flush_ts >= flush_interval_s and current_thinking_buf:
+                    if _flush_thinking_segment():
+                        try:
+                            await self._storage.update_reply_segments(
+                                task_id, segments_buf
+                            )
+                        except Exception:
+                            _logger.exception(
+                                "reply.thinking 段持久化失败 忽略", task_id=task_id
+                            )
+                    last_flush_ts = now
+                return
+
             # reply.chunk 单独走节流写库  同时累积进 current_text_buf 等待封段
             if ev.type == "reply.chunk":
-                nonlocal last_flush_ts
+                # 文本到来前  把 reasoning 累积先封段  保证段顺序 thinking 在 text 之前
+                if current_thinking_buf:
+                    if _flush_thinking_segment():
+                        try:
+                            await self._storage.update_reply_segments(
+                                task_id, segments_buf
+                            )
+                        except Exception:
+                            _logger.exception(
+                                "reply.thinking 段持久化失败 忽略", task_id=task_id
+                            )
                 chunk_text = ev.data.get("chunk", "") or ""
                 if chunk_text:
                     flush_buf.append(chunk_text)
@@ -669,9 +736,10 @@ class TaskManager:
                     last_flush_ts = now
                 return
 
-            # 工具调用事件  按时间顺序封段  先把累积文本封成 text 段再 push tool_call
+            # 工具调用事件  按时间顺序封段  先把累积 reasoning / text 都封段  再 push tool 段
             # 写库整组覆盖一次 让刷新后能完整还原顺序
             if ev.type == "reply.tool_call":
+                _flush_thinking_segment()
                 _flush_text_segment()
                 tool = ev.data.get("tool", "") or ""
                 tool_input = ev.data.get("input", "") or ""
@@ -692,6 +760,7 @@ class TaskManager:
                 return
 
             if ev.type == "reply.tool_result":
+                _flush_thinking_segment()
                 _flush_text_segment()
                 tool = ev.data.get("tool", "") or ""
                 tool_result = ev.data.get("result", "") or ""
@@ -719,6 +788,7 @@ class TaskManager:
                 on_event=on_event,
                 # reply 通常更长 这里给 6 倍 timeout 还是有上限不会无限等
                 timeout_s=self._settings.runtime.http_timeout_seconds * 6,
+                thinking_enabled=thinking_enabled,
             )
             # 兜底刷新剩余 chunk 防止丢
             if flush_buf:
@@ -726,7 +796,8 @@ class TaskManager:
                     task_id, "".join(flush_buf)
                 )
                 flush_buf.clear()
-            # reply 完成前把尾部残余文本封段  保证 segments 是完整时间线
+            # reply 完成前把尾部残余 reasoning / text 封段  保证 segments 是完整时间线
+            _flush_thinking_segment()
             _flush_text_segment()
             # 写入 reply.done 终态 保证 content 与最终一致  segments 同步落
             finished_at_iso = _now_iso()

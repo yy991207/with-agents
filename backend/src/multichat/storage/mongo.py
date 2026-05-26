@@ -395,8 +395,13 @@ class MotorMongoStorage:
         session_id: str,
         user_message: str,
         user_mention: str | None,
+        thinking_enabled: bool = False,
     ) -> str:
-        """创建一轮新提问 自动累计 round_index 返回 task_id"""
+        """创建一轮新提问 自动累计 round_index 返回 task_id
+
+        thinking_enabled 跟随用户当次输入框大脑开关  落到 round 顶层字段
+        task_manager 在 reply 阶段读取  决定是否给 ChatOpenAI 注入 extra_body.thinking
+        """
         # 先确认 session 存在 否则后续操作会留下孤儿 round
         session_doc = await self._db["sessions"].find_one({"session_id": session_id})
         if session_doc is None:
@@ -418,6 +423,7 @@ class MotorMongoStorage:
             "round_index": next_index,
             "question": user_message,
             "user_mention": user_mention,
+            "thinking_enabled": bool(thinking_enabled),
             "think_results": [],
             "chosen_agent": None,
             "reply_content": "",

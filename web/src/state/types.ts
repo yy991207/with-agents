@@ -37,10 +37,14 @@ export interface DecisionView {
   reason: string;
 }
 
-// 回复时间线中的一段: 文本或工具调用 按时间顺序排列
+// 回复时间线中的一段: 文本 / 工具调用 / 工具结果 / 深度思考  按时间顺序排列
+//   text         LLM 正常输出
+//   tool_call    工具调用入参
+//   tool_result  工具调用返回
+//   thinking     reasoning model 的深度思考内容  来自 chunk.additional_kwargs.reasoning_content
 export interface ReplySegment {
-  type: 'text' | 'tool_call' | 'tool_result';
-  content?: string;       // type=text 时的文本内容
+  type: 'text' | 'tool_call' | 'tool_result' | 'thinking';
+  content?: string;       // type=text / thinking 时的文本内容
   tool?: string;          // type=tool_call/tool_result 时的工具名
   input?: string;         // type=tool_call 时的入参
   result?: string;        // type=tool_result 时的返回

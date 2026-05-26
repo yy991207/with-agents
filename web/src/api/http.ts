@@ -73,6 +73,9 @@ async function requestNoContent(
 export interface AskPayload {
   session_id?: string;
   user_message: string;
+  // 是否启用深度思考  对应输入框的大脑开关  本轮一次性
+  // 后端据此给 ChatOpenAI 注入 extra_body={"thinking":{"type":"enabled"}}
+  thinking?: boolean;
 }
 
 export interface AskResponse {

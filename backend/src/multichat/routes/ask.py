@@ -26,6 +26,10 @@ class AskRequest(BaseModel):
 
     session_id: str | None = None
     user_message: str = Field(min_length=1, max_length=5000)
+    # 本轮是否启用 thinking 模式  来自前端输入框的大脑开关  每次发送一次性透传
+    # true 时后端会给 ChatOpenAI 注入 extra_body={"thinking":{"type":"enabled"}}
+    # 让支持的模型走深度思考分支  不传或 false 时走原始路径
+    thinking: bool = False
 
 
 class AskResponse(BaseModel):
@@ -42,7 +46,9 @@ class AskResponse(BaseModel):
 async def ask(body: AskRequest, request: Request) -> AskResponse:
     """创建任务并触发 think 阶段 立刻返回 task_id"""
     tm = request.app.state.task_manager
-    task_id = await tm.create_task(body.session_id, body.user_message)
+    task_id = await tm.create_task(
+        body.session_id, body.user_message, thinking_enabled=body.thinking
+    )
 
     # task_manager.create_task 仅返回 task_id 反查一次 round 拿 session_id
     # 这一查是只读操作 不会阻塞后台 think 流程

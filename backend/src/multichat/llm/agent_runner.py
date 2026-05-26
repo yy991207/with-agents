@@ -103,14 +103,22 @@ async def run_reply(
     registry: DeepAgentRegistry,
     on_event: EventCallback,
     timeout_s: float,
+    thinking_enabled: bool = False,
 ) -> str:
     """运行被选中 agent 的 reply 流式调用
 
     通过 on_event 回调把 token chunk 与 tool 调用推出去
+    thinking_enabled=true 时走 registry.build_thinking_reply 临时构建 deep_agent
+        让 ChatOpenAI 注入 extra_body.thinking 让模型走深度思考分支
+    chunk 里的 reasoning_content 不依赖 thinking_enabled 始终提取  推 reply.thinking 事件
+        deepseek-reasoner / glm 等"自带 reasoning"模型即便不开关也能展示
     返回最终完整 reply 文本(由 chunk 拼接)
     超时直接抛 asyncio.TimeoutError
     """
-    deep_agent = registry.get(agent_name, "reply")
+    if thinking_enabled:
+        deep_agent = await registry.build_thinking_reply(agent_name)
+    else:
+        deep_agent = registry.get(agent_name, "reply")
     messages = _build_messages(history, user_message)
     full_text_parts: list[str] = []
 
@@ -124,6 +132,17 @@ async def run_reply(
             event_type = ev.get("event")
             if event_type == "on_chat_model_stream":
                 chunk = ev.get("data", {}).get("chunk")
+                # 先看 reasoning_content (DeepSeek-R1 / GLM-4.5 / 部分 OpenAI 兼容协议)
+                # langchain 把它放在 chunk.additional_kwargs.reasoning_content
+                # 与 content 分离  必须单独取  否则前端永远看不到 reasoning
+                reasoning_text = _chunk_to_reasoning(chunk)
+                if reasoning_text:
+                    await on_event(
+                        TaskEvent(
+                            type="reply.thinking",
+                            data={"agent": agent_name, "chunk": reasoning_text},
+                        )
+                    )
                 text = _chunk_to_text(chunk)
                 if text:
                     full_text_parts.append(text)
@@ -299,6 +318,29 @@ def _chunk_to_text(chunk: Any) -> str:
             for c in content
             if isinstance(c, dict) and c.get("type") == "text"
         )
+    return ""
+
+
+def _chunk_to_reasoning(chunk: Any) -> str:
+    """从 AIMessageChunk 中取出 reasoning_content (深度思考内容)
+
+    DeepSeek-R1 / GLM-4.5 等模型把 reasoning 内容放在 additional_kwargs.reasoning_content
+    与正常 content 分离  langchain 不会自动拼到 chunk.content 里
+    所以必须单独取  否则前端永远看不到 reasoning
+
+    兼容 OpenAI o-series 的 reasoning  也可能放在 additional_kwargs.reasoning
+    都试一下  哪个有取哪个  都没有返回空串
+    """
+    if chunk is None:
+        return ""
+    extras = getattr(chunk, "additional_kwargs", None)
+    if not isinstance(extras, dict):
+        return ""
+    # 优先 reasoning_content (DeepSeek-R1 / GLM)  其次 reasoning (个别厂商)
+    for key in ("reasoning_content", "reasoning"):
+        v = extras.get(key)
+        if isinstance(v, str) and v:
+            return v
     return ""
 
 

@@ -50,6 +50,7 @@ class MongoStorage(Protocol):
         session_id: str,
         user_message: str,
         user_mention: str | None,
+        thinking_enabled: bool = False,
     ) -> str: ...
 
     async def get_round(self, task_id: str) -> Round | None: ...

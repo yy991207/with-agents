@@ -81,6 +81,10 @@ class Round(BaseModel):
     round_index: int = 0
     question: str
     user_mention: str | None = None
+    # 本轮是否启用 thinking 模式  前端大脑开关传过来  后端据此给 ChatOpenAI 注入
+    # extra_body={"thinking":{"type":"enabled"}}  让支持的模型走深度思考分支
+    # 不影响 reasoning_content 提取逻辑  那个始终开 兼容 deepseek-reasoner / glm 等"自带 reasoning"的模型
+    thinking_enabled: bool = False
     # 历史字段 早期持久化结构 兼容已有数据
     think_results: list[ThinkResult] = Field(default_factory=list)
     chosen_agent: str | None = None

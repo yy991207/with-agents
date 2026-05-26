@@ -21,7 +21,7 @@ export function useChatTask() {
   const { state, dispatch, registerSSEController, closeSSEController } = useChat();
 
   const send = useCallback(
-    async (rawMessage: string): Promise<void> => {
+    async (rawMessage: string, options?: { thinking?: boolean }): Promise<void> => {
       const trimmed = rawMessage.trim();
       if (!trimmed) return;
 
@@ -29,6 +29,8 @@ export function useChatTask() {
         const { task_id, session_id, created_at } = await ask({
           session_id: state.sessionId ?? undefined,
           user_message: trimmed,
+          // 输入框大脑开关  本轮一次性透传  后端据此决定是否给 ChatOpenAI 注入 extra_body.thinking
+          thinking: options?.thinking === true ? true : undefined,
         });
 
         dispatch({

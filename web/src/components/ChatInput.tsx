@@ -151,8 +151,44 @@ function ContextUsagePopoverContent({
   );
 }
 
+// 大脑图标  作为 thinking 模式开关  active 时填色  inactive 时只描边
+// 简化绘制  脑沟两条曲线 + 中线 + 外轮廓  16x16 统一吃 currentColor
+interface BrainIconProps {
+  active: boolean;
+}
+function BrainIcon({ active }: BrainIconProps) {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      style={{ display: 'block' }}
+    >
+      <path
+        d="M9.5 2A3.5 3.5 0 0 0 6 5.5v.06a3.5 3.5 0 0 0-2 6.39A3.5 3.5 0 0 0 6 18a3.5 3.5 0 0 0 6 1.5V4.06A3.5 3.5 0 0 0 9.5 2Z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill={active ? 'currentColor' : 'none'}
+        fillOpacity={active ? 0.18 : 0}
+      />
+      <path
+        d="M14.5 2A3.5 3.5 0 0 1 18 5.5v.06a3.5 3.5 0 0 1 2 6.39A3.5 3.5 0 0 1 18 18a3.5 3.5 0 0 1-6 1.5V4.06A3.5 3.5 0 0 1 14.5 2Z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill={active ? 'currentColor' : 'none'}
+        fillOpacity={active ? 0.18 : 0}
+      />
+    </svg>
+  );
+}
+
 export interface ChatInputProps {
-  onSend: (message: string) => void | Promise<void>;
+  onSend: (message: string, options?: { thinking?: boolean }) => void | Promise<void>;
   onStop?: () => void | Promise<void>;
 }
 
@@ -190,13 +226,17 @@ export default function ChatInput({ onSend, onStop }: ChatInputProps) {
   // 压缩成功后 useContextActions 会刷新 contextUsage  浮窗里数据自动跟新
   const [usagePopoverOpen, setUsagePopoverOpen] = useState(false);
 
+  // 深度思考开关  本地 state  不持久化  每次发送透传给 onSend
+  // active = true 时调 /ask 会传 thinking:true 后端注入 extra_body 让模型走深度思考
+  const [thinkingEnabled, setThinkingEnabled] = useState(false);
+
   const handleSend = () => {
     const nextValue = value.trim();
     if (!nextValue || busy || compacting) return;
     // 双保险  TextArea 自带 maxLength 已挡 这里再校一次防绕过
     if (nextValue.length > MAX_CHARS) return;
     setValue('');
-    void onSend(nextValue);
+    void onSend(nextValue, { thinking: thinkingEnabled });
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -303,6 +343,21 @@ export default function ChatInput({ onSend, onStop }: ChatInputProps) {
         <div style={{ alignItems: 'center', display: 'flex', gap: 8, minWidth: 0 }}>
           <Tooltip title="添加文件、技能和更多上下文(占位)">
             <Button shape="circle" icon={<PlusOutlined />} type="text" disabled={compacting} />
+          </Tooltip>
+          <Tooltip title={thinkingEnabled ? '深度思考已开启 点击关闭' : '开启深度思考'}>
+            <Button
+              shape="circle"
+              type="text"
+              aria-label={thinkingEnabled ? '关闭深度思考' : '开启深度思考'}
+              aria-pressed={thinkingEnabled}
+              disabled={compacting}
+              onClick={() => setThinkingEnabled((v) => !v)}
+              icon={<BrainIcon active={thinkingEnabled} />}
+              style={{
+                color: thinkingEnabled ? '#2563eb' : 'rgba(71, 85, 105, 0.7)',
+                background: thinkingEnabled ? 'rgba(37, 99, 235, 0.08)' : 'transparent',
+              }}
+            />
           </Tooltip>
           {cylinderButton}
           <span

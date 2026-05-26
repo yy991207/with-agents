@@ -24,16 +24,29 @@ export interface ReplyBubbleProps {
   onRetry?: () => void;
 }
 
-// segments 时间线节点:文本块或工具调用块
+// segments 时间线节点  thinking / text / tool 三类
+//   thinking  reasoning model 的深度思考  独立成块  默认折叠
+//   text      LLM 正文  按段拼回原文展示
+//   tool      工具调用 + 结果  同名 call+result 合并成一个节点
 type TimelineNode =
+  | { kind: 'thinking'; content: string }
   | { kind: 'text'; content: string }
   | { kind: 'tool'; tool: string; input?: string; result?: string; finished: boolean };
 
-// 把 [text, tool_call, tool_result, text...] 按时间顺序合并成 [text, tool, text]
-// 同名 tool 的 call+result 合并为一个 tool 节点
+// 把 [thinking, text, tool_call, tool_result, text, ...] 按时间顺序合并成 [thinking, text, tool, text, ...]
+// 同名 tool 的 call+result 合并为一个 tool 节点  连续 thinking / text 段也按相邻合并
 function buildTimeline(segments: ReplySegment[]): TimelineNode[] {
   const nodes: TimelineNode[] = [];
   for (const seg of segments) {
+    if (seg.type === 'thinking') {
+      const last = nodes[nodes.length - 1];
+      if (last && last.kind === 'thinking') {
+        last.content += seg.content ?? '';
+      } else {
+        nodes.push({ kind: 'thinking', content: seg.content ?? '' });
+      }
+      continue;
+    }
     if (seg.type === 'text') {
       const last = nodes[nodes.length - 1];
       if (last && last.kind === 'text') {
@@ -345,6 +358,87 @@ function TextBlock({ html }: { html: string }) {
   );
 }
 
+// 深度思考块  reasoning model 的 reasoning_content 单独成一段
+//   折叠态: 大脑图标 + "深度思考" + 字符数  视觉与工具调用 chip 完全一致
+//   展开态: monospace pre  背景与 ToolAccordion 的入参 / 结果 pre 同款灰
+//   流式中: 默认展开  done 后回归折叠 但不强制覆盖用户手动展开后的状态
+interface ThinkingBlockProps {
+  content: string;
+  streaming: boolean;
+}
+function ThinkingBlock({ content, streaming }: ThinkingBlockProps) {
+  const [open, setOpen] = useState(streaming);
+  const charCount = content.length;
+  const items = [
+    {
+      key: 'thinking',
+      label: (
+        <Flexbox horizontal align="center" gap={8} style={{ minWidth: 0 }}>
+          {/* 大脑图标 与 ChatInput 同款  色调对齐 ToolAccordion 不再蓝色 */}
+          <span
+            style={{
+              color: 'rgba(71, 85, 105, 0.7)',
+              fontSize: 13,
+              lineHeight: 1,
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+              <path
+                d="M9.5 2A3.5 3.5 0 0 0 6 5.5v.06a3.5 3.5 0 0 0-2 6.39A3.5 3.5 0 0 0 6 18a3.5 3.5 0 0 0 6 1.5V4.06A3.5 3.5 0 0 0 9.5 2Z"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                fill="none"
+              />
+              <path
+                d="M14.5 2A3.5 3.5 0 0 1 18 5.5v.06a3.5 3.5 0 0 1 2 6.39A3.5 3.5 0 0 1 18 18a3.5 3.5 0 0 1-6 1.5V4.06A3.5 3.5 0 0 1 14.5 2Z"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                fill="none"
+              />
+            </svg>
+          </span>
+          <span
+            style={{
+              color: 'rgba(15, 23, 42, 0.86)',
+              fontSize: 13,
+              fontWeight: 500,
+            }}
+          >
+            深度思考
+          </span>
+          {streaming ? (
+            <span style={{ color: 'rgba(71, 85, 105, 0.56)', fontSize: 12 }}>
+              <LoadingOutlined spin /> 推理中
+            </span>
+          ) : (
+            <span style={{ color: 'rgba(71, 85, 105, 0.5)', fontSize: 11 }}>
+              {charCount} 字
+            </span>
+          )}
+        </Flexbox>
+      ),
+      children: (
+        <pre style={PAYLOAD_PRE_STYLE}>{content}</pre>
+      ),
+    },
+  ];
+  return (
+    <Collapse
+      activeKey={open ? ['thinking'] : []}
+      bordered={false}
+      ghost
+      items={items}
+      size="small"
+      style={{ background: 'transparent' }}
+      onChange={(keys) => setOpen(keys.length > 0)}
+    />
+  );
+}
+
 // ISO 字符串 → 本地 HH:mm 显示  失败兜底空串避免渲染异常
 // 兼容性: 如果后端字符串没带时区  按 UTC 解释  防止历史 mongo naive datetime 导致显示晚 8 小时
 function formatTime(iso?: string): string {
@@ -400,13 +494,21 @@ export default function ReplyBubble({ reply, agentLabel, avatarUrl, onRetry }: R
       timeline.length > 0 ? timeline : [{ kind: 'text', content: reply.content }];
     body = (
       <Flexbox gap={8}>
-        {nodes.map((node, i) =>
-          node.kind === 'text' ? (
-            <TextBlock html={node.content} key={`t-${i}`} />
-          ) : (
-            <ToolAccordion key={`x-${i}-${node.tool}`} node={node} />
-          ),
-        )}
+        {nodes.map((node, i) => {
+          if (node.kind === 'thinking') {
+            return (
+              <ThinkingBlock
+                content={node.content}
+                key={`th-${i}`}
+                streaming={isStreaming}
+              />
+            );
+          }
+          if (node.kind === 'text') {
+            return <TextBlock html={node.content} key={`t-${i}`} />;
+          }
+          return <ToolAccordion key={`x-${i}-${node.tool}`} node={node} />;
+        })}
         {reply.state === 'cancelled' ? (
           <Flexbox horizontal align="center" gap={8}>
             <StopOutlined style={{ color: 'rgba(71, 85, 105, 0.56)' }} />

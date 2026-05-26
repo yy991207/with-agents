@@ -28,6 +28,8 @@ from typing import Any, Literal
 import structlog
 from deepagents import create_deep_agent
 from langchain_openai import ChatOpenAI
+
+from .chat_models import ReasoningChatOpenAI
 from langgraph.graph.state import CompiledStateGraph
 
 from ..config import Settings
@@ -91,11 +93,17 @@ async def _build_one(
     settings: Settings,
     *,
     storage: Any | None = None,
+    thinking_enabled: bool = False,
 ) -> CompiledStateGraph:
     """根据 agent 配置构造一个 deep_agent 实例
 
     think 模式 system_prompt 强约束 不能调工具
     reply 模式 system_prompt 鼓励规划 + 工具调用 同时打开 streaming
+
+    thinking_enabled 仅在 reply 模式生效  会给 ChatOpenAI 注入
+    model_kwargs={"extra_body":{"thinking":{"type":"enabled"}}}  让 GLM-4.5 等
+    支持思考的模型走深度思考分支  对不支持的模型 LLM 服务通常会忽略 extra_body
+    个别严格 provider 可能 422  上层 _do_reply 已用 try/except 兜底
 
     base_url + api_key 直接来自 agent_record  不再依赖外部 profile
     settings 仅提供 runtime.http_timeout_seconds 等运行时参数
@@ -106,9 +114,15 @@ async def _build_one(
     """
     suffix = THINK_SYSTEM_SUFFIX if kind == "think" else REPLY_SYSTEM_SUFFIX
     system_prompt = agent_record.prompt + suffix
+    # 思考模式仅 reply 阶段生效  think 阶段是 50 字理由 不需要深度思考
+    # langchain_openai 把 extra_body 当 ChatOpenAI 顶层参数  传进 model_kwargs 会被剥离并 UserWarning
+    # 所以这里直接走顶层  None 表示未开启 _default_params 不会包含
+    extra_body: dict[str, Any] | None = None
+    if kind == "reply" and thinking_enabled:
+        extra_body = {"thinking": {"type": "enabled"}}
     # ChatOpenAI 仅在创建时拿凭据 真正网络调用发生在 ainvoke/astream 时
     # 因此这里多次重建实例不会发起网络请求 测试可以放心调用
-    model = ChatOpenAI(
+    chat_kwargs: dict[str, Any] = dict(
         model=agent_record.model,
         api_key=agent_record.api_key,
         base_url=agent_record.base_url,
@@ -116,6 +130,12 @@ async def _build_one(
         timeout=settings.runtime.http_timeout_seconds,
         max_retries=1,
     )
+    if extra_body is not None:
+        chat_kwargs["extra_body"] = extra_body
+    # 用 ReasoningChatOpenAI 替代官方 ChatOpenAI  让 reasoning_content 字段不被丢弃
+    # 否则阿里百炼 / DeepSeek 等吐 reasoning_content 的模型  langchain 转 chunk 时会扔掉
+    # 前端永远看不到深度思考内容
+    model = ReasoningChatOpenAI(**chat_kwargs)
 
     # 挂工具策略
     #   reply 模式 注入共享 tool(current_time/http_get) + MCP 工具
@@ -230,6 +250,30 @@ class DeepAgentRegistry:
         if inst is None:
             raise KeyError(f"deep_agent not found: {key}")
         return inst
+
+    async def build_thinking_reply(self, agent_name: str) -> CompiledStateGraph:
+        """临时构建一个开启 thinking 模式的 reply deep_agent  本轮一次性使用
+
+        与 reload 不同  这里不写回 self._instances  只返回临时实例
+        每次本轮 reply 调用都会重新走一次 _build_one  代价是 langgraph compile + ChatOpenAI 实例化
+        都是纯本地操作 不发起网络请求  可以接受
+
+        从 DB 重新拉 agent 配置  保证使用的是最新 prompt / model / api_key
+        """
+        from ..storage.mongo import MotorMongoStorage
+
+        if not isinstance(self._storage, MotorMongoStorage):
+            raise RuntimeError("build_thinking_reply 需要 MotorMongoStorage 才能拉 agent 配置")
+        record = await self._storage.get_agent(agent_name)
+        if record is None:
+            raise KeyError(f"agent 不存在 name={agent_name}")
+        return await _build_one(
+            record,
+            "reply",
+            self._settings,
+            storage=self._storage,
+            thinking_enabled=True,
+        )
 
     async def reload_all(self) -> int:
         """重载所有已注册 agent 的实例 用于 skills 或 MCP 配置变更后生效

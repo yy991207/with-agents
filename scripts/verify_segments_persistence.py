@@ -90,7 +90,7 @@ async def case2_do_reply_segments_full_pipeline():
             published.append(ev)
 
     # mock run_reply  按指定顺序触发 chunk / tool_call / tool_result 事件
-    async def fake_run_reply(*, agent_name, user_message, history, registry, on_event, timeout_s):
+    async def fake_run_reply(*, agent_name, user_message, history, registry, on_event, timeout_s, thinking_enabled=False):
         await on_event(TaskEvent(type="reply.chunk", data={"agent": agent_name, "chunk": "你好"}))
         await on_event(TaskEvent(type="reply.chunk", data={"agent": agent_name, "chunk": "我帮你"}))
         await on_event(TaskEvent(
@@ -159,7 +159,7 @@ async def case3_text_around_tools_not_merged():
         async def publish(self, ev: TaskEvent) -> None:
             pass
 
-    async def fake_run_reply(*, agent_name, user_message, history, registry, on_event, timeout_s):
+    async def fake_run_reply(*, agent_name, user_message, history, registry, on_event, timeout_s, thinking_enabled=False):
         await on_event(TaskEvent(type="reply.chunk", data={"agent": agent_name, "chunk": "前"}))
         await on_event(TaskEvent(
             type="reply.tool_call",

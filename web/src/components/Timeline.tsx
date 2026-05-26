@@ -131,7 +131,8 @@ function RoundBlock({
           const inProgress = reply.state === 'streaming' || reply.state === 'pending';
           const isSelectedReply = round.selectedReplyAgent === agent;
           // 子窗外框  多 agent 时给一层卡片样式  单 agent 时不加
-          // maxHeight 364 = 旧 520 × 0.7  视觉更紧凑  超出走 hover 才显示的滚动条
+          // maxHeight 364  内容少按自身高度撑开  内容多走 hover 滚动条
+          // 不强制统一高度  各子窗高度按各自内容长短  保留传统聊天卡片视觉
           // className reply-grid-card 启用 hover 滚动条 (见 styles/global.css)
           const wrapperStyle: React.CSSProperties = isMulti
             ? {

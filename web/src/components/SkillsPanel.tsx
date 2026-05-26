@@ -9,6 +9,7 @@ import {
   Space,
   Switch,
   Table,
+  Tooltip,
   Typography,
   message,
 } from 'antd';
@@ -172,9 +173,25 @@ export default function SkillsPanel() {
     } finally { setSaving(false); }
   };
 
+  // 描述列只显示前 10 个字  超出按 ... 截断  Tooltip 悬浮显示完整内容
+  const renderDescription = (text: string) => {
+    const safe = text || '';
+    const truncated = safe.length > 10 ? safe.slice(0, 10) + '...' : safe;
+    return (
+      <Tooltip title={safe} placement="topLeft">
+        <span>{truncated}</span>
+      </Tooltip>
+    );
+  };
+
   const columns = [
-    { title: '名称', dataIndex: 'name' as const, key: 'name', width: 200, render: (name: string) => <Text strong>{name}</Text> },
-    { title: '描述', dataIndex: 'description' as const, key: 'description', ellipsis: true },
+    { title: '名称', dataIndex: 'name' as const, key: 'name', width: 140, render: (name: string) => <Text strong>{name}</Text> },
+    {
+      title: '描述', dataIndex: 'description' as const, key: 'description',
+      // 宽度按 10 个汉字 + 省略 排版  约 140px
+      width: 140,
+      render: renderDescription,
+    },
     {
       title: '状态', dataIndex: 'enabled' as const, key: 'enabled', width: 80,
       render: (enabled: boolean, record: SkillEditDraft) => (
@@ -218,7 +235,8 @@ export default function SkillsPanel() {
         columns={columns} dataSource={skills} rowKey="name"
         loading={loading} size="small" pagination={false}
         scroll={{ x: 'max-content' }}
-        style={{ marginBottom: 12 }}
+        // width: fit-content 让表格按列宽合计撑开  不再被父容器拉满  避免右侧大块空白
+        style={{ marginBottom: 12, width: 'fit-content', maxWidth: '100%' }}
         locale={{ emptyText: '暂无 skill，点击"新增 Skill"添加或点击"安装默认 Skills"' }}
       />
 

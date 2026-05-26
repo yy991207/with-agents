@@ -162,13 +162,21 @@ export default function App() {
   };
 
   const inputNode = <ChatInput onSend={send} onStop={stop} />;
+  // 首页输入框  发送时强制新建会话(不带 session_id)  避免接着旧会话发言
+  // forceNewSession 在 useChatTask.send 里被识别  reducer 切 sessionId 时会清空旧 rounds
+  const homeInputNode = (
+    <ChatInput
+      onSend={(msg, opts) => send(msg, { ...opts, forceNewSession: true })}
+      onStop={stop}
+    />
+  );
   const timelineNode = <Timeline />;
 
   const renderWorkbenchContent = () => {
     if (state.workbench.activeView === 'home') {
       return (
         <LobeHomeView
-          input={inputNode}
+          input={homeInputNode}
           recommendPage={state.workbench.recommendPage}
           onAction={handleRecommendAction}
           onRotateRecommendations={() => dispatch({ type: 'ui.recommend.rotate' })}

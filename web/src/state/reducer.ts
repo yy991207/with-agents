@@ -60,6 +60,8 @@ function viewToDraft(a: AgentView): AgentEditDraft {
     displayName: a.display_name || a.name,
     providerType: a.provider_type || 'openai_compatible',
     baseUrl: a.base_url,
+    // 后端现在返回完整 api_key 原文 (不再 mask)  apiKey 字段直接展示给用户编辑
+    // apiKeyMask 字段保留 仅作 placeholder/help 文案的判定依据 (是否已设置过 key)
     apiKey: a.api_key || '',
     apiKeyDirty: false,
     apiKeyMask: a.api_key || '',
@@ -423,13 +425,17 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       const updatedSessions = isNewSession
         ? [{ sessionId: action.sessionId, title: action.userMessage.slice(0, 40) || '新会话', updatedAt: new Date().toISOString() }, ...state.sessions]
         : state.sessions;
+      // 切到一个不同的 session 时  旧 rounds 必须清掉
+      // 否则首页"新建会话"发完  Timeline 会同时显示旧会话历史 + 这条新 round  视觉错乱
+      const switchedSession = state.sessionId !== action.sessionId;
+      const baseRounds = switchedSession ? [] : state.rounds;
       return {
         ...state,
         sessionId: action.sessionId,
         activeTaskId: action.taskId,
         taskState: 'PENDING',
         rounds: [
-          ...state.rounds,
+          ...baseRounds,
           createEmptyRound(
             action.taskId,
             action.userMessage,
@@ -438,6 +444,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             action.createdAt,
           ),
         ],
+        // 切会话同时清 contextUsage  避免显示旧会话的 token 用量
+        contextUsage: switchedSession ? null : state.contextUsage,
         sessions: updatedSessions,
         workbench: {
           ...state.workbench,

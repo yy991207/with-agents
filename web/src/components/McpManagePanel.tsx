@@ -10,7 +10,6 @@ import {
   Space,
   Switch,
   Table,
-  Tag,
   Typography,
   message,
 } from 'antd';
@@ -247,18 +246,6 @@ export default function McpManagePanel() {
       render: (name: string) => <Text strong>{name}</Text>,
     },
     {
-      title: '传输方式', dataIndex: 'transport' as const, key: 'transport', width: 100,
-      render: (t: string) => <Tag>{t}</Tag>,
-    },
-    {
-      title: 'Command / URL', key: 'target', ellipsis: true,
-      render: (_: unknown, record: McpServerDraft) => (
-        <Text type="secondary" style={{ fontSize: 12 }}>
-          {record.transport === 'stdio' ? record.command : record.url || '-'}
-        </Text>
-      ),
-    },
-    {
       title: '状态', dataIndex: 'disabled' as const, key: 'disabled', width: 80,
       render: (disabled: boolean, record: McpServerDraft) => (
         <Switch size="small" checked={!disabled} onChange={(v) => handleToggle(record, v)} />
@@ -296,7 +283,8 @@ export default function McpManagePanel() {
         size="small"
         pagination={false}
         scroll={{ x: 'max-content' }}
-        style={{ marginBottom: 12 }}
+        // width: fit-content 让表格按列宽合计撑开  不再被父容器拉满  避免右侧大块空白
+        style={{ marginBottom: 12, width: 'fit-content', maxWidth: '100%' }}
         locale={{ emptyText: '暂无 MCP 服务器，点击"新增服务器"添加' }}
       />
 

@@ -80,6 +80,10 @@ export default function SelectReplyChips({ round, locked = false }: SelectReplyC
         borderRadius: 14,
         marginTop: 12,
         padding: '12px 14px',
+        // 让背景卡按内容宽度收缩  不再铺满整个 round 宽度
+        // 多个 chip 横向排满后会自动 wrap  受 maxWidth: 100% 兜底
+        width: 'fit-content',
+        maxWidth: '100%',
       }}
     >
       <Flexbox horizontal gap={10} style={{ flexWrap: 'wrap' }}>

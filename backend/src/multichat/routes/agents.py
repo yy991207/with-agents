@@ -16,7 +16,9 @@ POST   /api/agents/{name}/revert   回滚到指定历史版本
       reload 失败必须回滚 DB 否则会出现 DB 与内存版本不一致
     - 乐观锁可选 expected_version 不传则默认强制覆盖
     - judge 指针不需要热替换 LLM 调用时按名字现取
-    - api_key 接口返回前端时由 _mask_key mask 仅展示首3末4位
+    - api_key 接口返回前端时直接返回原文 (前端要求"全量显示"以便用户核对/复制)
+      _mask_key 函数保留备用 需要回退时 把 _to_view / list_history_agents 里的
+      record.api_key / h.get("api_key", "") 改回 _mask_key(...) 即可
 """
 
 from __future__ import annotations
@@ -178,13 +180,19 @@ class RevertAgentRequest(BaseModel):
 
 
 def _to_view(record) -> AgentView:
-    """AgentRecord -> 前端 AgentView  api_key 走 mask"""
+    """AgentRecord -> 前端 AgentView
+
+    注意: 这里 api_key 直接返回原文, 不再走 _mask_key.
+    原因: 前端要求在配置面板"全量显示"已保存的 Key, 方便用户核对/复制.
+    安全提示: 任何人通过浏览器 DevTools 都能看到原文, 仅适用于单用户/受信网络场景.
+    需要回退时, 把下面的 record.api_key 改回 _mask_key(record.api_key) 即可.
+    """
     return AgentView(
         name=record.name,
         display_name=record.display_name or record.name,
         provider_type=record.provider_type,
         base_url=record.base_url,
-        api_key=_mask_key(record.api_key),
+        api_key=record.api_key,
         model=record.model,
         available_models=[
             ModelView(
@@ -542,7 +550,9 @@ async def list_agent_history(
                 name=h["name"],
                 display_name=h.get("display_name") or h["name"],
                 base_url=h.get("base_url", ""),
-                api_key=_mask_key(h.get("api_key", "")),
+                # 历史记录的 api_key 也按"全量显示"策略返回原文  与 _to_view 保持一致
+                # 回退方式: 改回 _mask_key(h.get("api_key", ""))
+                api_key=h.get("api_key", ""),
                 model=h.get("model", ""),
                 available_models=[
                     ModelView(

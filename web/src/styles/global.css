@@ -32,6 +32,37 @@ body {
     linear-gradient(180deg, rgba(255, 255, 255, 0.94) 0%, rgba(248, 250, 252, 0.98) 100%);
 }
 
+/* 设置抽屉:让 antd Spin 包住的 .ant-spin-container 撑满
+ * 否则 Drawer body 高度撑不到底  右侧 panel 的 overflow 会失效  内容溢出
+ */
+.settings-spin-wrapper {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+}
+.settings-spin-wrapper > .ant-spin-container {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+}
+
+/* 设置抽屉左侧菜单选中态  覆盖 antd 默认蓝色  改为浅灰底 + 深字
+ * agent / MCP / Skills 切换时视觉更克制
+ */
+.settings-menu .ant-menu-item-selected {
+  background-color: #f1f5f9 !important;
+  color: rgba(15, 23, 42, 0.92) !important;
+}
+.settings-menu .ant-menu-item-selected::after {
+  display: none;
+}
+.settings-menu .ant-menu-item:hover {
+  background-color: rgba(15, 23, 42, 0.04) !important;
+  color: rgba(15, 23, 42, 0.92) !important;
+}
+
 /* 滚动条统一样式 */
 ::-webkit-scrollbar {
   width: 8px;

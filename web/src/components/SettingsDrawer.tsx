@@ -15,6 +15,7 @@ import {
   Select,
   Space,
   Spin,
+  Tooltip,
   Typography,
 } from 'antd';
 import {
@@ -403,16 +404,8 @@ function AgentForm({
   const avatarInitial = (draft.displayName || draft.name).slice(0, 1).toUpperCase();
 
   return (
-    <div
-      style={{
-        background: '#fff',
-        border: '1px solid #e5e7eb',
-        borderRadius: 18,
-        boxShadow: '0 10px 24px rgba(15, 23, 42, 0.04)',
-        overflow: 'hidden',
-      }}
-    >
-      <div style={{ padding: 16 }}>
+    <div>
+      <div style={{ padding: 0 }}>
         {/* 头像区:独立于 Form  上传/移除直连后端  不参与 dirty/save */}
         <input
           ref={fileInputRef}
@@ -463,23 +456,26 @@ function AgentForm({
             </div>
           </div>
           <Space size={8}>
-            <Button
-              icon={<UploadOutlined />}
-              size="small"
-              loading={avatarBusy}
-              onClick={handlePickFile}
-            >
-              {draft.avatarDataUrl ? '更换' : '上传'}
-            </Button>
-            {draft.avatarDataUrl ? (
+            <Tooltip title={draft.avatarDataUrl ? '更换头像' : '上传头像'}>
               <Button
+                type="text"
+                icon={<UploadOutlined />}
                 size="small"
-                danger
-                disabled={avatarBusy}
-                onClick={handleRemoveAvatar}
-              >
-                移除
-              </Button>
+                loading={avatarBusy}
+                onClick={handlePickFile}
+              />
+            </Tooltip>
+            {draft.avatarDataUrl ? (
+              <Tooltip title="移除头像">
+                <Button
+                  type="text"
+                  icon={<DeleteOutlined />}
+                  size="small"
+                  danger
+                  disabled={avatarBusy}
+                  onClick={handleRemoveAvatar}
+                />
+              </Tooltip>
             ) : null}
           </Space>
         </div>
@@ -515,11 +511,12 @@ function AgentForm({
 
           <Form.Item
             label="API Key"
+            required
             help={
               draft.apiKeyDirty
                 ? '将在保存时覆盖原 Key'
                 : draft.apiKeyMask
-                  ? '输入新 Key 以覆盖当前密钥'
+                  ? '当前为已保存的 Key  直接修改即可覆盖'
                   : '请设置 API Key'
             }
           >
@@ -665,15 +662,26 @@ export default function SettingsDrawer() {
       open={open}
       onClose={closeDrawer}
       destroyOnClose={false}
-      styles={{ header: { borderBottom: 'none' } }}
+      styles={{
+        header: { borderBottom: 'none' },
+        // body 撑满 Drawer 整个垂直空间  让内部 flex 子项可以严格按高度分配
+        // 三个 tab (agents/mcp/skills) 切换时高度恒定  超出走右侧 panel 内部滚动
+        body: { display: 'flex', flexDirection: 'column', minHeight: 0, padding: 24 },
+      }}
     >
-      <Spin spinning={loading} tip="加载配置中…">
+      <Spin
+        spinning={loading}
+        tip="加载配置中…"
+        // Spin 的内层 wrapper 也要撑满  否则会包不住下面 flex: 1 的右侧 panel
+        style={{ display: 'flex', flex: 1, minHeight: 0 }}
+        wrapperClassName="settings-spin-wrapper"
+      >
         <div
           style={{
             display: 'flex',
+            flex: 1,
             gap: 16,
-            height: '100%',
-            minHeight: 640,
+            minHeight: 0,
           }}
         >
           {/* 左侧类目菜单 */}
@@ -696,6 +704,9 @@ export default function SettingsDrawer() {
                 { key: 'mcp', label: 'MCP' },
                 { key: 'skills', label: 'Skills' },
               ]}
+              // 自定义 className 用于 CSS 覆盖 antd 默认的蓝色选中态
+              // 浅灰底 + 深字  视觉更克制 见 styles/global.css 里的 .settings-menu
+              className="settings-menu"
               style={{ border: 'none', background: 'transparent' }}
             />
           </div>
@@ -707,6 +718,7 @@ export default function SettingsDrawer() {
               border: '1px solid #e5e7eb',
               borderRadius: 18,
               flex: 1,
+              minHeight: 0,
               minWidth: 0,
               overflowY: 'auto',
               padding: 18,
@@ -739,28 +751,29 @@ export default function SettingsDrawer() {
                           ),
                         }))}
                       />
-                      <Button icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
-                        新增
-                      </Button>
+                      <Tooltip title="新增数字员工">
+                        <Button type="text" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)} />
+                      </Tooltip>
                       {Object.keys(drafts).length > 1 && activeAgentName && (
-                        <Button
-                          danger
-                          icon={<DeleteOutlined />}
-                          onClick={() => {
-                            const draft = drafts[activeAgentName];
-                            const label = draft?.displayName || activeAgentName;
-                            Modal.confirm({
-                              title: `确认删除数字员工 ${label}`,
-                              content: '该操作不可恢复 请确保没有进行中的对话依赖此 agent',
-                              okText: '删除',
-                              okButtonProps: { danger: true },
-                              cancelText: '取消',
-                              onOk: async () => { await removeAgent(activeAgentName); },
-                            });
-                          }}
-                        >
-                          删除
-                        </Button>
+                        <Tooltip title="删除当前数字员工">
+                          <Button
+                            type="text"
+                            danger
+                            icon={<DeleteOutlined />}
+                            onClick={() => {
+                              const draft = drafts[activeAgentName];
+                              const label = draft?.displayName || activeAgentName;
+                              Modal.confirm({
+                                title: `确认删除数字员工 ${label}`,
+                                content: '该操作不可恢复 请确保没有进行中的对话依赖此 agent',
+                                okText: '删除',
+                                okButtonProps: { danger: true },
+                                cancelText: '取消',
+                                onOk: async () => { await removeAgent(activeAgentName); },
+                              });
+                            }}
+                          />
+                        </Tooltip>
                       )}
                     </div>
                     {activeAgentName && drafts[activeAgentName] && (

@@ -1,67 +1,40 @@
+// 首页:仅展示居中的输入框  发送会强制开启一个新会话
+// 推荐功能卡片已废弃  这里不再渲染  保留 props 兼容签名
 import type { ReactNode } from 'react';
-import { Button } from 'antd';
-import { RefreshCw } from 'lucide-react';
 import { Flexbox } from 'react-layout-kit';
-import {
-  HOME_RECOMMEND_GROUPS,
-  type RecommendCardDefinition,
-} from './lobeData';
-import LobeRecommendCard from './LobeRecommendCard';
+import type { RecommendCardDefinition } from './lobeData';
 
 export interface LobeHomeViewProps {
   input: ReactNode;
-  recommendPage: number;
+  // 兼容旧调用  不再使用  保留避免上层改动
+  recommendPage?: number;
   agentLabel?: string;
-  onRotateRecommendations: () => void;
-  onAction: (card: RecommendCardDefinition) => void;
+  onRotateRecommendations?: () => void;
+  onAction?: (card: RecommendCardDefinition) => void;
 }
 
-export default function LobeHomeView({
-  input,
-  recommendPage,
-  onRotateRecommendations,
-  onAction,
-}: LobeHomeViewProps) {
-  const cards = HOME_RECOMMEND_GROUPS[recommendPage % HOME_RECOMMEND_GROUPS.length] ?? HOME_RECOMMEND_GROUPS[0];
-
+export default function LobeHomeView({ input }: LobeHomeViewProps) {
   return (
-    <Flexbox width={'100%'} height={'100%'} style={{ overflowY: 'auto', padding: '44px 0 16vh' }}>
-      <Flexbox width={'100%'} align="center">
-        <Flexbox gap={40} width={'min(960px, 100%)'} style={{ paddingInline: 16 }}>
-          <Flexbox gap={24}>
-            {input}
-          </Flexbox>
-
-          <Flexbox gap={12}>
-            <Flexbox horizontal align="center" justify="space-between" gap={8} width={'100%'}>
-              <div style={{ color: 'rgba(71, 85, 105, 0.72)', fontSize: 12 }}>
-                为你推荐的一些功能
-              </div>
-              <Button type="text" size="small" icon={<RefreshCw size={12} />} onClick={onRotateRecommendations}>
-                换一批
-              </Button>
-            </Flexbox>
-            <div
-              style={{
-                display: 'grid',
-                gap: 12,
-                gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-              }}
-            >
-              {cards.map((card) => (
-                <LobeRecommendCard
-                  key={card.key}
-                  title={card.title}
-                  description={card.description}
-                  tag={card.tag}
-                  actionLabel={card.actionLabel}
-                  icon={card.icon}
-                  onAction={() => onAction(card)}
-                />
-              ))}
-            </div>
-          </Flexbox>
-        </Flexbox>
+    <Flexbox
+      width={'100%'}
+      height={'100%'}
+      align="center"
+      justify="center"
+      style={{ overflowY: 'auto', padding: '32px 16px' }}
+    >
+      {/* 居中容器:输入框最大宽度 720  在垂直方向居中 */}
+      <Flexbox gap={20} width={'min(720px, 100%)'} align="stretch">
+        <div
+          style={{
+            color: 'rgba(15, 23, 42, 0.92)',
+            fontSize: 22,
+            fontWeight: 600,
+            textAlign: 'center',
+          }}
+        >
+          从任何想法开始
+        </div>
+        {input}
       </Flexbox>
     </Flexbox>
   );

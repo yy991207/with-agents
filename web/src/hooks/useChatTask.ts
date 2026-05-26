@@ -21,6 +21,10 @@ export interface SendOptions {
   thinking?: boolean;
   agents: AgentName[];
   inputMode: InputMode;
+  // 首页 / "新建会话" 入口走 true  请求不带 session_id  让后端创建新 session
+  // reducer 的 task.created 看到响应里的 sessionId 与当前 state.sessionId 不一致时
+  // 会自动清空旧 rounds  避免视觉上"接着旧会话发言"
+  forceNewSession?: boolean;
 }
 
 export function useChatTask() {
@@ -37,7 +41,10 @@ export function useChatTask() {
 
       try {
         const { task_id, session_id, created_at } = await ask({
-          session_id: state.sessionId ?? undefined,
+          // forceNewSession=true 时强制不带 session_id  让后端新建会话
+          session_id: options.forceNewSession
+            ? undefined
+            : state.sessionId ?? undefined,
           user_message: trimmed,
           agents: options.agents,
           input_mode: options.inputMode,

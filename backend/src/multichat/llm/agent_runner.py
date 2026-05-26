@@ -14,6 +14,7 @@ judge 阶段在 4 个 think agent 中选一个跑 ainvoke 走非流式
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any, Awaitable, Callable
 
 import structlog
@@ -26,6 +27,49 @@ _logger = structlog.get_logger(__name__)
 
 # on_event 回调签名 接收 TaskEvent 返回协程
 EventCallback = Callable[[TaskEvent], Awaitable[None]]
+
+
+# ============================================================ tool 序列化辅助
+# 工具事件给前端的字符串必须是真实可读形式  原本一律走 repr() 会得到
+# {'url': 'https://x'} 这种 Python 字面量 前端无法 JSON.parse 也丑
+# 所以这里把 input 走 JSON 序列化  output 走 str()  保留兜底走 repr
+def _json_dump_safe(obj: Any) -> str:
+    """把任意对象尽量序列化成 JSON  失败回退到 str / repr  绝不抛"""
+    try:
+        return json.dumps(obj, ensure_ascii=False, default=str)
+    except Exception:
+        try:
+            return str(obj)
+        except Exception:
+            return repr(obj)
+
+
+def _stringify_tool_output(obj: Any) -> str:
+    """工具结果转字符串  langchain ToolMessage 的 __str__ 返回 content
+    其它对象用 str() 即可  None 给空串
+    """
+    if obj is None:
+        return ""
+    if isinstance(obj, str):
+        return obj
+    # ToolMessage 等 langchain 消息对象 优先取 content 字段
+    content = getattr(obj, "content", None)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        # 多模态 content 取 type==text 的部分拼起来 与 _chunk_to_text 对齐
+        try:
+            return "".join(
+                c.get("text", "")
+                for c in content
+                if isinstance(c, dict) and c.get("type") == "text"
+            )
+        except Exception:
+            return str(obj)
+    try:
+        return str(obj)
+    except Exception:
+        return repr(obj)
 
 
 # ============================================================================ Think
@@ -92,26 +136,30 @@ async def run_reply(
             elif event_type == "on_tool_start":
                 tool_name = ev.get("name", "")
                 tool_input = ev.get("data", {}).get("input", {})
+                # 入参用 JSON 序列化  前端能直接 JSON.parse 渲染语法高亮
+                # 失败回退 str / repr  保证不抛
                 await on_event(
                     TaskEvent(
                         type="reply.tool_call",
                         data={
                             "agent": agent_name,
                             "tool": tool_name,
-                            "input": _truncate_repr(tool_input),
+                            "input": _json_dump_safe(tool_input),
                         },
                     )
                 )
             elif event_type == "on_tool_end":
                 tool_name = ev.get("name", "")
                 output = ev.get("data", {}).get("output", "")
+                # 结果取真实文本  ToolMessage 这类对象会拿 content 字段
+                # 不再 repr + 截断 300  前端有滚动 + 折叠
                 await on_event(
                     TaskEvent(
                         type="reply.tool_result",
                         data={
                             "agent": agent_name,
                             "tool": tool_name,
-                            "result": _truncate_repr(output, 300),
+                            "result": _stringify_tool_output(output),
                         },
                     )
                 )

@@ -77,80 +77,247 @@ function buildTimeline(segments: ReplySegment[]): TimelineNode[] {
   return nodes;
 }
 
-// 单个工具调用折叠块:头部 = 状态图标 + 工具名 + (展开时的箭头),内容 = input/result
+// 字节大小友好显示  仅按字符数估算  仅用于工具结果概要 chip
+// 12345 → "12.1 KB"  900 → "900 B"  1024 * 1024 + → "X.X MB"
+function formatSize(s?: string): string {
+  if (!s) return '';
+  const n = s.length;
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+// 入参摘要  从 JSON 对象里挑第一个有意义的 string/number 字段做 chip 副标
+// 失败 / 非对象  截断到 60 字符返回  避免 chip 撑爆
+function summarizeInput(input?: string): string {
+  if (!input) return '';
+  try {
+    const obj = JSON.parse(input);
+    if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+      // 优先取 url / path / file_path / query / command 这些"主参"
+      const priorityKeys = [
+        'url', 'path', 'file_path', 'filePath', 'query', 'q',
+        'command', 'cmd', 'name', 'pattern', 'text',
+      ];
+      for (const k of priorityKeys) {
+        const v = (obj as Record<string, unknown>)[k];
+        if (typeof v === 'string' && v) {
+          const truncated = v.length > 60 ? v.slice(0, 60) + '…' : v;
+          return `${k}="${truncated}"`;
+        }
+      }
+      // 没命中  取第一个 string / number 字段
+      for (const [k, v] of Object.entries(obj)) {
+        if (typeof v === 'string' && v) {
+          const truncated = v.length > 60 ? v.slice(0, 60) + '…' : v;
+          return `${k}="${truncated}"`;
+        }
+        if (typeof v === 'number') return `${k}=${v}`;
+      }
+    }
+  } catch {
+    // 非 JSON  直接截
+  }
+  const s = String(input);
+  return s.length > 60 ? s.slice(0, 60) + '…' : s;
+}
+
+// 检测一段字符串大概是哪种 payload  用于工具结果的渲染分支
+//   json   能 JSON.parse 成对象 / 数组
+//   html   开头是 <!DOCTYPE / <html / <svg
+//   text   其它一律当文本
+type PayloadKind = 'json' | 'html' | 'text';
+function detectPayloadKind(s: string): PayloadKind {
+  if (!s) return 'text';
+  const trimmed = s.trimStart();
+  // HTML / SVG 检测  忽略大小写
+  if (
+    trimmed.startsWith('<!DOCTYPE') ||
+    trimmed.startsWith('<!doctype') ||
+    trimmed.toLowerCase().startsWith('<html') ||
+    trimmed.toLowerCase().startsWith('<svg')
+  ) {
+    return 'html';
+  }
+  // JSON 检测  开头必须是 { 或 [
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try {
+      const v = JSON.parse(trimmed);
+      if (v && typeof v === 'object') return 'json';
+    } catch {
+      // ignore
+    }
+  }
+  return 'text';
+}
+
+// 通用滚动框样式  入参 / 结果 / 文本 都用这套
+const PAYLOAD_PRE_STYLE = {
+  background: 'rgba(15, 23, 42, 0.04)',
+  borderRadius: 8,
+  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+  fontSize: 12,
+  lineHeight: 1.6,
+  margin: 0,
+  maxHeight: 240,
+  overflow: 'auto',
+  padding: '8px 10px',
+  whiteSpace: 'pre-wrap' as const,
+  wordBreak: 'break-word' as const,
+};
+
+// 在浏览器新窗口预览 HTML  Blob URL 用完就 revoke  防内存泄露
+function openHtmlPreview(html: string) {
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const win = window.open(url, '_blank', 'noopener,noreferrer');
+  // 让浏览器一段时间后自动回收  即使 win 为 null 也无所谓
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  if (!win) {
+    // 弹窗被拦截时友好提示
+    // eslint-disable-next-line no-alert
+    alert('预览窗口被浏览器拦截 请允许此站点的弹出窗口');
+  }
+}
+
+// 智能渲染工具入参 / 结果
+//   payload 为空 → 不渲染
+//   JSON       → 缩进 2 空格美化字符串
+//   HTML       → "HTML XX KB" 提示 + 在新窗口预览按钮 + 折叠 pre 看源码
+//   text       → 直接 pre  超长走滚动
+interface ToolPayloadViewProps {
+  label: '入参' | '结果';
+  payload?: string;
+}
+function ToolPayloadView({ label, payload }: ToolPayloadViewProps) {
+  const [showRawHtml, setShowRawHtml] = useState(false);
+  if (!payload) return null;
+  const kind = detectPayloadKind(payload);
+
+  let body: ReactNode;
+  if (kind === 'json') {
+    let pretty = payload;
+    try {
+      pretty = JSON.stringify(JSON.parse(payload), null, 2);
+    } catch {
+      // 兜底用原样
+    }
+    body = <pre style={PAYLOAD_PRE_STYLE}>{pretty}</pre>;
+  } else if (kind === 'html') {
+    body = (
+      <Flexbox gap={6}>
+        <Flexbox horizontal align="center" gap={8} style={{ fontSize: 12 }}>
+          <span
+            style={{
+              background: 'rgba(59, 130, 246, 0.12)',
+              borderRadius: 4,
+              color: '#2563eb',
+              fontWeight: 500,
+              padding: '1px 6px',
+            }}
+          >
+            HTML
+          </span>
+          <span style={{ color: 'rgba(71, 85, 105, 0.72)' }}>
+            {formatSize(payload)}
+          </span>
+          <Button
+            onClick={() => openHtmlPreview(payload)}
+            size="small"
+            type="link"
+            style={{ height: 'auto', padding: 0 }}
+          >
+            在新窗口预览
+          </Button>
+          <Button
+            onClick={() => setShowRawHtml((v) => !v)}
+            size="small"
+            type="link"
+            style={{ height: 'auto', padding: 0 }}
+          >
+            {showRawHtml ? '收起源码' : '查看源码'}
+          </Button>
+        </Flexbox>
+        {showRawHtml ? <pre style={PAYLOAD_PRE_STYLE}>{payload}</pre> : null}
+      </Flexbox>
+    );
+  } else {
+    body = <pre style={PAYLOAD_PRE_STYLE}>{payload}</pre>;
+  }
+
+  return (
+    <div>
+      <div style={{ color: 'rgba(71, 85, 105, 0.72)', fontSize: 12, marginBottom: 4 }}>
+        {label}
+      </div>
+      {body}
+    </div>
+  );
+}
+
+// 单个工具调用折叠块  IDE chip 风
+//   折叠态:  ✓ tool_name  key="val"  12.3 KB
+//   展开态:  入参 (JSON 美化) + 结果 (智能识别 HTML / JSON / text)
 function ToolAccordion({ node }: { node: Extract<TimelineNode, { kind: 'tool' }> }) {
   const [open, setOpen] = useState(false);
   const icon = node.finished ? (
-    <CheckCircleOutlined style={{ color: 'var(--ant-color-success)', fontSize: 14 }} />
+    <CheckCircleOutlined style={{ color: '#10b981', fontSize: 13 }} />
   ) : (
-    <LoadingOutlined spin style={{ color: 'var(--ant-color-primary)', fontSize: 14 }} />
+    <LoadingOutlined spin style={{ color: 'var(--ant-color-primary)', fontSize: 13 }} />
   );
-  const statusText = node.finished ? '已完成' : '调用中';
+  const inputSummary = summarizeInput(node.input);
+  const sizeText = node.finished ? formatSize(node.result) : '';
+
   const items = [
     {
       key: node.tool,
       label: (
-        <Flexbox horizontal align="center" gap={8} style={{ minWidth: 0 }}>
+        <Flexbox horizontal align="center" gap={10} style={{ minWidth: 0 }}>
           {icon}
           <span
             style={{
               color: 'rgba(15, 23, 42, 0.86)',
               fontSize: 13,
               fontWeight: 500,
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
+              flexShrink: 0,
             }}
           >
             {node.tool || '工具调用'}
           </span>
-          <span
-            style={{ color: 'rgba(71, 85, 105, 0.56)', flexShrink: 0, fontSize: 12 }}
-          >
-            {statusText}
-          </span>
+          {inputSummary ? (
+            <span
+              style={{
+                color: 'rgba(71, 85, 105, 0.7)',
+                fontFamily:
+                  'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+                fontSize: 12,
+                minWidth: 0,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {inputSummary}
+            </span>
+          ) : null}
+          {sizeText ? (
+            <span
+              style={{
+                color: 'rgba(71, 85, 105, 0.5)',
+                fontSize: 11,
+                flexShrink: 0,
+                marginLeft: 'auto',
+              }}
+            >
+              {sizeText}
+            </span>
+          ) : null}
         </Flexbox>
       ),
       children: (
-        <Flexbox gap={6} style={{ fontSize: 12 }}>
-          {node.input ? (
-            <div>
-              <div style={{ color: 'rgba(71, 85, 105, 0.72)', marginBottom: 2 }}>入参</div>
-              <pre
-                style={{
-                  background: 'rgba(15, 23, 42, 0.04)',
-                  borderRadius: 8,
-                  margin: 0,
-                  maxHeight: 160,
-                  overflow: 'auto',
-                  padding: '8px 10px',
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word',
-                }}
-              >
-                {node.input}
-              </pre>
-            </div>
-          ) : null}
-          {node.result ? (
-            <div>
-              <div style={{ color: 'rgba(71, 85, 105, 0.72)', marginBottom: 2 }}>结果</div>
-              <pre
-                style={{
-                  background: 'rgba(15, 23, 42, 0.04)',
-                  borderRadius: 8,
-                  margin: 0,
-                  maxHeight: 240,
-                  overflow: 'auto',
-                  padding: '8px 10px',
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word',
-                }}
-              >
-                {node.result}
-              </pre>
-            </div>
-          ) : null}
+        <Flexbox gap={8}>
+          <ToolPayloadView label="入参" payload={node.input} />
+          <ToolPayloadView label="结果" payload={node.result} />
         </Flexbox>
       ),
     },

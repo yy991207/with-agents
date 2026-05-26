@@ -1,17 +1,15 @@
 // AI 回复:对齐 LobeChat ChatItem 的扁平布局
 // 头像 + 名字 + 时间 inline,内容直接铺背景,无卡片边框/阴影
 // segments 里的 tool_call/tool_result 合并成可折叠 accordion 嵌入正文流
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Alert, Button, Collapse, Typography } from 'antd';
+import { Button, Collapse, Tooltip, Typography } from 'antd';
 import { Avatar } from '@lobehub/ui';
 import { Flexbox } from 'react-layout-kit';
 import {
-  CheckCircleOutlined,
   CloseCircleOutlined,
   LoadingOutlined,
   ReloadOutlined,
-  StopOutlined,
 } from '@ant-design/icons';
 import { getAgentColor } from '../theme/tokens';
 import type { ReplySegment, ReplyView } from '../state/types';
@@ -136,22 +134,13 @@ function summarizeInput(input?: string): string {
 }
 
 // 检测一段字符串大概是哪种 payload  用于工具结果的渲染分支
-//   json   能 JSON.parse 成对象 / 数组
-//   html   开头是 <!DOCTYPE / <html / <svg
-//   text   其它一律当文本
-type PayloadKind = 'json' | 'html' | 'text';
+//   json   能 JSON.parse 成对象 / 数组   走美化缩进
+//   text   其它一律当文本   原样 pre 显示
+// 历史曾支持 html 分支(预览按钮 + 查看源码)  应需求移除  HTML 当文本展示即可
+type PayloadKind = 'json' | 'text';
 function detectPayloadKind(s: string): PayloadKind {
   if (!s) return 'text';
   const trimmed = s.trimStart();
-  // HTML / SVG 检测  忽略大小写
-  if (
-    trimmed.startsWith('<!DOCTYPE') ||
-    trimmed.startsWith('<!doctype') ||
-    trimmed.toLowerCase().startsWith('<html') ||
-    trimmed.toLowerCase().startsWith('<svg')
-  ) {
-    return 'html';
-  }
   // JSON 检测  开头必须是 { 或 [
   if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
     try {
@@ -179,31 +168,15 @@ const PAYLOAD_PRE_STYLE = {
   wordBreak: 'break-word' as const,
 };
 
-// 在浏览器新窗口预览 HTML  Blob URL 用完就 revoke  防内存泄露
-function openHtmlPreview(html: string) {
-  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const win = window.open(url, '_blank', 'noopener,noreferrer');
-  // 让浏览器一段时间后自动回收  即使 win 为 null 也无所谓
-  setTimeout(() => URL.revokeObjectURL(url), 60_000);
-  if (!win) {
-    // 弹窗被拦截时友好提示
-    // eslint-disable-next-line no-alert
-    alert('预览窗口被浏览器拦截 请允许此站点的弹出窗口');
-  }
-}
-
 // 智能渲染工具入参 / 结果
 //   payload 为空 → 不渲染
 //   JSON       → 缩进 2 空格美化字符串
-//   HTML       → "HTML XX KB" 提示 + 在新窗口预览按钮 + 折叠 pre 看源码
-//   text       → 直接 pre  超长走滚动
+//   text       → 直接 pre  超长走滚动 (HTML 也走这个分支)
 interface ToolPayloadViewProps {
   label: '入参' | '结果';
   payload?: string;
 }
 function ToolPayloadView({ label, payload }: ToolPayloadViewProps) {
-  const [showRawHtml, setShowRawHtml] = useState(false);
   if (!payload) return null;
   const kind = detectPayloadKind(payload);
 
@@ -216,44 +189,6 @@ function ToolPayloadView({ label, payload }: ToolPayloadViewProps) {
       // 兜底用原样
     }
     body = <pre style={PAYLOAD_PRE_STYLE}>{pretty}</pre>;
-  } else if (kind === 'html') {
-    body = (
-      <Flexbox gap={6}>
-        <Flexbox horizontal align="center" gap={8} style={{ fontSize: 12 }}>
-          <span
-            style={{
-              background: 'rgba(59, 130, 246, 0.12)',
-              borderRadius: 4,
-              color: '#2563eb',
-              fontWeight: 500,
-              padding: '1px 6px',
-            }}
-          >
-            HTML
-          </span>
-          <span style={{ color: 'rgba(71, 85, 105, 0.72)' }}>
-            {formatSize(payload)}
-          </span>
-          <Button
-            onClick={() => openHtmlPreview(payload)}
-            size="small"
-            type="link"
-            style={{ height: 'auto', padding: 0 }}
-          >
-            在新窗口预览
-          </Button>
-          <Button
-            onClick={() => setShowRawHtml((v) => !v)}
-            size="small"
-            type="link"
-            style={{ height: 'auto', padding: 0 }}
-          >
-            {showRawHtml ? '收起源码' : '查看源码'}
-          </Button>
-        </Flexbox>
-        {showRawHtml ? <pre style={PAYLOAD_PRE_STYLE}>{payload}</pre> : null}
-      </Flexbox>
-    );
   } else {
     body = <pre style={PAYLOAD_PRE_STYLE}>{payload}</pre>;
   }
@@ -273,9 +208,8 @@ function ToolPayloadView({ label, payload }: ToolPayloadViewProps) {
 //   展开态:  入参 (JSON 美化) + 结果 (智能识别 HTML / JSON / text)
 function ToolAccordion({ node }: { node: Extract<TimelineNode, { kind: 'tool' }> }) {
   const [open, setOpen] = useState(false);
-  const icon = node.finished ? (
-    <CheckCircleOutlined style={{ color: '#10b981', fontSize: 13 }} />
-  ) : (
+  // finished 时不再渲染绿色对号  保持 chip 干净  仅 loading 状态显示转圈
+  const icon = node.finished ? null : (
     <LoadingOutlined spin style={{ color: 'var(--ant-color-primary)', fontSize: 13 }} />
   );
   const inputSummary = summarizeInput(node.input);
@@ -359,64 +293,78 @@ function TextBlock({ html }: { html: string }) {
 }
 
 // 深度思考块  reasoning model 的 reasoning_content 单独成一段
-//   折叠态: 大脑图标 + "深度思考" + 字符数  视觉与工具调用 chip 完全一致
+//   折叠态: 大脑图标 + Thinking… / Thought · Xs · Y 字   视觉与工具调用 chip 完全一致
 //   展开态: monospace pre  背景与 ToolAccordion 的入参 / 结果 pre 同款灰
 //   流式中: 默认展开  done 后回归折叠 但不强制覆盖用户手动展开后的状态
+//   耗时:   useEffect 在第一次 content 到来时记 startTime  streaming 切 false 时算 elapsed
+//          页面刷新后历史轮次 streaming 一开始就是 false  无法还原 startTime  只显示字数
 interface ThinkingBlockProps {
   content: string;
   streaming: boolean;
 }
 function ThinkingBlock({ content, streaming }: ThinkingBlockProps) {
   const [open, setOpen] = useState(streaming);
+  // elapsedMs: 流式结束后通过 useEffect 计算  null 表示未知 (历史轮次刷新后)
+  const [startTime, setStartTime] = useState<number | null>(null);
+  const [elapsedMs, setElapsedMs] = useState<number | null>(null);
+
+  // 流式中  收到第一份 reasoning content 时打 startTime
+  // 不在 mount 时就计  避免空 reasoning 还在等的瞬间被错算
+  useEffect(() => {
+    if (streaming && content.length > 0 && startTime === null) {
+      setStartTime(Date.now());
+    }
+  }, [streaming, content.length, startTime]);
+
+  // streaming 由 true 切 false 时  锁定 elapsed
+  useEffect(() => {
+    if (!streaming && startTime !== null && elapsedMs === null) {
+      setElapsedMs(Date.now() - startTime);
+    }
+  }, [streaming, startTime, elapsedMs]);
+
   const charCount = content.length;
+  // 完成态副标 Thought · 5s · 89 字  历史轮次没 elapsed 就只显 Thought · 89 字
+  const renderDoneSubtitle = (): string => {
+    const parts: string[] = ['Thought'];
+    if (elapsedMs !== null) {
+      const seconds = Math.max(1, Math.round(elapsedMs / 1000));
+      parts.push(`${seconds}s`);
+    }
+    parts.push(`${charCount} 字`);
+    return parts.join(' · ');
+  };
+
   const items = [
     {
       key: 'thinking',
       label: (
         <Flexbox horizontal align="center" gap={8} style={{ minWidth: 0 }}>
-          {/* 大脑图标 与 ChatInput 同款  色调对齐 ToolAccordion 不再蓝色 */}
-          <span
-            style={{
-              color: 'rgba(71, 85, 105, 0.7)',
-              fontSize: 13,
-              lineHeight: 1,
-            }}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-              <path
-                d="M9.5 2A3.5 3.5 0 0 0 6 5.5v.06a3.5 3.5 0 0 0-2 6.39A3.5 3.5 0 0 0 6 18a3.5 3.5 0 0 0 6 1.5V4.06A3.5 3.5 0 0 0 9.5 2Z"
-                stroke="currentColor"
-                strokeWidth="1.6"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                fill="none"
-              />
-              <path
-                d="M14.5 2A3.5 3.5 0 0 1 18 5.5v.06a3.5 3.5 0 0 1 2 6.39A3.5 3.5 0 0 1 18 18a3.5 3.5 0 0 1-6 1.5V4.06A3.5 3.5 0 0 1 14.5 2Z"
-                stroke="currentColor"
-                strokeWidth="1.6"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                fill="none"
-              />
-            </svg>
-          </span>
-          <span
-            style={{
-              color: 'rgba(15, 23, 42, 0.86)',
-              fontSize: 13,
-              fontWeight: 500,
-            }}
-          >
-            深度思考
-          </span>
           {streaming ? (
-            <span style={{ color: 'rgba(71, 85, 105, 0.56)', fontSize: 12 }}>
-              <LoadingOutlined spin /> 推理中
-            </span>
+            <>
+              <span
+                style={{
+                  color: 'rgba(15, 23, 42, 0.86)',
+                  fontSize: 13,
+                  fontWeight: 500,
+                }}
+              >
+                Thinking…
+              </span>
+              <LoadingOutlined
+                spin
+                style={{ color: 'rgba(71, 85, 105, 0.56)', fontSize: 12 }}
+              />
+            </>
           ) : (
-            <span style={{ color: 'rgba(71, 85, 105, 0.5)', fontSize: 11 }}>
-              {charCount} 字
+            <span
+              style={{
+                color: 'rgba(15, 23, 42, 0.86)',
+                fontSize: 13,
+                fontWeight: 500,
+              }}
+            >
+              {renderDoneSubtitle()}
             </span>
           )}
         </Flexbox>
@@ -461,24 +409,63 @@ export default function ReplyBubble({ reply, agentLabel, avatarUrl, onRetry }: R
 
   let body: ReactNode;
   if (reply.state === 'failed') {
+    // 失败态简洁 chip 风  对齐 ToolAccordion 视觉  不再用 Alert 大卡片
+    //   一行: 红色 X 图标 + "回答失败" + 灰色 monospace 错误摘要(单行截断) + 右侧"重新回答"链接
+    //   错误信息超出会被 text-overflow: ellipsis 截断  鼠标悬停 title 看全文
+    const errorText = reply.error || '未知错误';
     body = (
-      <Flexbox gap={10}>
-        <Alert
-          description={reply.error || '未知错误'}
-          message="回答失败"
-          showIcon
-          type="error"
+      <Flexbox
+        horizontal
+        align="center"
+        gap={10}
+        style={{
+          background: 'rgba(15, 23, 42, 0.04)',
+          borderRadius: 8,
+          minWidth: 0,
+          padding: '6px 12px',
+        }}
+      >
+        <CloseCircleOutlined
+          style={{ color: 'var(--ant-color-error)', fontSize: 13, flexShrink: 0 }}
         />
+        <span
+          style={{
+            color: 'rgba(15, 23, 42, 0.86)',
+            fontSize: 13,
+            fontWeight: 500,
+            flexShrink: 0,
+          }}
+        >
+          回答失败
+        </span>
+        <span
+          title={errorText}
+          style={{
+            color: 'rgba(71, 85, 105, 0.7)',
+            fontFamily:
+              'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+            fontSize: 12,
+            flex: 1,
+            minWidth: 0,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {errorText}
+        </span>
         {onRetry ? (
-          <Button
-            icon={<ReloadOutlined />}
-            onClick={onRetry}
-            shape="round"
-            size="small"
-            style={{ alignSelf: 'flex-start' }}
-          >
-            重新回答
-          </Button>
+          <Tooltip title="重新回答">
+            <Button
+              aria-label="重新回答"
+              icon={<ReloadOutlined />}
+              onClick={onRetry}
+              size="small"
+              type="text"
+              shape="circle"
+              style={{ flexShrink: 0 }}
+            />
+          </Tooltip>
         ) : null}
       </Flexbox>
     );
@@ -511,19 +498,21 @@ export default function ReplyBubble({ reply, agentLabel, avatarUrl, onRetry }: R
         })}
         {reply.state === 'cancelled' ? (
           <Flexbox horizontal align="center" gap={8}>
-            <StopOutlined style={{ color: 'rgba(71, 85, 105, 0.56)' }} />
+            {/* cancelled 状态  仅文字 不渲染 StopOutlined  视觉更干净 */}
             <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-              已取消
+              cancelled
             </Typography.Text>
             {onRetry ? (
-              <Button
-                icon={<ReloadOutlined />}
-                onClick={onRetry}
-                shape="round"
-                size="small"
-              >
-                重新回答
-              </Button>
+              <Tooltip title="重新回答">
+                <Button
+                  aria-label="重新回答"
+                  icon={<ReloadOutlined />}
+                  onClick={onRetry}
+                  shape="circle"
+                  size="small"
+                  type="text"
+                />
+              </Tooltip>
             ) : null}
           </Flexbox>
         ) : null}
@@ -586,8 +575,6 @@ export default function ReplyBubble({ reply, agentLabel, avatarUrl, onRetry }: R
           <span style={{ color: 'rgba(71, 85, 105, 0.56)', fontSize: 12 }}>
             <LoadingOutlined spin /> 生成中
           </span>
-        ) : reply.state === 'done' ? (
-          <CheckCircleOutlined style={{ color: 'rgba(71, 85, 105, 0.45)', fontSize: 12 }} />
         ) : reply.state === 'failed' ? (
           <CloseCircleOutlined style={{ color: 'var(--ant-color-error)', fontSize: 12 }} />
         ) : null}

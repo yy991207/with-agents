@@ -68,25 +68,107 @@ export default function LobeSidebar({ onNavigate, onOpenSettings }: LobeSidebarP
     dispatch({ type: 'ui.sidebar.toggle' });
   };
 
-  // 折叠态:整列收成 ~40px 细窄条 只有展开按钮  不影响主内容布局
+  // 折叠态: 整列收成 ~48px 细窄条  自上而下展示:
+  //   1) 展开按钮  2) 顶部主导航(PRIMARY_NAV_ITEMS) 图标  3) 最近第一条会话图标
+  //   4) 全部 agent 头像  5) 设置按钮置底
+  // 设计取舍:
+  //   - 会话只展示第 1 条  避免列表过长撑爆侧栏  与展开态视觉信息密度对齐
+  //   - 智能体列表全展示  数量本身就受限于用户配置  不容易撑爆
+  //   - 选中态用 LobeNavItem 已有的 active 样式  保持折叠 / 展开切换时视觉一致
   if (collapsed) {
+    const firstSession = sessions[0];
     return (
       <Flexbox
         align="center"
-        gap={6}
+        gap={8}
         height={'100%'}
         padding={'12px 4px'}
         style={{
           background: 'var(--ant-color-bg-layout)',
           flex: '0 0 auto',
         }}
-        width={40}
+        width={48}
       >
         <ActionIcon
           icon={PanelLeftOpen}
           title="展开侧栏"
           onClick={handleToggleSidebar}
         />
+
+        {/* 顶部主导航  跟展开态 PRIMARY_NAV_ITEMS 保持一致 */}
+        <Flexbox align="center" gap={4} style={{ width: '100%' }}>
+          {PRIMARY_NAV_ITEMS.map((item) => (
+            <ActionIcon
+              key={item.key}
+              icon={item.icon}
+              title={item.label}
+              active={state.workbench.activeView === item.key}
+              onClick={() => onNavigate(item.key)}
+            />
+          ))}
+        </Flexbox>
+
+        {/* 最近会话  仅第 1 条 */}
+        {firstSession ? (
+          <ActionIcon
+            icon={Hash}
+            title={firstSession.title || '未命名会话'}
+            active={firstSession.sessionId === sessionId}
+            onClick={() => {
+              void switchSession(firstSession.sessionId);
+              onNavigate('chat');
+            }}
+          />
+        ) : null}
+
+        {/* 智能体列表  全部展示 头像优先  否则 Bot 图标兜底 */}
+        <Flexbox
+          align="center"
+          gap={4}
+          flex={1}
+          style={{ minHeight: 0, overflowY: 'auto', width: '100%' }}
+        >
+          {drafts.map((draft) =>
+            draft.avatarDataUrl ? (
+              <button
+                key={draft.name}
+                type="button"
+                aria-label={draft.displayName || draft.name}
+                title={draft.displayName || draft.name}
+                onClick={() => handleOpenAgent(draft.name)}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  cursor: 'pointer',
+                  height: 28,
+                  padding: 0,
+                  width: 28,
+                }}
+              >
+                <img
+                  src={draft.avatarDataUrl}
+                  alt={draft.displayName || draft.name}
+                  style={{
+                    borderRadius: 8,
+                    height: 28,
+                    objectFit: 'cover',
+                    width: 28,
+                  }}
+                />
+              </button>
+            ) : (
+              <ActionIcon
+                key={draft.name}
+                icon={Bot}
+                title={draft.displayName || draft.name}
+                onClick={() => handleOpenAgent(draft.name)}
+              />
+            ),
+          )}
+        </Flexbox>
+
+        {/* 设置入口置底  对齐展开态 Bell 位置 */}
+        <ActionIcon icon={Bell} title="打开设置" onClick={() => void onOpenSettings()} />
       </Flexbox>
     );
   }

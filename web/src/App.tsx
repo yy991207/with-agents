@@ -6,6 +6,7 @@ import { message } from 'antd';
 import SettingsDrawer from './components/SettingsDrawer';
 import Timeline from './components/Timeline';
 import ChatInput from './components/ChatInput';
+import ReplyFullscreen from './components/ReplyFullscreen';
 import LobeChatView from './components/lobehub/LobeChatView';
 import LobeHomeView from './components/lobehub/LobeHomeView';
 import LobePlaceholderView from './components/lobehub/LobePlaceholderView';
@@ -26,10 +27,10 @@ import {
   loadPersisted,
   persistActiveTask,
 } from './state/persistence';
-import type { AgentName, WorkbenchView } from './state/types';
+import type { WorkbenchView } from './state/types';
 
 export default function App() {
-  const { send, stop, decideChoice, retryAgent } = useChatTask();
+  const { send, stop } = useChatTask();
   const { state, dispatch, registerSSEController } = useChat();
   // 配置抽屉的开关入口由 useSettings 暴露
   const { openDrawer } = useSettings();
@@ -65,26 +66,17 @@ export default function App() {
       const { sessionId, activeTaskId } = loadPersisted();
       if (!sessionId) return;
 
-      // 1. 拉历史时间线
       try {
         const hist = await getHistory(sessionId);
-        // 后端返回 snake_case dict 必须经 convertRound 转成前端 RoundView
-        // 否则 ReplyBubble 渲染历史 reply 时 toolCalls.map() 会崩
         const rounds = (hist.rounds as unknown as unknown[]).map(convertRound);
-        // history 接口里 session.context_usage 是上一次 reply / compact 的快照
-        // 刷新 / 切回旧会话时直接回灌进度条 不必等下一轮 reply 才显示
         const sessRaw = (hist.session ?? {}) as unknown as Record<string, unknown>;
         const usageRaw = sessRaw['context_usage'];
         const contextUsage =
           usageRaw && typeof usageRaw === 'object'
             ? parseContextUsage(usageRaw as Record<string, unknown>)
             : null;
-        // 注意:history.loaded 会强制 activeTaskId=null / taskState=DONE
-        // 后面如果有 activeTaskId,再用 task.resume 把它挂回去
         dispatch({ type: 'history.loaded', sessionId, rounds, contextUsage });
 
-        // 加载 agent 列表填充 settings.drafts，
-        // 保证 Timeline 的 buildAgentLabelMap 能拿到 display_name 映射
         try {
           const agentsResp = await getAgents();
           const agents = (agentsResp.agents ?? []).map(convertAgentView);
@@ -94,7 +86,7 @@ export default function App() {
             judgeTarget: agentsResp.judge_target,
           });
         } catch {
-          // agent 列表加载失败不阻塞页面恢复，Timeline 会兜底用内部 name
+          // agent 列表加载失败不阻塞页面恢复
         }
 
         const resumableTaskId = findResumableTaskId(rounds, activeTaskId);
@@ -104,17 +96,14 @@ export default function App() {
         }
         if (!resumableTaskId) return;
 
-        // 3. 把 activeTaskId 挂回去并准备好占位 round 接 snapshot
         dispatch({ type: 'task.resume', taskId: resumableTaskId });
 
-        // 4. 重连 SSE;controller 走 Context 共享
         const ctrl = new AbortController();
         registerSSEController(ctrl);
         void openTaskStream(resumableTaskId, dispatch, {
           signal: ctrl.signal,
           onFatal: (err) => {
             if (isFatalSSEError(err)) {
-              // task hub 已释放,标 round 为 cancelled,清掉持久化让用户能新提问
               dispatch({
                 type: 'sse.event',
                 taskId: resumableTaskId,
@@ -131,7 +120,6 @@ export default function App() {
           },
         });
       } catch (e) {
-        // 历史拉失败:可能 session 已被清,清持久化让用户重新开会话
         const msg = e instanceof Error ? e.message : String(e);
         if (msg.includes('404')) {
           clearPersisted();
@@ -143,32 +131,25 @@ export default function App() {
     })();
   }, [dispatch, registerSSEController]);
 
-  // Timeline 给的回调签名都是 (taskId, ...) 形式;hook 里已经从 state 拿 activeTaskId
-  // 这里不再校验 taskId 是否一致,信任 Timeline 只在活跃轮上触发回调
-  const handleChoose = (
-    _taskId: string,
-    choice: AgentName | 'auto' | 'regenerate',
-  ) => {
-    void decideChoice(choice);
-  };
-  const handleRetry = (_taskId: string, agent: AgentName) => {
-    void retryAgent(agent);
-  };
-  // 重新回答: 找取消/失败 round 的原始问题重新 send
-  const handleRetryReply = (taskId: string) => {
-    const round = state.rounds.find((r) => r.taskId === taskId);
-    if (round) {
-      void send(round.userMessage);
-    }
-  };
-
   const handleNavigate = (view: WorkbenchView) => {
     dispatch({ type: 'ui.view.set', view });
   };
 
+  // 推荐卡片  默认走单 agent (judgeTarget 兜底  没设置就第一个 agent)
   const handleRecommendAction = (card: RecommendCardDefinition) => {
     if (card.action === 'send' && card.prompt) {
-      void send(card.prompt);
+      const fallbackAgent =
+        state.settings.judgeTarget ||
+        Object.keys(state.settings.drafts)[0] ||
+        '';
+      if (!fallbackAgent) {
+        message.error('未配置 agent  请先在配置抽屉里新建一个 agent');
+        return;
+      }
+      void send(card.prompt, {
+        agents: [fallbackAgent],
+        inputMode: 'single',
+      });
       return;
     }
     if (card.action === 'settings') {
@@ -181,14 +162,7 @@ export default function App() {
   };
 
   const inputNode = <ChatInput onSend={send} onStop={stop} />;
-
-  const timelineNode = (
-    <Timeline
-      onChoose={handleChoose}
-      onRetryThink={handleRetry}
-      onCancel={handleRetryReply}
-    />
-  );
+  const timelineNode = <Timeline />;
 
   const renderWorkbenchContent = () => {
     if (state.workbench.activeView === 'home') {
@@ -246,6 +220,7 @@ export default function App() {
     >
       {renderWorkbenchContent()}
       <SettingsDrawer />
+      <ReplyFullscreen />
     </LobeWorkbenchShell>
   );
 }

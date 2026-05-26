@@ -4,13 +4,14 @@
 import type {
   AgentName,
   AgentView,
+  InputMode,
   ModelView,
   ReplySegment,
+  ReplyState,
+  ReplyView,
   RoundView,
   SessionMeta,
   TaskState,
-  ThinkState,
-  ThinkView,
   ToolCallEvent,
 } from './types';
 
@@ -25,8 +26,6 @@ export function convertSession(raw: unknown): SessionMeta {
 }
 
 // 把后端落库的 reply.segments 转成前端 ReplySegment[]
-// 后端字段名与前端一致 (type / content / tool / input / result)  这里只做安全 cast
-// 任何无法识别的段一律跳过 不抛异常 保证历史数据缺字段时也能渲染
 function convertSegments(raw: unknown): ReplySegment[] {
   if (!Array.isArray(raw)) return [];
   const out: ReplySegment[] = [];
@@ -37,7 +36,6 @@ function convertSegments(raw: unknown): ReplySegment[] {
     if (type === 'text') {
       out.push({ type: 'text', content: (seg.content as string) ?? '' });
     } else if (type === 'thinking') {
-      // reasoning model 的深度思考段  历史数据回灌时也要保留
       out.push({ type: 'thinking', content: (seg.content as string) ?? '' });
     } else if (type === 'tool_call') {
       out.push({
@@ -56,9 +54,7 @@ function convertSegments(raw: unknown): ReplySegment[] {
   return out;
 }
 
-// 从 segments 反推 toolCalls 列表  老组件按 toolCalls 数组渲染
-// 同名工具按时间顺序配对 tool_call → tool_result  没匹配上的 tool_result 单独追加一项
-// 与 reducer 里 reply.tool_call / reply.tool_result 实时合并的逻辑保持一致
+// 从 segments 反推 toolCalls 列表
 function deriveToolCalls(segments: ReplySegment[]): ToolCallEvent[] {
   const calls: ToolCallEvent[] = [];
   for (const seg of segments) {
@@ -66,7 +62,6 @@ function deriveToolCalls(segments: ReplySegment[]): ToolCallEvent[] {
       calls.push({ tool: seg.tool ?? '', input: seg.input });
     } else if (seg.type === 'tool_result') {
       const tool = seg.tool ?? '';
-      // 从后往前找第一个同名且没填 result 的 tool_call  填 result
       let matched = false;
       for (let i = calls.length - 1; i >= 0; i--) {
         if (calls[i].tool === tool && !calls[i].result) {
@@ -76,7 +71,6 @@ function deriveToolCalls(segments: ReplySegment[]): ToolCallEvent[] {
         }
       }
       if (!matched) {
-        // 没匹配上的孤儿 result  保留为独立项 避免丢信息
         calls.push({ tool, result: seg.result });
       }
     }
@@ -84,80 +78,97 @@ function deriveToolCalls(segments: ReplySegment[]): ToolCallEvent[] {
   return calls;
 }
 
+// 把后端 replies dict (key=agent.name, value=reply 子字段) 转前端 Record<agent, ReplyView>
+function convertReplies(
+  raw: unknown,
+  agents: AgentName[],
+): Record<AgentName, ReplyView> {
+  const out: Record<AgentName, ReplyView> = {};
+  const dict = (raw ?? {}) as Record<string, unknown>;
+  for (const agent of agents) {
+    const r = (dict[agent] ?? {}) as Record<string, unknown>;
+    const segments = convertSegments(r.segments);
+    out[agent] = {
+      agent,
+      state: (r.state as ReplyState) ?? 'pending',
+      content: (r.content as string) ?? '',
+      toolCalls: deriveToolCalls(segments),
+      segments,
+      error: typeof r.error === 'string' ? (r.error as string) : undefined,
+      finishedAt:
+        typeof r.finished_at === 'string' ? (r.finished_at as string) : undefined,
+    };
+  }
+  // dict 里可能还有 agents 列表之外的项(历史轮次或服务端兼容写入)  也一并塞进来
+  for (const [agent, r] of Object.entries(dict)) {
+    if (out[agent] !== undefined) continue;
+    if (!r || typeof r !== 'object') continue;
+    const rr = r as Record<string, unknown>;
+    const segments = convertSegments(rr.segments);
+    out[agent] = {
+      agent,
+      state: (rr.state as ReplyState) ?? 'pending',
+      content: (rr.content as string) ?? '',
+      toolCalls: deriveToolCalls(segments),
+      segments,
+      error: typeof rr.error === 'string' ? (rr.error as string) : undefined,
+      finishedAt:
+        typeof rr.finished_at === 'string' ? (rr.finished_at as string) : undefined,
+    };
+  }
+  return out;
+}
+
 // /history 返回的 mongo round 文档 → RoundView
-// 后端字段是 snake_case  reply 不带 toolCalls  state 小写枚举
-// 兼容历史 mongo 数据中可能出现的旧字段名 question / reply_content 等
 export function convertRound(raw: unknown): RoundView {
   const r = (raw ?? {}) as Record<string, unknown>;
   const stateRaw = String(r.state ?? 'done');
   const state = stateRaw.toUpperCase() as TaskState;
 
-  // thinks 是 dict {agent_name: {state, content, error}}
-  const thinksRaw = (r.thinks as Record<string, unknown> | undefined) ?? {};
-  const thinks: Record<string, ThinkView> = {};
-  for (const [agent, t] of Object.entries(thinksRaw)) {
-    const tv = (t ?? {}) as Record<string, unknown>;
-    thinks[agent] = {
-      agent: agent as AgentName,
-      state: (tv.state as ThinkState) ?? 'pending',
-      content: tv.content as string | undefined,
-      error: tv.error as string | undefined,
-    };
+  // agents 列表  老数据没有就回退到 [reply.agent] (model_validator 已迁移到 replies)
+  const agentsRaw = r.agents;
+  let agents: AgentName[] = [];
+  if (Array.isArray(agentsRaw)) {
+    agents = agentsRaw.filter((x): x is string => typeof x === 'string');
   }
+  // 如果 agents 为空但 replies 有  以 replies 的 key 兜底
+  const repliesRaw = r.replies as Record<string, unknown> | undefined;
+  if (agents.length === 0 && repliesRaw && typeof repliesRaw === 'object') {
+    agents = Object.keys(repliesRaw);
+  }
+
+  const inputModeRaw = r.input_mode;
+  const inputMode: InputMode =
+    inputModeRaw === 'multi' ? 'multi' : 'single';
+
+  const replies = convertReplies(repliesRaw ?? {}, agents);
 
   // 字段名兼容 早期 mongo 用 question 后改 user_message
   const userMessage =
     (r.user_message as string) ?? (r.question as string) ?? '';
 
-  // reply 还原  segments 来自后端 reply.segments  老数据里没这字段就给空数组
-  // toolCalls 从 segments 反推  保证刷新页面后历史轮次工具调用按时间顺序还原
-  // finishedAt 来自 round.reply.finished_at  历史轮次 reply 完成时落库
-  const replyRaw = r.reply as Record<string, unknown> | undefined;
-  const segments = replyRaw ? convertSegments(replyRaw.segments) : [];
-  const toolCalls = deriveToolCalls(segments);
-  const reply = replyRaw
-    ? {
-        agent: (replyRaw.agent as AgentName) ?? '',
-        state:
-          (replyRaw.state as 'streaming' | 'done' | 'failed' | 'cancelled') ??
-          'done',
-        content: (replyRaw.content as string) ?? '',
-        toolCalls,
-        segments,
-        error: replyRaw.error as string | undefined,
-        finishedAt: typeof replyRaw.finished_at === 'string' ? (replyRaw.finished_at as string) : undefined,
-      }
-    : undefined;
-
-  // decision 字段名与前端一致 仅做类型 cast 避免 strict 报错
-  const decisionRaw = r.decision as Record<string, unknown> | undefined;
-  const decision = decisionRaw
-    ? ({
-        choice: (decisionRaw.choice as string) ?? '',
-        reason: (decisionRaw.reason as string) ?? '',
-      } as RoundView['decision'])
-    : undefined;
+  const selectedRaw = r.selected_reply_agent;
+  const selectedReplyAgent =
+    typeof selectedRaw === 'string' && selectedRaw ? (selectedRaw as AgentName) : null;
 
   return {
     taskId: (r.task_id as string) ?? (r.taskId as string) ?? '',
     state,
     userMessage,
-    thinks,
-    decision,
-    reply,
+    agents,
+    inputMode,
+    replies,
+    selectedReplyAgent,
     createdAt: typeof r.created_at === 'string' ? (r.created_at as string) : undefined,
   };
 }
 
 // /api/agents 响应里单个 agent → AgentView
-// 后端字段是 snake_case  这里做兼容性提取
 export function convertAgentView(raw: unknown): AgentView {
   const r = (raw ?? {}) as Record<string, unknown>;
   const ams = (r.available_models as unknown[]) ?? [];
   const available_models: ModelView[] = ams.map((m) => {
     const mr = (m ?? {}) as Record<string, unknown>;
-    // max_input_tokens 老数据可能没字段 兜底 200000  后端读取层也会兜底
-    // 此处与 backend/src/multichat/storage/mongo.py _agent_doc_to_record 保持一致
     const tokensRaw = mr.max_input_tokens;
     const tokens =
       typeof tokensRaw === 'number' && tokensRaw > 0

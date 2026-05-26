@@ -1,8 +1,8 @@
 """POST /cancel 全局或单 agent 取消
 
 请求体
-    - task_id
-    - scope: "global" 表示整体取消 或 agent 名表示只取消该 agent 的 think 子任务
+    - task_id: 目标任务 id
+    - scope: 'global' 整体取消  或 agent name 仅取消该 agent reply 子任务
 
 响应
     - 204 取消已发出 后续 SSE 会推送终止事件
@@ -25,7 +25,7 @@ class CancelRequest(BaseModel):
 
 @router.post("/cancel", status_code=204)
 async def cancel(body: CancelRequest, request: Request) -> None:
-    """取消进行中的任务或单个 agent 子任务"""
+    """取消进行中的任务或单个 agent reply 子任务"""
     tm = request.app.state.task_manager
     # 任务不存在或已结束 task_manager 实现里多半幂等吃掉 这里不抛异常
     await tm.cancel_task(body.task_id, body.scope)

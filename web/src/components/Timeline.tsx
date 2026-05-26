@@ -1,11 +1,12 @@
-// 时间线:遍历所有 round,渲染用户气泡 + think 区域 + 决策 + 回答 + 状态摘要
-// 活跃 round = state.activeTaskId 指向且 state ∉ {DONE, CANCELLED}
+// 时间线:遍历所有 round  渲染用户气泡 + (单/多) agent 回答 grid + 选答 chips
+// 多 agent 模式  每行 2 列 grid  最多 4 个子窗
+// 单 agent 模式  单卡铺满
 import { Button } from 'antd';
 import UserBubble from './UserBubble';
-import ThinkPanel from './ThinkPanel';
-import DecisionCard from './DecisionCard';
 import ReplyBubble from './ReplyBubble';
+import SelectReplyChips from './SelectReplyChips';
 import { useChat } from '../state/ChatContext';
+import { useChatTask } from '../hooks/useChatTask';
 import {
   agentAvatarOf,
   agentLabelOf,
@@ -14,25 +15,15 @@ import {
 } from '../state/agentLabels';
 import type { AgentName, RoundView } from '../state/types';
 
-function isActive(round: RoundView, activeTaskId: string | null): boolean {
-  if (round.taskId !== activeTaskId) return false;
-  return round.state !== 'DONE' && round.state !== 'CANCELLED';
-}
-
-export interface TimelineProps {
-  onChoose?: (taskId: string, choice: AgentName | 'auto' | 'regenerate') => void;
-  onRetryThink?: (taskId: string, agent: AgentName) => void;
-  onCancel?: (taskId: string) => void;
-}
-
-export default function Timeline({
-  onChoose,
-  onRetryThink,
-  onCancel,
-}: TimelineProps) {
+export default function Timeline() {
   const { state, dispatch } = useChat();
+  const { cancelReplyAgent, retryReplyAgent } = useChatTask();
   const agentLabels = buildAgentLabelMap(state.settings.drafts);
   const agentMetas = buildAgentMetaMap(state.settings.drafts);
+
+  const handleFullscreen = (taskId: string, agent: AgentName) => {
+    dispatch({ type: 'ui.fullscreen.set', fullscreen: { taskId, agent } });
+  };
 
   if (state.rounds.length === 0) {
     return (
@@ -61,7 +52,7 @@ export default function Timeline({
             从任何想法开始
           </div>
           <div style={{ color: 'rgba(51, 65, 85, 0.72)', fontSize: 14, lineHeight: 1.8, marginBottom: 18 }}>
-            当前聊天工作台已经准备好，你可以直接发起一轮多 agent 问答，或者回到首页用推荐卡片快速开始。
+            当前聊天工作台已经准备好，可以直接发起一轮 1 个或多个 agent 并行回答。
           </div>
           <Button
             shape="round"
@@ -77,69 +68,88 @@ export default function Timeline({
 
   return (
     <div style={{ padding: '0 0 8px' }}>
-      {state.rounds.map((round) => {
-        const active = isActive(round, state.activeTaskId);
-        const showThinkPanel =
-          active &&
-          (round.state === 'PENDING' ||
-            round.state === 'THINKING' ||
-            round.state === 'THINK_DONE');
-        const showDecision = active && round.state === 'THINK_DONE' && onChoose;
-        const showReply = round.reply !== undefined;
+      {state.rounds.map((round) => (
+        <RoundBlock
+          key={round.taskId}
+          round={round}
+          agentLabels={agentLabels}
+          agentMetas={agentMetas}
+          onFullscreen={handleFullscreen}
+          onCancelReply={(agent) => void cancelReplyAgent(round.taskId, agent)}
+          onRetryReply={(agent) => void retryReplyAgent(round.taskId, agent)}
+        />
+      ))}
+    </div>
+  );
+}
 
-        return (
-          <div key={round.taskId} style={{ marginBottom: 28 }}>
-            <UserBubble
-              content={round.userMessage}
-              createdAt={round.createdAt}
-            />
+interface RoundBlockProps {
+  round: RoundView;
+  agentLabels: ReturnType<typeof buildAgentLabelMap>;
+  agentMetas: ReturnType<typeof buildAgentMetaMap>;
+  onFullscreen: (taskId: string, agent: AgentName) => void;
+  onCancelReply: (agent: AgentName) => void;
+  onRetryReply: (agent: AgentName) => void;
+}
 
-            {showThinkPanel ? (
-              <div style={{ marginTop: 10 }}>
-                <ThinkPanel
-                  round={round}
-                  agentLabels={agentLabels}
-                  agentMetas={agentMetas}
-                  onRetry={
-                    onRetryThink
-                      ? (agent) => onRetryThink(round.taskId, agent)
-                      : undefined
-                  }
-                />
-              </div>
-            ) : null}
+function RoundBlock({
+  round,
+  agentLabels,
+  agentMetas,
+  onFullscreen,
+  onCancelReply,
+  onRetryReply,
+}: RoundBlockProps) {
+  const agents = round.agents.length > 0 ? round.agents : Object.keys(round.replies);
 
-            {showDecision && onChoose ? (
-              <div style={{ marginTop: 10 }}>
-                <DecisionCard
-                  agentCandidates={Object.keys(round.thinks)}
-                  onChoose={(choice) => onChoose(round.taskId, choice)}
-                  onCancel={
-                    onCancel ? () => onCancel(round.taskId) : undefined
-                  }
-                  availableAgents={round.availableAgents}
-                  judgePick={round.judgePick}
-                />
-              </div>
-            ) : null}
+  // 单 agent  单卡铺满
+  // 多 agent  自动 1~4 个子窗  2 列 grid  超过宽度自动换行
+  const isMulti = round.inputMode === 'multi' && agents.length > 1;
+  const gridStyle: React.CSSProperties = isMulti
+    ? {
+        display: 'grid',
+        gap: 12,
+        gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))',
+      }
+    : { display: 'block' };
 
-            {showReply && round.reply ? (
-              <div style={{ marginTop: 12 }}>
-                <ReplyBubble
-                  reply={round.reply}
-                  agentLabel={agentLabelOf(agentLabels, round.reply.agent)}
-                  avatarUrl={agentAvatarOf(agentMetas, round.reply.agent)}
-                  onRetry={
-                    onCancel
-                      ? () => onCancel(round.taskId)
-                      : undefined
-                  }
-                />
-              </div>
-            ) : null}
-          </div>
-        );
-      })}
+  return (
+    <div style={{ marginBottom: 28 }}>
+      <UserBubble content={round.userMessage} createdAt={round.createdAt} />
+
+      <div style={{ marginTop: 12, ...gridStyle }}>
+        {agents.map((agent) => {
+          const reply = round.replies[agent];
+          if (!reply) return null;
+          const inProgress = reply.state === 'streaming' || reply.state === 'pending';
+          // 子窗外框  多 agent 时给一层卡片样式  单 agent 时不加
+          const wrapperStyle: React.CSSProperties = isMulti
+            ? {
+                background: '#fff',
+                border: '1px solid rgba(15, 23, 42, 0.06)',
+                borderRadius: 16,
+                boxShadow: '0 4px 12px rgba(15, 23, 42, 0.04)',
+                maxHeight: 520,
+                overflow: 'auto',
+                padding: '8px 14px',
+              }
+            : {};
+          return (
+            <div key={`${round.taskId}-${agent}`} style={wrapperStyle}>
+              <ReplyBubble
+                reply={reply}
+                agentLabel={agentLabelOf(agentLabels, agent)}
+                avatarUrl={agentAvatarOf(agentMetas, agent)}
+                onCancel={inProgress ? () => onCancelReply(agent) : undefined}
+                onRetry={!inProgress ? () => onRetryReply(agent) : undefined}
+                onFullscreen={() => onFullscreen(round.taskId, agent)}
+              />
+            </div>
+          );
+        })}
+      </div>
+
+      <SelectReplyChips round={round} />
     </div>
   );
 }

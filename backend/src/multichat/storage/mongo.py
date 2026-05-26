@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 import structlog
 from pymongo import ASCENDING, DESCENDING
@@ -395,9 +395,15 @@ class MotorMongoStorage:
         session_id: str,
         user_message: str,
         user_mention: str | None,
+        agents: list[str],
+        input_mode: Literal["single", "multi"] = "single",
         thinking_enabled: bool = False,
     ) -> str:
         """创建一轮新提问 自动累计 round_index 返回 task_id
+
+        agents 必须非空  长度 1~4  路由层校验
+        replies dict 同步初始化为 {agent: {"state":"pending","content":"","segments":[]}}
+        让前端拉到这个 round 时直接看到所有候选格子的占位卡
 
         thinking_enabled 跟随用户当次输入框大脑开关  落到 round 顶层字段
         task_manager 在 reply 阶段读取  决定是否给 ChatOpenAI 注入 extra_body.thinking
@@ -407,6 +413,16 @@ class MotorMongoStorage:
         if session_doc is None:
             raise KeyError(f"session 不存在 session_id={session_id}")
 
+        if not agents:
+            # 这里兜底 实际路由层应当已经拦截
+            raise ValueError("create_round 需要至少 1 个 agent")
+        if input_mode not in ("single", "multi"):
+            raise ValueError(f"input_mode 取值非法 {input_mode}")
+        if input_mode == "single" and len(agents) != 1:
+            raise ValueError(f"single 模式 agents 必须正好 1 个 实际 {len(agents)}")
+        if input_mode == "multi" and not (2 <= len(agents) <= 4):
+            raise ValueError(f"multi 模式 agents 必须 2~4 个 实际 {len(agents)}")
+
         # 计算下一个 round_index 简单查最大值 +1
         last = await self._db["rounds"].find_one(
             {"session_id": session_id},
@@ -414,6 +430,12 @@ class MotorMongoStorage:
             projection={"round_index": 1, "_id": 0},
         )
         next_index = (last["round_index"] + 1) if last else 0
+
+        # 初始化 replies 占位  让前端 SSE 还没开推前也能看到 N 个卡片骨架
+        replies_init: dict[str, dict[str, Any]] = {
+            name: {"state": "pending", "content": "", "segments": []}
+            for name in agents
+        }
 
         task_id = _new_id()
         now = _utcnow()
@@ -424,9 +446,10 @@ class MotorMongoStorage:
             "question": user_message,
             "user_mention": user_mention,
             "thinking_enabled": bool(thinking_enabled),
-            "think_results": [],
-            "chosen_agent": None,
-            "reply_content": "",
+            "agents": list(agents),
+            "input_mode": input_mode,
+            "replies": replies_init,
+            "selected_reply_agent": None,
             "state": TaskState.PENDING.value,
             "created_at": now,
             "updated_at": now,
@@ -467,7 +490,7 @@ class MotorMongoStorage:
             raise KeyError(f"round 不存在 task_id={task_id}")
 
     async def update_round_field(self, task_id: str, path: str, value: Any) -> None:
-        """按 dot path 局部更新 round 字段 例如 think_results.0.reason
+        """按 dot path 局部更新 round 字段 例如 replies.glm.state
 
         value 若是 BaseModel 自动 dump 成 dict 避免上层手动转换
         """
@@ -485,19 +508,24 @@ class MotorMongoStorage:
         if result.matched_count == 0:
             raise KeyError(f"round 不存在 task_id={task_id}")
 
-    async def append_reply_chunk(self, task_id: str, chunk: str) -> None:
-        """流式回复追加片段 用 aggregation pipeline update 原子拼接 reply_content
+    async def append_reply_chunk_for_agent(
+        self, task_id: str, agent_name: str, chunk: str
+    ) -> None:
+        """流式回复追加片段 用 aggregation pipeline update 原子拼接 replies.{agent}.content
 
-        节流写在 M2 reply 阶段实现 当前为基础原子写 失败抛 KeyError
+        与历史 append_reply_chunk 对比:
+            老接口写顶层 reply.content  新接口写 replies.<agent>.content
+            支持多 agent 并发  各 agent 之间互不影响
         """
+        path = f"replies.{agent_name}.content"
         result = await self._db["rounds"].update_one(
             {"task_id": task_id},
             [
                 {
                     "$set": {
-                        "reply_content": {
+                        path: {
                             "$concat": [
-                                {"$ifNull": ["$reply_content", ""]},
+                                {"$ifNull": [f"${path}", ""]},
                                 chunk,
                             ]
                         },
@@ -509,59 +537,96 @@ class MotorMongoStorage:
         if result.matched_count == 0:
             raise KeyError(f"round 不存在 task_id={task_id}")
 
-    async def update_reply_segments(
-        self, task_id: str, segments: list[dict[str, Any]]
+    async def update_reply_segments_for_agent(
+        self, task_id: str, agent_name: str, segments: list[dict[str, Any]]
     ) -> None:
-        """整组覆盖写 round.reply.segments 用于持久化按时间顺序的 reply 段时间线
+        """整组覆盖写 replies.{agent}.segments  按时间顺序的段时间线"""
+        await self.update_round_field(
+            task_id, f"replies.{agent_name}.segments", segments
+        )
 
-        segments 形如:
-            [
-                {"type": "text", "content": "..."},
-                {"type": "tool_call", "tool": "Read", "input": "..."},
-                {"type": "tool_result", "tool": "Read", "result": "..."},
-                ...
-            ]
+    async def update_reply_for_agent(
+        self,
+        task_id: str,
+        agent_name: str,
+        reply: dict[str, Any],
+    ) -> None:
+        """覆盖写 replies.{agent} 整段 reply 状态
 
-        实现细节:
-            - 走 update_round_field 复用同一份 dot path 写法 保持一致性
-            - 不在这里做去重 / 合并 调用方 _do_reply 自己负责段顺序与文本封段
-            - reply 字段在创建时已经存在 直接写 reply.segments 不会因为父字段 null 报错
-              因为 _do_reply 在写 segments 之前已经先写过 reply={...}
-
-        失败抛 KeyError 由调用方决定是否上抛
+        reply 形如 {"state":"streaming|done|failed|cancelled","content":"...",
+                   "segments":[...],"started_at":"...","finished_at":"...","error":"..."}
+        agent name 不进 reply 字典  通过 dict key 表达  避免与 round.replies 形成冗余
         """
-        await self.update_round_field(task_id, "reply.segments", segments)
+        await self.update_round_field(task_id, f"replies.{agent_name}", reply)
+
+    async def select_reply(self, task_id: str, agent_name: str) -> None:
+        """用户从多 agent 候选中选定一个作为正式回答
+
+        校验:
+            - round 不存在抛 KeyError
+            - agent_name 不在 round.agents 抛 ValueError
+            - replies[agent_name].state 不是 done 抛 ValueError 不允许选中失败/未完成的回答
+            - 已选过则覆盖更新  允许用户改主意
+        """
+        round_doc = await self._db["rounds"].find_one(
+            {"task_id": task_id},
+            {"agents": 1, "replies": 1, "_id": 0},
+        )
+        if round_doc is None:
+            raise KeyError(f"round 不存在 task_id={task_id}")
+
+        agents = round_doc.get("agents") or []
+        if agent_name not in agents:
+            raise ValueError(
+                f"agent_name {agent_name} 不在本轮候选 {agents}  无法选中"
+            )
+
+        replies = round_doc.get("replies") or {}
+        target_reply = replies.get(agent_name) or {}
+        if target_reply.get("state") != "done":
+            raise ValueError(
+                f"agent {agent_name} 的 reply 状态为 {target_reply.get('state')}  仅允许选中 done"
+            )
+
+        await self._db["rounds"].update_one(
+            {"task_id": task_id},
+            {
+                "$set": {
+                    "selected_reply_agent": agent_name,
+                    "updated_at": _utcnow(),
+                }
+            },
+        )
 
     async def cancel_orphan_rounds(self, reason: str = "server_restart") -> int:
-        """启动时清理孤儿 round 把"进行中"状态的 round 一律置为 cancelled
+        """启动时清理孤儿 round  把"进行中"的 round 与其 replies 一并置为 cancelled
 
-        进行中状态既包含 spec 新值 也兼容历史字面量(created/waiting_decision):
-            - pending / thinking / think_done / decided / replying  当前在用
-            - created / waiting_decision  历史快照 H4 之前的写入
-        旧值 failed 已是终态 不再清理 避免反复改写
+        进行中状态既包含新 4 态(pending/replying)  也兼容历史字面量:
+            - thinking / think_done / decided  老 think 流程的中间态  历史快照
+            - created / waiting_decision / failed  M0/M1 时期的旧值
+            - replying  当前在用
 
         实现细节:
             - 用 $set 精准更新 顶层 state 不要走 replace_one
-              否则 thinks/decision/reply 之前的 content 会被整体覆盖丢失
-            - 嵌套字段 reply.state 单独走第二步 update_many
-              用 $type:object 过滤掉 reply 为 null 的文档 避免 mongo 在非对象上写子字段报错
+              否则 replies 之前的 content 会被整体覆盖丢失
+            - replies 字段子项的 state 一并刷为 cancelled  避免页面里残留 streaming 卡片
             - cancel_reason / cancelled_at 同步落库 便于事后排查
 
         返回受影响的 round 数 用于启动日志
         """
         in_progress = [
             "pending",
+            "replying",
+            # 历史值兼容 数据库实际存的还是这些字面量
             "thinking",
             "think_done",
             "decided",
-            "replying",
-            # 历史值兼容 数据库实际存的还是这些字面量
             "created",
             "waiting_decision",
         ]
         now = _utcnow()
 
-        # 第一步 顶层字段一次性原子更新 这一步的 modified_count 即受影响 round 数
+        # 第一步 顶层 state 一次性原子更新
         result = await self._db["rounds"].update_many(
             {"state": {"$in": in_progress}},
             {
@@ -575,9 +640,28 @@ class MotorMongoStorage:
         )
         modified = int(result.modified_count or 0)
 
-        # 第二步 仅对 reply 是对象的文档把 reply.state 也置为 cancelled
-        # 不能在第一步里直接 $set reply.state 因为 reply 为 null 时会报错
-        # reply 不存在 / 为 null 则保持原状 反正不会有残留 streaming 影响
+        # 第二步 把每个 round 的 replies 子项 streaming/pending 全部刷成 cancelled
+        # 用 update + arrayFilters 不行 因为 replies 是 dict 不是 array  改走遍历 + dot path
+        # mongomock-motor 不支持 aggregation pipeline 下的 $map  所以这里逐 round 修
+        async for r in self._db["rounds"].find(
+            {"cancel_reason": reason, "cancelled_at": now},
+            {"task_id": 1, "replies": 1, "_id": 0},
+        ):
+            replies = r.get("replies") or {}
+            updates: dict[str, Any] = {}
+            for agent_name, reply in replies.items():
+                if not isinstance(reply, dict):
+                    continue
+                rstate = reply.get("state")
+                if rstate in (None, "pending", "streaming"):
+                    updates[f"replies.{agent_name}.state"] = "cancelled"
+            if updates:
+                await self._db["rounds"].update_one(
+                    {"task_id": r["task_id"]},
+                    {"$set": updates},
+                )
+
+        # 兼容老 round  顶层 reply 单字段  把 reply.state 也刷成 cancelled
         await self._db["rounds"].update_many(
             {
                 "cancel_reason": reason,

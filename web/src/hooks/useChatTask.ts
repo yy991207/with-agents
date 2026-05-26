@@ -1,11 +1,11 @@
-// 单轮任务 hook:封装 ask -> openSSE 的发起流程,并暴露决策、取消、重试 think
+// 单轮任务 hook:封装 ask -> openSSE 的发起流程,并暴露选答、取消、重答接口
 // stop 流程：先调后端 cancel 再本地 dispatch CANCELLED，确保 UI 立刻更新
 import { useCallback } from 'react';
 import { message } from 'antd';
-import { ask, cancel, decide, retryThink } from '../api/http';
+import { ask, cancel, retryReply, selectReply } from '../api/http';
 import { openTaskStream } from '../api/sse';
 import { useChat } from '../state/ChatContext';
-import type { AgentName } from '../state/types';
+import type { AgentName, InputMode } from '../state/types';
 
 function describeError(err: unknown): string {
   if (err instanceof Error) return err.message;
@@ -17,20 +17,31 @@ function isFatalSSEError(err: unknown): boolean {
   return msg.includes('404') || msg.includes('410');
 }
 
+export interface SendOptions {
+  thinking?: boolean;
+  agents: AgentName[];
+  inputMode: InputMode;
+}
+
 export function useChatTask() {
   const { state, dispatch, registerSSEController, closeSSEController } = useChat();
 
   const send = useCallback(
-    async (rawMessage: string, options?: { thinking?: boolean }): Promise<void> => {
+    async (rawMessage: string, options: SendOptions): Promise<void> => {
       const trimmed = rawMessage.trim();
       if (!trimmed) return;
+      if (!options.agents.length) {
+        message.error('请选择至少一个回答的 agent');
+        return;
+      }
 
       try {
         const { task_id, session_id, created_at } = await ask({
           session_id: state.sessionId ?? undefined,
           user_message: trimmed,
-          // 输入框大脑开关  本轮一次性透传  后端据此决定是否给 ChatOpenAI 注入 extra_body.thinking
-          thinking: options?.thinking === true ? true : undefined,
+          agents: options.agents,
+          input_mode: options.inputMode,
+          thinking: options.thinking === true ? true : undefined,
         });
 
         dispatch({
@@ -38,6 +49,8 @@ export function useChatTask() {
           sessionId: session_id,
           taskId: task_id,
           userMessage: trimmed,
+          agents: options.agents,
+          inputMode: options.inputMode,
           createdAt: created_at,
         });
 
@@ -63,19 +76,16 @@ export function useChatTask() {
     [dispatch, registerSSEController, state.sessionId],
   );
 
-  // 主动停止: 先通知后端取消 再本地立即标记 确保 UI 不卡在 loading
+  // 主动停止: 先通知后端取消整个任务 再本地立即标记
   const stop = useCallback(async (): Promise<void> => {
     const taskId = state.activeTaskId;
     if (!taskId) return;
-    // 先告知后端
     try {
       await cancel({ task_id: taskId, scope: 'global' });
     } catch (e) {
       message.error(`取消失败:${describeError(e)}`);
     }
-    // 关闭 SSE 连接
     closeSSEController();
-    // 前端本地立即标记取消 SSE 已断后端事件推不过来
     dispatch({
       type: 'sse.event',
       taskId,
@@ -83,49 +93,51 @@ export function useChatTask() {
     });
   }, [closeSSEController, state.activeTaskId, dispatch]);
 
-  const decideChoice = useCallback(
-    async (choice: AgentName | 'auto' | 'regenerate'): Promise<void> => {
-      if (!state.activeTaskId) return;
+  // 取消单个 agent 的 reply 子任务  其他 agent 不动
+  const cancelReplyAgent = useCallback(
+    async (taskId: string, agent: AgentName): Promise<void> => {
       try {
-        await decide({ task_id: state.activeTaskId, choice });
-      } catch (e) {
-        message.error(`决策失败:${describeError(e)}`);
-      }
-    },
-    [state.activeTaskId],
-  );
-
-  const cancelAgent = useCallback(
-    async (agent: AgentName): Promise<void> => {
-      if (!state.activeTaskId) return;
-      try {
-        await cancel({ task_id: state.activeTaskId, scope: agent });
+        await cancel({ task_id: taskId, scope: agent });
       } catch (e) {
         message.error(`取消 ${agent} 失败:${describeError(e)}`);
       }
     },
-    [state.activeTaskId],
+    [],
   );
 
-  const retryAgent = useCallback(
-    async (agent: AgentName): Promise<void> => {
-      if (!state.activeTaskId) return;
+  // 重答单个 agent  会清空 selected_reply_agent 让用户重新选答
+  const retryReplyAgent = useCallback(
+    async (taskId: string, agent: AgentName): Promise<void> => {
       try {
-        await retryThink({ task_id: state.activeTaskId, agent });
-        message.success(`已请求重试 ${agent}`);
+        await retryReply({ task_id: taskId, agent });
       } catch (e) {
-        const msg = describeError(e);
-        if (msg.includes('501')) {
-          message.warning('单 agent 重试暂未实装,可整体重新发问');
-        } else {
-          message.error(`重试失败:${msg}`);
-        }
+        message.error(`重答 ${agent} 失败:${describeError(e)}`);
       }
     },
-    [state.activeTaskId],
+    [],
   );
 
-  return { send, stop, decideChoice, cancelAgent, retryAgent };
+  // 用户从多 agent 候选中选定一个作为正式回答
+  // 后端 task 已结束时 hub 已 close  publish 不出 reply.selected 事件
+  // 这里成功后直接乐观派发一个 reply.selected event 到 reducer  立刻刷新 UI
+  // 不依赖 SSE 回灌  避免选答 chip 点了没反应
+  const selectReplyAgent = useCallback(
+    async (taskId: string, agent: AgentName): Promise<void> => {
+      try {
+        await selectReply({ task_id: taskId, agent });
+        dispatch({
+          type: 'sse.event',
+          taskId,
+          event: { type: 'reply.selected', data: { agent } },
+        });
+      } catch (e) {
+        message.error(`选答失败:${describeError(e)}`);
+      }
+    },
+    [dispatch],
+  );
+
+  return { send, stop, cancelReplyAgent, retryReplyAgent, selectReplyAgent };
 }
 
 export { isFatalSSEError };

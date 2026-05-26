@@ -21,16 +21,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import Settings, load_settings
-from .core.rate_limit import RateLimit, RateLimiter
 from .core.task_manager import TaskManager
 from .llm.deep_agents import build_registry
 from .routes.agents import router as agents_router
 from .routes.ask import router as ask_router
 from .routes.cancel import router as cancel_router
-from .routes.decide import router as decide_router
 from .routes.history import router as history_router
 from .routes.mcp import router as mcp_router
-from .routes.retry_think import router as retry_think_router
+from .routes.retry_reply import router as retry_reply_router
+from .routes.select_reply import router as select_reply_router
 from .routes.sessions import router as sessions_router
 from .routes.static_spa import mount_spa
 from .routes.stream import router as stream_router
@@ -71,12 +70,6 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.storage = storage
     app.state.deep_agents = registry
     app.state.task_manager = task_manager
-    # judge 限频 默认每 60s 最多 10 次 防止用户狂点"帮我选"打爆 LLM
-    # 进程内软限流 重启即清零 生产化可改 redis
-    app.state.judge_limiter = RateLimiter(
-        name="judge",
-        limit=RateLimit(capacity=10, window_s=60.0),
-    )
     try:
         yield
     finally:
@@ -120,9 +113,9 @@ def create_app(config_path: str | None = None) -> FastAPI:
     app.include_router(agents_router)
     # M3: 对话核心 + 历史
     app.include_router(ask_router)
-    app.include_router(decide_router)
+    app.include_router(select_reply_router)
+    app.include_router(retry_reply_router)
     app.include_router(cancel_router)
-    app.include_router(retry_think_router)
     app.include_router(stream_router)
     app.include_router(history_router)
     app.include_router(sessions_router)

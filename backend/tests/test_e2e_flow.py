@@ -1,11 +1,12 @@
-"""端到端流程占位测试 当前 M1 骨架仅放置 skip 占位 真实链路在 M2 阶段补齐"""
+"""e2e flow 集成测试 [DEPRECATED]
 
-from __future__ import annotations
+旧 think → decision → reply 全流程跑通验证
+新模型用 多 agent 并发 + 选答替代  整文件需要按新流程重写
+"""
 
 import pytest
 
-
-@pytest.mark.skip(reason="M2 阶段补齐:真实 e2e 需要 mongomock-motor + httpx AsyncClient 串起 ask/decide/sse/history")
-def test_full_think_then_choose_flow() -> None:
-    """模拟用户提问 → 4 路 think 完成 → 选择 → reply 流式 → 历史落库"""
-    raise AssertionError("占位 不应被实际执行")
+pytest.skip(
+    "think 流程下线后此文件需要重写  暂时跳过",
+    allow_module_level=True,
+)

@@ -1,40 +1,48 @@
-// 输入区:文本框 + 发送/停止按钮(根据 task 状态切换)
-// 这里改成更贴近 LobeHub 的输入卡外观，但发送、停止和占位逻辑保持不变
-import { Button, Input, Popover, Progress, Tooltip } from 'antd';
-import { PlusOutlined, SendOutlined, StopOutlined } from '@ant-design/icons';
-import { useState } from 'react';
+// 输入区:文本框 + 单/多 agent 切换 + 大脑深度思考开关 + 上下文用量胶囊 + 发送/停止
+// LobeHub 风格输入卡  不发任何网络请求只触发 onSend 回调
+import { Avatar, Button, Checkbox, Input, Popover, Progress, Tooltip } from 'antd';
+import {
+  CaretUpOutlined,
+  PlusOutlined,
+  SendOutlined,
+  StopOutlined,
+  UserOutlined,
+} from '@ant-design/icons';
+import { useEffect, useState } from 'react';
 import type { ChangeEvent, KeyboardEvent } from 'react';
 import { useChat } from '../state/ChatContext';
 import { isBusyState } from '../state/types';
-import type { ContextUsage, TaskState } from '../state/types';
+import type {
+  AgentName,
+  ContextUsage,
+  InputMode,
+  TaskState,
+} from '../state/types';
 import { useContextActions } from '../hooks/useContextActions';
+import {
+  agentAvatarOf,
+  buildAgentLabelMap,
+  buildAgentMetaMap,
+} from '../state/agentLabels';
 
-// 单条消息最大字符数  超出禁止发送  防止用户一次塞超长文本撑爆 LLM 上下文
-// 与后端摘要触发阈值无关  那个看 token  这里看 char  双层防线
+// 单条消息最大字符数  超出禁止发送
 const MAX_CHARS = 5000;
-// 接近上限时提示色变化  超过 80% 变橙色提示用户控制长度
 const WARN_THRESHOLD = Math.floor(MAX_CHARS * 0.8);
+// 多 agent 模式上限  一轮最多并发 4 个 agent
+const MULTI_AGENT_LIMIT = 4;
 
-// token 数显示成 K  一万以下保留原值  避免 12345 这种小数读起来累
-// > 1000 显示成 12.3K  方便扫读  保留一位小数
 function formatTokens(n: number): string {
   if (!Number.isFinite(n) || n < 0) return '0';
   if (n < 1000) return String(Math.round(n));
   return `${(n / 1000).toFixed(1)}K`;
 }
 
-// 根据 ratio 选择阶梯式颜色  跟 char 计数颜色风格一致
-//   < 60%  绿
-//   60% ~ 80%  黄
-//   >= 80%  红
 function pickUsageColor(ratio: number): string {
   if (ratio >= 0.8) return '#ef4444';
   if (ratio >= 0.6) return '#f59e0b';
   return '#10b981';
 }
 
-// 圆柱形容量指示器  内嵌 SVG 试管样式  液面高度跟 ratio 联动
-// 整体尺寸 16x22  与 + 号 type=text 按钮视觉对齐  作为 Popover 触发器
 interface ContextCylinderProps {
   ratio: number;
   color: string;
@@ -42,164 +50,72 @@ interface ContextCylinderProps {
 function ContextCylinder({ ratio, color }: ContextCylinderProps) {
   const cylTop = 3;
   const cylHeight = 16;
-  // 液面从底部往上长  ratio=1 时填满 ratio=0 时高度为 0 完全空
   const fillH = Math.max(0, Math.min(cylHeight, cylHeight * ratio));
   const fillY = cylTop + (cylHeight - fillH);
   return (
-    <svg
-      width="14"
-      height="22"
-      viewBox="0 0 14 22"
-      fill="none"
-      style={{ display: 'block' }}
-    >
-      {/* 外管壁 */}
-      <rect
-        x="3"
-        y={cylTop}
-        width="8"
-        height={cylHeight}
-        rx="2"
-        ry="2"
-        stroke="#94a3b8"
-        strokeWidth="1"
-        fill="none"
-      />
-      {/* 液体填充  圆角与外壁一致避免视觉错位 */}
-      <rect
-        x="4"
-        y={fillY}
-        width="6"
-        height={fillH}
-        rx="1"
-        ry="1"
-        fill={color}
-      />
+    <svg width="14" height="22" viewBox="0 0 14 22" fill="none" style={{ display: 'block' }}>
+      <rect x="3" y={cylTop} width="8" height={cylHeight} rx="2" ry="2" stroke="#94a3b8" strokeWidth="1" fill="none" />
+      <rect x="4" y={fillY} width="6" height={fillH} rx="1" ry="1" fill={color} />
     </svg>
   );
 }
 
-// 上下文用量浮窗内容  Popover 触发后展示
-// 包含详细数字 + Progress 条 + 阈值说明 + 压缩按钮
 interface ContextUsagePopoverContentProps {
   usage: ContextUsage;
   compacting: boolean;
   canCompact: boolean;
   onCompact: () => void;
 }
-function ContextUsagePopoverContent({
-  usage,
-  compacting,
-  canCompact,
-  onCompact,
-}: ContextUsagePopoverContentProps) {
+function ContextUsagePopoverContent({ usage, compacting, canCompact, onCompact }: ContextUsagePopoverContentProps) {
   const safeRatio = Math.max(0, Math.min(1, usage.ratio));
   const percent = Math.round(safeRatio * 1000) / 10;
   const color = pickUsageColor(safeRatio);
   return (
     <div style={{ minWidth: 240, maxWidth: 280 }}>
-      <div
-        style={{
-          color: 'rgba(15, 23, 42, 0.92)',
-          fontSize: 13,
-          fontWeight: 600,
-          marginBottom: 8,
-        }}
-      >
+      <div style={{ color: 'rgba(15, 23, 42, 0.92)', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
         上下文用量
       </div>
-      <div
-        style={{
-          color,
-          fontSize: 13,
-          fontVariantNumeric: 'tabular-nums',
-          marginBottom: 6,
-        }}
-      >
+      <div style={{ color, fontSize: 13, fontVariantNumeric: 'tabular-nums', marginBottom: 6 }}>
         {formatTokens(usage.used_tokens)} / {formatTokens(usage.max_input_tokens)} ({percent}%)
       </div>
-      <Progress
-        percent={Math.min(100, safeRatio * 100)}
-        showInfo={false}
-        size="small"
-        strokeColor={color}
-        style={{ marginBottom: 8 }}
-      />
-      <div
-        style={{
-          color: 'rgba(71, 85, 105, 0.72)',
-          fontSize: 12,
-          marginBottom: 12,
-          lineHeight: 1.6,
-        }}
-      >
+      <Progress percent={Math.min(100, safeRatio * 100)} showInfo={false} size="small" strokeColor={color} style={{ marginBottom: 8 }} />
+      <div style={{ color: 'rgba(71, 85, 105, 0.72)', fontSize: 12, marginBottom: 12, lineHeight: 1.6 }}>
         模型 {usage.model_id || '未知'}  阈值 {formatTokens(usage.threshold_tokens)}
         <br />
         超过阈值后会自动摘要历史轮次
       </div>
-      <Button
-        block
-        type="primary"
-        size="small"
-        loading={compacting}
-        disabled={!canCompact || compacting}
-        onClick={onCompact}
-      >
+      <Button block type="primary" size="small" loading={compacting} disabled={!canCompact || compacting} onClick={onCompact}>
         压缩上下文
       </Button>
     </div>
   );
 }
 
-// 大脑图标  作为 thinking 模式开关  active 时填色  inactive 时只描边
-// 简化绘制  脑沟两条曲线 + 中线 + 外轮廓  16x16 统一吃 currentColor
+// 大脑图标  作为 thinking 模式开关
 interface BrainIconProps {
   active: boolean;
 }
 function BrainIcon({ active }: BrainIconProps) {
   return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      style={{ display: 'block' }}
-    >
-      <path
-        d="M9.5 2A3.5 3.5 0 0 0 6 5.5v.06a3.5 3.5 0 0 0-2 6.39A3.5 3.5 0 0 0 6 18a3.5 3.5 0 0 0 6 1.5V4.06A3.5 3.5 0 0 0 9.5 2Z"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        fill={active ? 'currentColor' : 'none'}
-        fillOpacity={active ? 0.18 : 0}
-      />
-      <path
-        d="M14.5 2A3.5 3.5 0 0 1 18 5.5v.06a3.5 3.5 0 0 1 2 6.39A3.5 3.5 0 0 1 18 18a3.5 3.5 0 0 1-6 1.5V4.06A3.5 3.5 0 0 1 14.5 2Z"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        fill={active ? 'currentColor' : 'none'}
-        fillOpacity={active ? 0.18 : 0}
-      />
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style={{ display: 'block' }}>
+      <path d="M9.5 2A3.5 3.5 0 0 0 6 5.5v.06a3.5 3.5 0 0 0-2 6.39A3.5 3.5 0 0 0 6 18a3.5 3.5 0 0 0 6 1.5V4.06A3.5 3.5 0 0 0 9.5 2Z" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" fill={active ? 'currentColor' : 'none'} fillOpacity={active ? 0.18 : 0} />
+      <path d="M14.5 2A3.5 3.5 0 0 1 18 5.5v.06a3.5 3.5 0 0 1 2 6.39A3.5 3.5 0 0 1 18 18a3.5 3.5 0 0 1-6 1.5V4.06A3.5 3.5 0 0 1 14.5 2Z" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" fill={active ? 'currentColor' : 'none'} fillOpacity={active ? 0.18 : 0} />
     </svg>
   );
 }
 
 export interface ChatInputProps {
-  onSend: (message: string, options?: { thinking?: boolean }) => void | Promise<void>;
+  onSend: (
+    message: string,
+    options: { thinking?: boolean; agents: AgentName[]; inputMode: InputMode },
+  ) => void | Promise<void>;
   onStop?: () => void | Promise<void>;
 }
 
 function getPlaceholder(state: TaskState): string {
   switch (state) {
-    case 'THINKING':
-      return '4 个 agent 正在思考';
-    case 'THINK_DONE':
-      return '等你选择回答的 agent';
-    case 'DECIDED':
-      return '已决策,等 agent 开始回答';
+    case 'PENDING':
+      return '正在准备…';
     case 'REPLYING':
       return 'agent 正在回答';
     default:
@@ -207,12 +123,137 @@ function getPlaceholder(state: TaskState): string {
   }
 }
 
+// 多 agent 选择浮窗  agent 列表 + 上限提示
+interface MultiAgentPopoverProps {
+  agentNames: AgentName[];
+  agentLabels: Record<string, string>;
+  agentAvatars: Record<string, string | null>;
+  selected: Set<AgentName>;
+  onToggle: (name: AgentName) => void;
+}
+function MultiAgentPopover({
+  agentNames,
+  agentLabels,
+  agentAvatars,
+  selected,
+  onToggle,
+}: MultiAgentPopoverProps) {
+  return (
+    <div style={{ minWidth: 240, maxWidth: 320, maxHeight: 360, overflow: 'auto' }}>
+      <div style={{ color: 'rgba(15, 23, 42, 0.86)', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+        选择回答的 agents (最多 {MULTI_AGENT_LIMIT} 个)
+      </div>
+      {agentNames.length === 0 ? (
+        <div style={{ color: 'rgba(71, 85, 105, 0.7)', fontSize: 13, padding: '12px 0' }}>
+          暂无 agent  请先在配置抽屉里新建
+        </div>
+      ) : null}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        {agentNames.map((name) => {
+          const checked = selected.has(name);
+          const disabled = !checked && selected.size >= MULTI_AGENT_LIMIT;
+          const label = agentLabels[name] ?? name;
+          const avatarUrl = agentAvatars[name];
+          return (
+            <div
+              key={name}
+              onClick={() => {
+                if (disabled) return;
+                onToggle(name);
+              }}
+              style={{
+                alignItems: 'center',
+                cursor: disabled ? 'not-allowed' : 'pointer',
+                display: 'flex',
+                gap: 8,
+                opacity: disabled ? 0.4 : 1,
+                padding: '6px 8px',
+                borderRadius: 8,
+                background: checked ? 'rgba(37, 99, 235, 0.08)' : 'transparent',
+              }}
+            >
+              <Checkbox checked={checked} disabled={disabled} />
+              {avatarUrl ? (
+                <Avatar src={avatarUrl} size={20} shape="square" />
+              ) : (
+                <Avatar size={20} shape="square" icon={<UserOutlined />} />
+              )}
+              <span style={{ flex: 1, fontSize: 13, color: 'rgba(15, 23, 42, 0.86)' }}>
+                {label}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// 单 agent 选择浮窗  单选
+interface SingleAgentPopoverProps {
+  agentNames: AgentName[];
+  agentLabels: Record<string, string>;
+  agentAvatars: Record<string, string | null>;
+  selected: AgentName | null;
+  onPick: (name: AgentName) => void;
+}
+function SingleAgentPopover({
+  agentNames,
+  agentLabels,
+  agentAvatars,
+  selected,
+  onPick,
+}: SingleAgentPopoverProps) {
+  return (
+    <div style={{ minWidth: 220, maxWidth: 320, maxHeight: 360, overflow: 'auto' }}>
+      <div style={{ color: 'rgba(15, 23, 42, 0.86)', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+        选择回答的 agent
+      </div>
+      {agentNames.length === 0 ? (
+        <div style={{ color: 'rgba(71, 85, 105, 0.7)', fontSize: 13, padding: '12px 0' }}>
+          暂无 agent  请先在配置抽屉里新建
+        </div>
+      ) : null}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        {agentNames.map((name) => {
+          const active = selected === name;
+          const label = agentLabels[name] ?? name;
+          const avatarUrl = agentAvatars[name];
+          return (
+            <div
+              key={name}
+              onClick={() => onPick(name)}
+              style={{
+                alignItems: 'center',
+                cursor: 'pointer',
+                display: 'flex',
+                gap: 8,
+                padding: '6px 8px',
+                borderRadius: 8,
+                background: active ? 'rgba(37, 99, 235, 0.08)' : 'transparent',
+              }}
+            >
+              {avatarUrl ? (
+                <Avatar src={avatarUrl} size={20} shape="square" />
+              ) : (
+                <Avatar size={20} shape="square" icon={<UserOutlined />} />
+              )}
+              <span style={{ flex: 1, fontSize: 13, color: 'rgba(15, 23, 42, 0.86)' }}>
+                {label}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function ChatInput({ onSend, onStop }: ChatInputProps) {
   const [value, setValue] = useState('');
   const { state } = useChat();
   const { compact } = useContextActions();
   const busy = isBusyState(state.taskState);
-  // compacting 期间统一冻结发送 / 停止 / 输入  避免半路打断后端长事务
   const compacting = state.compacting;
   const inputDisabled = busy || compacting;
   const allowStop = busy && state.activeTaskId !== null;
@@ -222,21 +263,65 @@ export default function ChatInput({ onSend, onStop }: ChatInputProps) {
   const overLimit = charCount > MAX_CHARS;
   const nearLimit = charCount >= WARN_THRESHOLD;
 
-  // 圆柱触发的 Popover 显示状态  受控  压缩中也允许查看
-  // 压缩成功后 useContextActions 会刷新 contextUsage  浮窗里数据自动跟新
   const [usagePopoverOpen, setUsagePopoverOpen] = useState(false);
-
-  // 深度思考开关  本地 state  不持久化  每次发送透传给 onSend
-  // active = true 时调 /ask 会传 thinking:true 后端注入 extra_body 让模型走深度思考
   const [thinkingEnabled, setThinkingEnabled] = useState(false);
+
+  // 输入模式 + 选中 agents  本地状态  每轮独立切换
+  // 默认走单 agent  agent 选用第一个 agent (judgeTarget 兜底)
+  const [inputMode, setInputMode] = useState<InputMode>('single');
+  const [selectedSingle, setSelectedSingle] = useState<AgentName | null>(null);
+  const [selectedMulti, setSelectedMulti] = useState<Set<AgentName>>(new Set());
+  const [singlePopoverOpen, setSinglePopoverOpen] = useState(false);
+  const [multiPopoverOpen, setMultiPopoverOpen] = useState(false);
+
+  // 从 settings.drafts 派生 agent 列表
+  const agentLabels = buildAgentLabelMap(state.settings.drafts);
+  const agentMetas = buildAgentMetaMap(state.settings.drafts);
+  const agentNames = Object.keys(state.settings.drafts);
+  const agentAvatarsMap: Record<string, string | null> = {};
+  for (const n of agentNames) {
+    agentAvatarsMap[n] = agentAvatarOf(agentMetas, n);
+  }
+
+  // 初始化默认选中  优先 judgeTarget  否则第一个 agent
+  useEffect(() => {
+    if (selectedSingle === null && agentNames.length > 0) {
+      const fallback =
+        state.settings.judgeTarget && agentNames.includes(state.settings.judgeTarget)
+          ? state.settings.judgeTarget
+          : agentNames[0];
+      setSelectedSingle(fallback);
+    }
+  }, [agentNames.join('|'), state.settings.judgeTarget, selectedSingle]);
+
+  const handleToggleMulti = (name: AgentName) => {
+    setSelectedMulti((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) {
+        next.delete(name);
+      } else {
+        if (next.size >= MULTI_AGENT_LIMIT) return prev;
+        next.add(name);
+      }
+      return next;
+    });
+  };
 
   const handleSend = () => {
     const nextValue = value.trim();
     if (!nextValue || busy || compacting) return;
-    // 双保险  TextArea 自带 maxLength 已挡 这里再校一次防绕过
     if (nextValue.length > MAX_CHARS) return;
+
+    let agents: AgentName[] = [];
+    if (inputMode === 'single') {
+      if (!selectedSingle) return;
+      agents = [selectedSingle];
+    } else {
+      agents = Array.from(selectedMulti);
+      if (agents.length < 2) return;
+    }
     setValue('');
-    void onSend(nextValue, { thinking: thinkingEnabled });
+    void onSend(nextValue, { thinking: thinkingEnabled, agents, inputMode });
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -246,12 +331,39 @@ export default function ChatInput({ onSend, onStop }: ChatInputProps) {
     }
   };
 
-  // 压缩按钮点击  Popover 保持打开 让用户看到 loading 与结果
   const handleCompact = () => {
     void compact();
   };
 
-  // 圆柱按钮  没有 contextUsage 时不渲染  保持底部排版整洁
+  // 当前已选 agent 的展示 chip 内容  用于触发器
+  const renderAgentTrigger = () => {
+    if (inputMode === 'single') {
+      const name = selectedSingle ?? agentNames[0] ?? '';
+      const label = agentLabels[name] ?? name ?? '选择 agent';
+      const avatarUrl = name ? agentAvatarsMap[name] : null;
+      return (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+          {avatarUrl ? (
+            <Avatar src={avatarUrl} size={18} shape="square" />
+          ) : (
+            <Avatar size={18} shape="square" icon={<UserOutlined />} />
+          )}
+          <span style={{ color: 'rgba(15, 23, 42, 0.86)' }}>{label || '选择 agent'}</span>
+          <CaretUpOutlined style={{ fontSize: 10, color: 'rgba(71, 85, 105, 0.7)' }} />
+        </span>
+      );
+    }
+    const count = selectedMulti.size;
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+        <span style={{ color: 'rgba(15, 23, 42, 0.86)' }}>
+          多 agent {count > 0 ? `(${count})` : '(请选)'}
+        </span>
+        <CaretUpOutlined style={{ fontSize: 10, color: 'rgba(71, 85, 105, 0.7)' }} />
+      </span>
+    );
+  };
+
   const cylinderButton = state.contextUsage ? (
     <Popover
       content={
@@ -281,20 +393,116 @@ export default function ChatInput({ onSend, onStop }: ChatInputProps) {
           icon={
             <ContextCylinder
               ratio={Math.max(0, Math.min(1, state.contextUsage.ratio))}
-              color={pickUsageColor(
-                Math.max(0, Math.min(1, state.contextUsage.ratio)),
-              )}
+              color={pickUsageColor(Math.max(0, Math.min(1, state.contextUsage.ratio)))}
             />
           }
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
+          style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
         />
       </Tooltip>
     </Popover>
   ) : null;
+
+  // agent 选择触发器  根据模式渲染 single 或 multi popover
+  const agentTriggerNode = inputMode === 'single' ? (
+    <Popover
+      content={
+        <SingleAgentPopover
+          agentNames={agentNames}
+          agentLabels={agentLabels}
+          agentAvatars={agentAvatarsMap}
+          selected={selectedSingle}
+          onPick={(n) => {
+            setSelectedSingle(n);
+            setSinglePopoverOpen(false);
+          }}
+        />
+      }
+      trigger="click"
+      placement="topLeft"
+      open={singlePopoverOpen}
+      onOpenChange={setSinglePopoverOpen}
+    >
+      <Button size="small" type="text" disabled={compacting}>
+        {renderAgentTrigger()}
+      </Button>
+    </Popover>
+  ) : (
+    <Popover
+      content={
+        <MultiAgentPopover
+          agentNames={agentNames}
+          agentLabels={agentLabels}
+          agentAvatars={agentAvatarsMap}
+          selected={selectedMulti}
+          onToggle={handleToggleMulti}
+        />
+      }
+      trigger="click"
+      placement="topLeft"
+      open={multiPopoverOpen}
+      onOpenChange={setMultiPopoverOpen}
+    >
+      <Button size="small" type="text" disabled={compacting}>
+        {renderAgentTrigger()}
+      </Button>
+    </Popover>
+  );
+
+  // 模式切换按钮  single ↔ multi  用文字胶囊
+  const modeToggle = (
+    <div
+      style={{
+        display: 'inline-flex',
+        background: 'rgba(15, 23, 42, 0.05)',
+        borderRadius: 999,
+        padding: 2,
+        fontSize: 12,
+      }}
+    >
+      <button
+        type="button"
+        onClick={() => setInputMode('single')}
+        style={{
+          background: inputMode === 'single' ? '#fff' : 'transparent',
+          border: 'none',
+          borderRadius: 999,
+          color: inputMode === 'single' ? 'rgba(15, 23, 42, 0.92)' : 'rgba(71, 85, 105, 0.7)',
+          cursor: 'pointer',
+          fontSize: 12,
+          fontWeight: inputMode === 'single' ? 600 : 400,
+          padding: '4px 12px',
+          transition: 'all 120ms ease',
+        }}
+      >
+        单 agent
+      </button>
+      <button
+        type="button"
+        onClick={() => setInputMode('multi')}
+        style={{
+          background: inputMode === 'multi' ? '#fff' : 'transparent',
+          border: 'none',
+          borderRadius: 999,
+          color: inputMode === 'multi' ? 'rgba(15, 23, 42, 0.92)' : 'rgba(71, 85, 105, 0.7)',
+          cursor: 'pointer',
+          fontSize: 12,
+          fontWeight: inputMode === 'multi' ? 600 : 400,
+          padding: '4px 12px',
+          transition: 'all 120ms ease',
+        }}
+      >
+        多 agent
+      </button>
+    </div>
+  );
+
+  // 发送按钮 disabled 条件:  无文本 / 超长 / 忙 / 单模式无选中 / 多模式不足 2 个
+  const sendDisabled =
+    inputDisabled ||
+    !value.trim() ||
+    overLimit ||
+    (inputMode === 'single' && !selectedSingle) ||
+    (inputMode === 'multi' && selectedMulti.size < 2);
 
   return (
     <div
@@ -340,7 +548,7 @@ export default function ChatInput({ onSend, onStop }: ChatInputProps) {
           padding: '4px 8px 8px 12px',
         }}
       >
-        <div style={{ alignItems: 'center', display: 'flex', gap: 8, minWidth: 0 }}>
+        <div style={{ alignItems: 'center', display: 'flex', gap: 8, minWidth: 0, flexWrap: 'wrap' }}>
           <Tooltip title="添加文件、技能和更多上下文(占位)">
             <Button shape="circle" icon={<PlusOutlined />} type="text" disabled={compacting} />
           </Tooltip>
@@ -359,14 +567,12 @@ export default function ChatInput({ onSend, onStop }: ChatInputProps) {
               }}
             />
           </Tooltip>
+          {modeToggle}
+          {agentTriggerNode}
           {cylinderButton}
           <span
             style={{
-              color: overLimit
-                ? '#ef4444'
-                : nearLimit
-                  ? '#f59e0b'
-                  : 'rgba(71, 85, 105, 0.7)',
+              color: overLimit ? '#ef4444' : nearLimit ? '#f59e0b' : 'rgba(71, 85, 105, 0.7)',
               fontSize: 12,
               fontVariantNumeric: 'tabular-nums',
               userSelect: 'none',
@@ -397,7 +603,9 @@ export default function ChatInput({ onSend, onStop }: ChatInputProps) {
                   ? '压缩中 暂不可发送'
                   : overLimit
                     ? `超过 ${MAX_CHARS} 字 无法发送`
-                    : '发送消息'
+                    : inputMode === 'multi' && selectedMulti.size < 2
+                      ? '多 agent 模式至少选 2 个'
+                      : '发送消息'
               }
             >
               <Button
@@ -406,7 +614,7 @@ export default function ChatInput({ onSend, onStop }: ChatInputProps) {
                 onClick={handleSend}
                 shape="circle"
                 size="large"
-                disabled={inputDisabled || !value.trim() || overLimit}
+                disabled={sendDisabled}
               />
             </Tooltip>
           )}

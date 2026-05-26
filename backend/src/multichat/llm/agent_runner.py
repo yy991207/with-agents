@@ -72,29 +72,6 @@ def _stringify_tool_output(obj: Any) -> str:
         return repr(obj)
 
 
-# ============================================================================ Think
-async def run_think(
-    agent_name: str,
-    user_message: str,
-    history: list[dict[str, Any]],
-    registry: DeepAgentRegistry,
-    timeout_s: float,
-) -> str:
-    """运行某 agent 的 think 调用 返回最终发言理由(50 字以内)
-
-    history 由调用方裁剪好 [{"role":"user|assistant","content":"...","agent":"..."}]
-    超时直接抛 asyncio.TimeoutError 由调用方 try/except 标 failed
-    """
-    deep_agent = registry.get(agent_name, "think")
-    messages = _build_messages(history, user_message)
-    state = await asyncio.wait_for(
-        deep_agent.ainvoke({"messages": messages}, config={"recursion_limit": 1000}),
-        timeout=timeout_s,
-    )
-    text = _extract_final_ai_text(state)
-    return text.strip()
-
-
 # ============================================================================ Reply
 async def run_reply(
     agent_name: str,
@@ -185,66 +162,6 @@ async def run_reply(
 
     await asyncio.wait_for(_stream(), timeout=timeout_s)
     return "".join(full_text_parts)
-
-
-# ============================================================================ Judge
-async def run_judge(
-    judge_agent_name: str,
-    user_message: str,
-    thinks: dict[str, str],
-    registry: DeepAgentRegistry,
-    timeout_s: float,
-) -> str:
-    """让 judge agent 选出最适合回答的 agent
-
-    参数:
-        judge_agent_name: 担任裁判的 agent 名 复用其 think 实例(强约束 不调工具)
-        user_message: 用户原始问题
-        thinks: 已成功的 think 内容 形如 {"GLM": "...", "Kimi": "..."}
-        registry: deep_agent 注册表
-        timeout_s: 单次 ainvoke 超时
-
-    返回:
-        被选中的 agent 名 必须是 thinks.keys() 之一
-        若 LLM 输出无法识别 降级返回 thinks 中的第一个 key
-    """
-    if not thinks:
-        raise RuntimeError("run_judge 入参 thinks 为空 至少需要 1 个候选")
-
-    deep_agent = registry.get(judge_agent_name, "think")
-    options = list(thinks.keys())
-    prompt_lines = [
-        f"用户提问 {user_message}",
-        "",
-        "下面是 4 个 AI 助手对该问题给出的 50 字以内发言意愿",
-    ]
-    for name, reason in thinks.items():
-        prompt_lines.append(f"[{name}] {reason}")
-    prompt_lines.append("")
-    prompt_lines.append(
-        f"请只输出最适合回答的助手名字 必须从 {options} 中选 不要解释 不要添加多余字符"
-    )
-    prompt = "\n".join(prompt_lines)
-
-    state = await asyncio.wait_for(
-        deep_agent.ainvoke({"messages": [HumanMessage(content=prompt)]}),
-        timeout=timeout_s,
-    )
-    text = _extract_final_ai_text(state).strip()
-
-    # 模糊匹配 LLM 输出 找第一个出现的候选 大小写不敏感
-    text_lower = text.lower()
-    for name in options:
-        if name.lower() in text_lower:
-            return name
-
-    _logger.warning(
-        "judge 输出不合规 降级到第一选项",
-        judge=judge_agent_name,
-        raw=text[:80],
-        options=options,
-    )
-    return options[0]
 
 
 # ============================================================================ Helpers

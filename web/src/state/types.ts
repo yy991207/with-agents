@@ -1,40 +1,19 @@
 // 全局类型定义:任务状态、SSE 事件、会话与轮次视图模型
-// 数字员工模型重构后:agent 数量与名称完全由后端返回 不再固定四个
+// 多 agent 并发回答重构后:每个 round 可同时有 N 个 agent 回答 用户从中选一个
 
-// 单次任务的状态机
-export type TaskState =
-  | 'PENDING'
-  | 'THINKING'
-  | 'THINK_DONE'
-  | 'DECIDED'
-  | 'REPLYING'
-  | 'DONE'
-  | 'CANCELLED';
+// 单次任务的状态机  简化为 4 态
+export type TaskState = 'PENDING' | 'REPLYING' | 'DONE' | 'CANCELLED';
 
 // agent 名称:不再写死成 union 由后端动态返回 各 agent 的内部 ID
 export type AgentName = string;
+
+// 输入模式  single 单 agent  multi 多 agent
+export type InputMode = 'single' | 'multi';
 
 // SSE 事件统一外壳:具体字段由 type 决定 这里用宽松对象兜底
 export interface SSEEvent {
   type: string;
   data: Record<string, unknown>;
-}
-
-// 单个 think 卡片的内部状态
-export type ThinkState = 'pending' | 'done' | 'failed' | 'cancelled' | 'skipped';
-
-// 单个 think 卡片视图模型
-export interface ThinkView {
-  agent: AgentName;
-  state: ThinkState;
-  content?: string;
-  error?: string;
-}
-
-// 决策结果:某个 agent / 让后端帮选 / 重新 think
-export interface DecisionView {
-  choice: AgentName | 'auto' | 'regenerate';
-  reason: string;
 }
 
 // 回复时间线中的一段: 文本 / 工具调用 / 工具结果 / 深度思考  按时间顺序排列
@@ -60,7 +39,7 @@ export interface ToolCallEvent {
 // reply 视图状态
 export type ReplyState = 'pending' | 'streaming' | 'done' | 'failed' | 'cancelled';
 
-// 单次回答气泡视图
+// 单个 agent 的回答视图  每轮可能有多份(multi 模式)
 export interface ReplyView {
   agent: AgentName;
   state: ReplyState;
@@ -72,19 +51,21 @@ export interface ReplyView {
   finishedAt?: string;
 }
 
-// 一轮完整对话(用户消息 + N 个 think + 决策 + 回答)
-// thinks 改成普通 Record key 由后端返回的 agent.name 决定
+// 一轮完整对话(用户消息 + N 个并发 agent 回答 + 选答)
 export interface RoundView {
   taskId: string;
   state: TaskState;
   userMessage: string;
-  thinks: Record<string, ThinkView>;
-  decision?: DecisionView;
-  reply?: ReplyView;
-  // think_done 时后端会推可用 agent 列表(失败/取消的会被剔除)
-  availableAgents?: AgentName[];
-  // judge 模式下后端建议或最终选择的 agent
-  judgePick?: AgentName;
+  // 本轮发起的 agent name 列表  长度 1~4
+  agents: AgentName[];
+  // 输入模式  渲染 grid 还是单卡
+  inputMode: InputMode;
+  // 各 agent 的回答  key=agent.name
+  // pending/streaming/done/failed/cancelled  彼此独立
+  replies: Record<AgentName, ReplyView>;
+  // 用户从 replies 中选定的 agent  null 表示未选答
+  // 单 agent 模式 reply 完成时自动赋值  multi 模式由用户主动选
+  selectedReplyAgent: AgentName | null;
   // 任务被取消时 前端展示一个简短原因
   cancelReason?: string;
   // 用户气泡显示用的 ISO8601  来自 round.created_at  POST /ask 创建时落库
@@ -243,6 +224,12 @@ export interface ContextUsage {
   model_id: string;
 }
 
+// 全屏子窗状态  null 表示无放大  非 null 表示某 round 的某 agent 处于全屏
+export interface FullscreenReply {
+  taskId: string;
+  agent: AgentName;
+}
+
 // 全局 Chat 状态
 export interface ChatState {
   sessionId: string | null;
@@ -257,6 +244,8 @@ export interface ChatState {
   contextUsage: ContextUsage | null;
   // 一键压缩进行中  期间禁用输入与发送  按钮 loading
   compacting: boolean;
+  // 子窗放大全屏状态  点击子窗右上角放大按钮置位  null 表示无放大
+  fullscreenReply: FullscreenReply | null;
 }
 
 // reducer action 列表
@@ -268,7 +257,15 @@ export type ChatAction =
   | { type: 'rounds.set'; rounds: RoundView[] }
   | { type: 'round.append'; round: RoundView }
   | { type: 'round.update'; taskId: string; patch: Partial<RoundView> }
-  | { type: 'task.created'; sessionId: string; taskId: string; userMessage: string; createdAt?: string }
+  | {
+      type: 'task.created';
+      sessionId: string;
+      taskId: string;
+      userMessage: string;
+      agents: AgentName[];
+      inputMode: InputMode;
+      createdAt?: string;
+    }
   // 抗刷新重连场景:把 activeTaskId 重新挂回去 准备接收 snapshot 帧
   | { type: 'task.resume'; taskId: string; taskState?: TaskState }
   | { type: 'task.state'; state: TaskState }
@@ -280,6 +277,8 @@ export type ChatAction =
   | { type: 'ui.sidebar.toggle'; collapsed?: boolean }
   | { type: 'ui.section.toggle'; section: 'recent' | 'agents' }
   | { type: 'ui.recommend.rotate' }
+  // 子窗全屏  agent 为空表示退出全屏
+  | { type: 'ui.fullscreen.set'; fullscreen: FullscreenReply | null }
   // 配置抽屉相关 action
   | { type: 'settings.open' }
   | { type: 'settings.close' }
@@ -303,16 +302,11 @@ export type ChatAction =
   | { type: 'compact.done'; usage: ContextUsage }
   | { type: 'compact.fail' };
 
-// 任务忙碌态判定:THINKING / THINK_DONE / DECIDED / REPLYING 视为忙
-// 不含 PENDING 不含 DONE / CANCELLED
+// 任务忙碌态判定:PENDING / REPLYING 视为忙
+// 不含 DONE / CANCELLED
 export function isBusyState(state: TaskState | null | undefined): boolean {
   if (!state) return false;
-  return (
-    state === 'THINKING' ||
-    state === 'THINK_DONE' ||
-    state === 'DECIDED' ||
-    state === 'REPLYING'
-  );
+  return state === 'PENDING' || state === 'REPLYING';
 }
 
 // ====== MCP 服务器配置相关类型 ======

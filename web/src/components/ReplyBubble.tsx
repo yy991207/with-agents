@@ -8,8 +8,10 @@ import { Avatar } from '@lobehub/ui';
 import { Flexbox } from 'react-layout-kit';
 import {
   CloseCircleOutlined,
+  ExpandAltOutlined,
   LoadingOutlined,
   ReloadOutlined,
+  StopOutlined,
 } from '@ant-design/icons';
 import { getAgentColor } from '../theme/tokens';
 import type { ReplySegment, ReplyView } from '../state/types';
@@ -19,7 +21,14 @@ export interface ReplyBubbleProps {
   agentLabel?: string;
   // agent 配置里设置的头像 data URL  没有时回退到首字母色块
   avatarUrl?: string | null;
+  // 重答  reply 进入终态(done/failed/cancelled) 时显示
   onRetry?: () => void;
+  // 终止  reply 还在 streaming/pending 时显示
+  onCancel?: () => void;
+  // 放大全屏  无值时不显示放大按钮
+  onFullscreen?: () => void;
+  // 是否处于全屏模式  全屏模式下不再显示放大按钮  且 maxHeight 放大
+  fullscreen?: boolean;
 }
 
 // segments 时间线节点  thinking / text / tool 三类
@@ -397,7 +406,15 @@ function formatTime(iso?: string): string {
   return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
-export default function ReplyBubble({ reply, agentLabel, avatarUrl, onRetry }: ReplyBubbleProps) {
+export default function ReplyBubble({
+  reply,
+  agentLabel,
+  avatarUrl,
+  onRetry,
+  onCancel,
+  onFullscreen,
+  fullscreen = false,
+}: ReplyBubbleProps) {
   const color = getAgentColor(reply.agent);
   const title = agentLabel || reply.agent;
   const initials = title.slice(0, 1).toUpperCase();
@@ -489,24 +506,9 @@ export default function ReplyBubble({ reply, agentLabel, avatarUrl, onRetry }: R
           return <ToolAccordion key={`x-${i}-${node.tool}`} node={node} />;
         })}
         {reply.state === 'cancelled' ? (
-          <Flexbox horizontal align="center" gap={8}>
-            {/* cancelled 状态  仅文字 不渲染 StopOutlined  视觉更干净 */}
-            <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-              cancelled
-            </Typography.Text>
-            {onRetry ? (
-              <Tooltip title="重新回答">
-                <Button
-                  aria-label="重新回答"
-                  icon={<ReloadOutlined />}
-                  onClick={onRetry}
-                  shape="circle"
-                  size="small"
-                  type="text"
-                />
-              </Tooltip>
-            ) : null}
-          </Flexbox>
+          <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+            cancelled
+          </Typography.Text>
         ) : null}
         {isStreaming ? (
           <span
@@ -535,8 +537,8 @@ export default function ReplyBubble({ reply, agentLabel, avatarUrl, onRetry }: R
       paddingBlock={8}
       style={{ width: '100%' }}
     >
-      {/* 头部:头像 + 名字 + 时间 + 状态 */}
-      <Flexbox horizontal align="center" gap={8}>
+      {/* 头部:头像 + 名字 + 时间 + 状态 + toolbar */}
+      <Flexbox horizontal align="center" gap={8} style={{ width: '100%' }}>
         {avatarUrl ? (
           <Avatar
             avatar={avatarUrl}
@@ -569,6 +571,44 @@ export default function ReplyBubble({ reply, agentLabel, avatarUrl, onRetry }: R
           </span>
         ) : reply.state === 'failed' ? (
           <CloseCircleOutlined style={{ color: 'var(--ant-color-error)', fontSize: 12 }} />
+        ) : null}
+        {/* 右侧 toolbar  放大 / 终止 / 重答 */}
+        <span style={{ flex: 1 }} />
+        {isStreaming && onCancel ? (
+          <Tooltip title="终止该 agent 回答">
+            <Button
+              aria-label="终止"
+              icon={<StopOutlined />}
+              onClick={onCancel}
+              size="small"
+              type="text"
+              shape="circle"
+            />
+          </Tooltip>
+        ) : null}
+        {!isStreaming && onRetry ? (
+          <Tooltip title="重新回答">
+            <Button
+              aria-label="重新回答"
+              icon={<ReloadOutlined />}
+              onClick={onRetry}
+              size="small"
+              type="text"
+              shape="circle"
+            />
+          </Tooltip>
+        ) : null}
+        {!fullscreen && onFullscreen ? (
+          <Tooltip title="放大查看">
+            <Button
+              aria-label="放大"
+              icon={<ExpandAltOutlined />}
+              onClick={onFullscreen}
+              size="small"
+              type="text"
+              shape="circle"
+            />
+          </Tooltip>
         ) : null}
       </Flexbox>
       {/* 正文 */}

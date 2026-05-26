@@ -1,5 +1,5 @@
 // Chat 状态 reducer:集中处理所有 action
-// reply 渲染按 segments 时间线顺序展示文本与工具调用
+// 多 agent 并发回答模型: round.replies[agent] 各自独立  按 SSE event 的 agent 字段路由
 import type {
   AgentEditDraft,
   AgentName,
@@ -7,14 +7,14 @@ import type {
   ChatAction,
   ChatState,
   ContextUsage,
-  DecisionView,
+  InputMode,
+  ReplySegment,
+  ReplyState,
   ReplyView,
   RoundView,
   SettingsState,
   SSEEvent,
   TaskState,
-  ThinkState,
-  ThinkView,
   ToolCallEvent,
   WorkbenchState,
 } from './types';
@@ -45,9 +45,9 @@ export const initialState: ChatState = {
   sseStatus: 'idle',
   settings: initialSettings,
   workbench: initialWorkbench,
-  // 上下文用量初始为 null  等后端首次 context.usage 事件下发后才显示进度条
   contextUsage: null,
   compacting: false,
+  fullscreenReply: null,
 };
 
 function patchRound(rounds: RoundView[], taskId: string, patch: Partial<RoundView>): RoundView[] {
@@ -102,9 +102,7 @@ function readAgentList(data: Record<string, unknown>, ...keys: string[]): AgentN
   return undefined;
 }
 
-// 解析 SSE context.usage 事件 payload  字段名沿用后端 snake_case
-// 任一数值字段缺失 / 非法时返回 null  调用方丢弃此次更新避免脏数据进 UI
-// 导出供 App.tsx / useSession 在 GET /history 响应里直接解析 session.context_usage 字段
+// 解析 SSE context.usage 事件 payload
 export function parseContextUsage(data: Record<string, unknown>): ContextUsage | null {
   const used = data['used_tokens'];
   const threshold = data['threshold_tokens'];
@@ -129,9 +127,25 @@ export function parseContextUsage(data: Record<string, unknown>): ContextUsage |
   };
 }
 
-function updateThink(round: RoundView, agent: AgentName, patch: Partial<ThinkView>): RoundView {
-  const cur = round.thinks[agent] ?? { agent, state: 'pending' as ThinkState };
-  return { ...round, thinks: { ...round.thinks, [agent]: { ...cur, ...patch } } };
+// 把单个 agent 的 reply 视图按字段补丁更新  其他 agent 不受影响
+function patchReply(
+  round: RoundView,
+  agent: AgentName,
+  patch: Partial<ReplyView>,
+): RoundView {
+  const cur =
+    round.replies[agent] ??
+    {
+      agent,
+      state: 'pending' as ReplyState,
+      content: '',
+      toolCalls: [],
+      segments: [],
+    };
+  return {
+    ...round,
+    replies: { ...round.replies, [agent]: { ...cur, ...patch, agent } },
+  };
 }
 
 function applySSEEvent(
@@ -139,8 +153,7 @@ function applySSEEvent(
   event: SSEEvent,
   sourceTaskId?: string,
 ): ChatState {
-  // context.usage 是会话级事件  不挂在某轮 round 上  直接更新 state.contextUsage
-  // 必须在 round 校验之前拦截  否则 activeTaskId 为空时会被丢弃
+  // context.usage 是会话级事件  不挂在某轮 round 上
   if (event.type === 'context.usage') {
     const data = event.data ?? {};
     const usage = parseContextUsage(data);
@@ -166,164 +179,162 @@ function applySSEEvent(
       const s = readString(data, 'state') as TaskState | undefined;
       if (!s) return state;
       const patch: Partial<RoundView> = { state: s };
-      const avail = readAgentList(data, 'available_agents', 'availableAgents');
-      if (avail) patch.availableAgents = avail;
-      const judge = readAgent(data, 'judge_pick', 'judgePick');
-      if (judge) patch.judgePick = judge;
-      const decisionRaw = data['decision'];
-      if (decisionRaw && typeof decisionRaw === 'object') {
-        const dr = decisionRaw as Record<string, unknown>;
-        const choice = readString(dr, 'choice');
-        const reason = readString(dr, 'reason') ?? '';
-        if (choice) patch.decision = { choice: choice as DecisionView['choice'], reason };
-      }
+      // 后端 fan-out 时会带 agents 列表  挂回 round 防止刷新后丢
+      const agents = readAgentList(data, 'agents');
+      if (agents) patch.agents = agents;
       const cancelReason = readString(data, 'reason');
       if (cancelReason) patch.cancelReason = cancelReason;
-      // 取消时同步把 reply 也标为 cancelled 让 UI 立即停止 loading
-      if (s === 'CANCELLED' && round.reply && round.reply.state !== 'done') {
-        patch.reply = { ...round.reply, state: 'cancelled' as ReplyView['state'] };
+      // 整轮取消时  把所有还在 streaming/pending 的 reply 标 cancelled
+      if (s === 'CANCELLED') {
+        const replies = { ...round.replies };
+        for (const [agent, reply] of Object.entries(replies)) {
+          if (reply && reply.state !== 'done' && reply.state !== 'failed') {
+            replies[agent] = { ...reply, state: 'cancelled' as ReplyState };
+          }
+        }
+        patch.replies = replies;
       }
       return apply({ ...round, ...patch }, s);
     }
 
-    case 'think.start': {
-      const agent = readAgent(data, 'agent');
-      if (!agent) return state;
-      return apply(updateThink(round, agent, { state: 'pending', error: undefined }));
-    }
-    case 'think.done': {
-      const agent = readAgent(data, 'agent');
-      if (!agent) return state;
-      const content = readString(data, 'content') ?? '';
-      return apply(updateThink(round, agent, { state: 'done', content, error: undefined }));
-    }
-    case 'think.failed': {
-      const agent = readAgent(data, 'agent');
-      if (!agent) return state;
-      const error = readString(data, 'error', 'message') ?? '未知错误';
-      return apply(updateThink(round, agent, { state: 'failed', error }));
-    }
-    case 'think.cancelled': {
-      const agent = readAgent(data, 'agent');
-      if (!agent) return state;
-      return apply(updateThink(round, agent, { state: 'cancelled' }));
-    }
-    case 'judge.start':
-      return state;
-    case 'judge.done': {
-      const chosen = readAgent(data, 'chosen', 'agent');
-      if (!chosen) return state;
-      return apply({ ...round, judgePick: chosen });
-    }
-
-    // === reply 阶段: segments 时间线 ===
+    // === reply 阶段: 各 agent 独立  按事件 agent 字段路由 ===
     case 'reply.start': {
       const agent = readAgent(data, 'agent');
       if (!agent) return state;
-      const reply: ReplyView = {
-        agent,
+      const next = patchReply(round, agent, {
         state: 'streaming',
         content: '',
         toolCalls: [],
         segments: [],
-      };
-      return apply({ ...round, reply }, 'REPLYING');
+        error: undefined,
+        finishedAt: undefined,
+      });
+      return apply(next, 'REPLYING');
     }
 
     case 'reply.chunk': {
       const agent = readAgent(data, 'agent');
       const chunk = readString(data, 'chunk', 'content') ?? '';
-      if (!round.reply || !agent) return state;
-      const segments = [...round.reply.segments];
+      if (!agent) return state;
+      const cur = round.replies[agent];
+      if (!cur) return state;
+      const segments = [...cur.segments];
       const last = segments[segments.length - 1];
       if (last && last.type === 'text') {
         segments[segments.length - 1] = { ...last, content: (last.content ?? '') + chunk };
       } else {
         segments.push({ type: 'text', content: chunk });
       }
-      const reply: ReplyView = {
-        ...round.reply,
-        agent,
-        content: round.reply.content + chunk,
-        segments,
-        state: 'streaming',
-      };
-      return apply({ ...round, reply });
+      return apply(
+        patchReply(round, agent, {
+          content: cur.content + chunk,
+          segments,
+          state: 'streaming',
+        }),
+      );
     }
 
     case 'reply.thinking': {
-      // reasoning model 的深度思考流  与 reply.chunk 对称  追加到 segments 的 thinking 段
-      // 不参与 reply.content 拼接  正文与思考分离  渲染端走 ThinkingBlock 折叠
       const agent = readAgent(data, 'agent');
       const chunk = readString(data, 'chunk', 'content') ?? '';
-      if (!round.reply || !agent || !chunk) return state;
-      const segments = [...round.reply.segments];
+      if (!agent || !chunk) return state;
+      const cur = round.replies[agent];
+      if (!cur) return state;
+      const segments = [...cur.segments];
       const last = segments[segments.length - 1];
       if (last && last.type === 'thinking') {
         segments[segments.length - 1] = { ...last, content: (last.content ?? '') + chunk };
       } else {
         segments.push({ type: 'thinking', content: chunk });
       }
-      const reply: ReplyView = {
-        ...round.reply,
-        agent,
-        segments,
-        state: 'streaming',
-      };
-      return apply({ ...round, reply });
+      return apply(
+        patchReply(round, agent, { segments, state: 'streaming' }),
+      );
     }
 
     case 'reply.tool_call': {
+      const agent = readAgent(data, 'agent');
       const tool = readString(data, 'tool', 'name');
       const input = readString(data, 'input', 'arguments');
-      if (!tool || !round.reply) return state;
+      if (!agent || !tool) return state;
+      const cur = round.replies[agent];
+      if (!cur) return state;
       const call: ToolCallEvent = { tool, input };
-      const reply: ReplyView = {
-        ...round.reply,
-        toolCalls: [...round.reply.toolCalls, call],
-        segments: [...round.reply.segments, { type: 'tool_call' as const, tool, input }],
-      };
-      return apply({ ...round, reply });
+      return apply(
+        patchReply(round, agent, {
+          toolCalls: [...cur.toolCalls, call],
+          segments: [
+            ...cur.segments,
+            { type: 'tool_call' as const, tool, input } as ReplySegment,
+          ],
+        }),
+      );
     }
 
     case 'reply.tool_result': {
+      const agent = readAgent(data, 'agent');
       const tool = readString(data, 'tool', 'name');
       const result = readString(data, 'result', 'output') ?? '';
-      if (!tool || !round.reply) return state;
-      const calls = [...round.reply.toolCalls];
+      if (!agent || !tool) return state;
+      const cur = round.replies[agent];
+      if (!cur) return state;
+      const calls = [...cur.toolCalls];
       for (let i = calls.length - 1; i >= 0; i--) {
         if (calls[i].tool === tool && !calls[i].result) {
           calls[i] = { ...calls[i], result };
           break;
         }
       }
-      const reply: ReplyView = {
-        ...round.reply,
-        toolCalls: calls,
-        segments: [...round.reply.segments, { type: 'tool_result' as const, tool, result }],
-      };
-      return apply({ ...round, reply });
+      return apply(
+        patchReply(round, agent, {
+          toolCalls: calls,
+          segments: [
+            ...cur.segments,
+            { type: 'tool_result' as const, tool, result } as ReplySegment,
+          ],
+        }),
+      );
     }
 
     case 'reply.done': {
-      if (!round.reply) return state;
+      const agent = readAgent(data, 'agent');
+      if (!agent) return state;
+      const cur = round.replies[agent];
+      if (!cur) return state;
       const content = readString(data, 'content');
       const finishedAt = readString(data, 'finished_at');
-      const reply: ReplyView = {
-        ...round.reply,
-        state: 'done',
-        content: content ?? round.reply.content,
-        finishedAt: finishedAt ?? round.reply.finishedAt,
-      };
-      return apply({ ...round, reply, state: 'DONE' }, 'DONE');
+      return apply(
+        patchReply(round, agent, {
+          state: 'done',
+          content: content ?? cur.content,
+          finishedAt: finishedAt ?? cur.finishedAt,
+        }),
+      );
     }
+
     case 'reply.error': {
-      if (!round.reply) return state;
+      const agent = readAgent(data, 'agent');
+      if (!agent) return state;
+      const cur = round.replies[agent];
+      if (!cur) return state;
       const error = readString(data, 'error', 'message') ?? '未知错误';
-      return apply({ ...round, reply: { ...round.reply, state: 'failed', error } });
+      const isCancel = error === 'cancelled';
+      return apply(
+        patchReply(round, agent, {
+          state: isCancel ? 'cancelled' : 'failed',
+          error: isCancel ? undefined : error,
+        }),
+      );
     }
+
+    case 'reply.selected': {
+      const agent = readAgent(data, 'agent');
+      if (!agent) return state;
+      return apply({ ...round, selectedReplyAgent: agent });
+    }
+
     case 'task.unrecoverable': {
-      const reason = readString(data, 'reason', 'message') ?? '任务异常终止';
+      const reason = readString(data, 'reason', 'message', 'error') ?? '任务异常终止';
       return apply({ ...round, state: 'CANCELLED', cancelReason: reason }, 'CANCELLED');
     }
     case 'snapshot': {
@@ -355,9 +366,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         activeTaskId: null,
         taskState: 'PENDING',
         sseStatus: 'idle',
-        // 切会话清空上一会话的 token 用量  避免视觉串扰
         contextUsage: null,
         compacting: false,
+        fullscreenReply: null,
         workbench: {
           ...state.workbench,
           activeView: action.sessionId ? 'chat' : 'home',
@@ -376,6 +387,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           sseStatus: 'idle',
           contextUsage: null,
           compacting: false,
+          fullscreenReply: null,
           workbench: {
             ...state.workbench,
             activeView: 'home',
@@ -392,11 +404,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         rounds: action.rounds,
         activeTaskId: null,
         taskState: 'DONE',
-        // 切到不同会话  优先用 history 接口带回的 session.context_usage 持久化快照
-        // 这样刷新页面 / 切回旧会话能立刻显示进度条 不必等下一轮 reply 再下发事件
-        // action.contextUsage 为 undefined 表示调用方未带快照  退回 null 不显示
         contextUsage: action.contextUsage ?? null,
         compacting: false,
+        fullscreenReply: null,
         workbench: {
           ...state.workbench,
           activeView:
@@ -418,7 +428,16 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         sessionId: action.sessionId,
         activeTaskId: action.taskId,
         taskState: 'PENDING',
-        rounds: [...state.rounds, createEmptyRound(action.taskId, action.userMessage, state.settings.drafts, action.createdAt)],
+        rounds: [
+          ...state.rounds,
+          createEmptyRound(
+            action.taskId,
+            action.userMessage,
+            action.agents,
+            action.inputMode,
+            action.createdAt,
+          ),
+        ],
         sessions: updatedSessions,
         workbench: {
           ...state.workbench,
@@ -428,7 +447,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     }
     case 'task.resume': {
       const exists = state.rounds.some((r) => r.taskId === action.taskId);
-      const rounds = exists ? state.rounds : [...state.rounds, createEmptyRound(action.taskId, '', state.settings.drafts)];
+      const rounds = exists ? state.rounds : [...state.rounds, createEmptyRound(action.taskId, '', [], 'single')];
       return { ...state, activeTaskId: action.taskId, taskState: action.taskState ?? 'PENDING', rounds };
     }
     case 'task.state': return { ...state, taskState: action.state };
@@ -474,6 +493,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           recommendPage: state.workbench.recommendPage + 1,
         },
       };
+    case 'ui.fullscreen.set':
+      return { ...state, fullscreenReply: action.fullscreen };
 
     case 'settings.open': return { ...state, settings: { ...state.settings, open: true } };
     case 'settings.close':
@@ -519,8 +540,6 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       };
     }
     case 'settings.agent.tab.switch': return { ...state, settings: { ...state.settings, activeAgentName: action.name } };
-    // 头像上传/删除直连 mongo  这里只把 server 返回的 avatarDataUrl 同步到本地 draft
-    // 不动 dirty / version  保留用户其它字段的编辑稿
     case 'settings.agent.avatar.set': {
       const cur = state.settings.drafts[action.agentName];
       if (!cur) return state;
@@ -535,28 +554,47 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     }
     case 'settings.error': return { ...state, settings: { ...state.settings, loading: false, saving: false } };
 
-    // 上下文用量事件透传  允许直接覆盖  保留 compacting 状态不被冲掉
     case 'context.usage': return { ...state, contextUsage: action.usage };
-    // 一键压缩开始  仅置 loading 标志  期间 UI 禁用输入
     case 'compact.start': return { ...state, compacting: true };
-    // 压缩完成  使用后端返回的 used_tokens_after 等数据刷新 contextUsage
     case 'compact.done': return { ...state, compacting: false, contextUsage: action.usage };
-    // 压缩失败  仅清 loading  不动 contextUsage  让用户能再次尝试
     case 'compact.fail': return { ...state, compacting: false };
 
     default: return state;
   }
 }
 
+// 创建一个空 RoundView 占位  task.created 时调用
+// agents 已知时按列表初始化 replies 占位  让 UI 立即显示骨架
 export function createEmptyRound(
   taskId: string,
   userMessage: string,
-  drafts?: Record<string, AgentEditDraft>,
+  agents: AgentName[],
+  inputMode: InputMode,
   createdAt?: string,
 ): RoundView {
-  const empty: Record<string, ThinkView> = {};
-  if (drafts) {
-    for (const name of Object.keys(drafts)) empty[name] = { agent: name, state: 'pending' };
+  const replies: Record<AgentName, ReplyView> = {};
+  for (const name of agents) {
+    replies[name] = {
+      agent: name,
+      state: 'pending',
+      content: '',
+      toolCalls: [],
+      segments: [],
+    };
   }
-  return { taskId, state: 'PENDING', userMessage, thinks: empty, createdAt };
+  return {
+    taskId,
+    state: 'PENDING',
+    userMessage,
+    agents: [...agents],
+    inputMode,
+    replies,
+    selectedReplyAgent: null,
+    createdAt,
+  };
+}
+
+// 为外部模块提供构建空 segments 的辅助  当前未直接消费  保留扩展点
+export function emptySegments(): ReplySegment[] {
+  return [];
 }

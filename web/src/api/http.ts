@@ -73,6 +73,10 @@ async function requestNoContent(
 export interface AskPayload {
   session_id?: string;
   user_message: string;
+  // 本轮发起的 agent name 列表  长度 1~4
+  agents: string[];
+  // 单/多 agent 模式  对应输入框切换
+  input_mode: 'single' | 'multi';
   // 是否启用深度思考  对应输入框的大脑开关  本轮一次性
   // 后端据此给 ChatOpenAI 注入 extra_body={"thinking":{"type":"enabled"}}
   thinking?: boolean;
@@ -90,16 +94,6 @@ export function ask(payload: AskPayload): Promise<AskResponse> {
   return request<AskResponse>('/ask', { method: 'POST', body: payload });
 }
 
-// /decide 请求体:用户选某个 agent 或 auto / regenerate
-export interface DecidePayload {
-  task_id: string;
-  choice: AgentName | 'auto' | 'regenerate';
-}
-
-export function decide(payload: DecidePayload): Promise<void> {
-  return requestNoContent('/decide', { method: 'POST', body: payload });
-}
-
 // /cancel scope = 'global' | AgentName
 export interface CancelPayload {
   task_id: string;
@@ -110,14 +104,24 @@ export function cancel(payload: CancelPayload): Promise<void> {
   return requestNoContent('/cancel', { method: 'POST', body: payload });
 }
 
-// /retry-think:重试单 agent 的 think
-export interface RetryThinkPayload {
+// /select_reply 用户选定本轮某个 agent 的回答作为正式回答
+export interface SelectReplyPayload {
   task_id: string;
   agent: AgentName;
 }
 
-export function retryThink(payload: RetryThinkPayload): Promise<void> {
-  return requestNoContent('/retry-think', { method: 'POST', body: payload });
+export function selectReply(payload: SelectReplyPayload): Promise<void> {
+  return requestNoContent('/select_reply', { method: 'POST', body: payload });
+}
+
+// /retry_reply 重答某 agent  其它 agent 不动
+export interface RetryReplyPayload {
+  task_id: string;
+  agent: AgentName;
+}
+
+export function retryReply(payload: RetryReplyPayload): Promise<void> {
+  return requestNoContent('/retry_reply', { method: 'POST', body: payload });
 }
 
 // /history/:sessionId

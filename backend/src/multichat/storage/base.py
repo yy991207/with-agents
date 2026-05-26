@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from ..core.models import AgentRecord, McpServerConfig, ModelCatalogEntry, Round, Session, SessionMeta, TaskState
 
@@ -39,7 +39,7 @@ class MongoStorage(Protocol):
 
         约束:
             - session 不存在抛 KeyError
-            - 若 session 下还有进行中的 round (state ∈ pending/thinking/think_done/decided/replying)
+            - 若 session 下还有进行中的 round (state ∈ pending/replying)
               抛 ValueError 防止误删活动会话
         """
         ...
@@ -50,8 +50,20 @@ class MongoStorage(Protocol):
         session_id: str,
         user_message: str,
         user_mention: str | None,
+        agents: list[str],
+        input_mode: Literal["single", "multi"] = "single",
         thinking_enabled: bool = False,
-    ) -> str: ...
+    ) -> str:
+        """创建一轮新提问
+
+        agents 必须是非空列表 长度 1~4
+            单 agent 时 input_mode='single'  reply 完成时自动写 selected_reply_agent
+            多 agent 时 input_mode='multi'   需要用户调 /select_reply 才会有 selected_reply_agent
+        replies 字段初始化为 {agent: {"state":"pending","content":"","segments":[]}, ...}
+
+        校验在路由层做  这里只负责落库
+        """
+        ...
 
     async def get_round(self, task_id: str) -> Round | None: ...
 
@@ -61,9 +73,46 @@ class MongoStorage(Protocol):
 
     async def update_round_field(self, task_id: str, path: str, value: Any) -> None: ...
 
-    async def append_reply_chunk(self, task_id: str, chunk: str) -> None: ...
+    async def append_reply_chunk_for_agent(
+        self, task_id: str, agent_name: str, chunk: str
+    ) -> None:
+        """流式追加单个 agent 的 reply.content 节流写库
 
-    async def cancel_orphan_rounds(self, reason: str = "server_restart") -> int: ...
+        与历史 append_reply_chunk 区别:
+            写到 replies.{agent_name}.content 而不是顶层 reply.content
+            多 agent 并发同 task 时各 agent 互不干扰
+        """
+        ...
+
+    async def update_reply_segments_for_agent(
+        self, task_id: str, agent_name: str, segments: list[dict[str, Any]]
+    ) -> None:
+        """整组覆盖写 replies.{agent_name}.segments  按时间顺序的段时间线"""
+        ...
+
+    async def update_reply_for_agent(
+        self,
+        task_id: str,
+        agent_name: str,
+        reply: dict[str, Any],
+    ) -> None:
+        """覆盖写 replies.{agent_name} 整段 reply 状态  含 state/content/segments/started_at/finished_at/error 等"""
+        ...
+
+    async def select_reply(self, task_id: str, agent_name: str) -> None:
+        """用户从多 agent 候选中选定一个作为正式回答
+
+        校验:
+            - round 不存在抛 KeyError
+            - agent_name 不在 round.agents 抛 ValueError
+            - replies[agent_name].state 不是 done 抛 ValueError 不允许选中失败/未完成的回答
+            - 已选过则覆盖更新(允许改主意)  不抛错
+        """
+        ...
+
+    async def cancel_orphan_rounds(self, reason: str = "server_restart") -> int:
+        """启动时清理孤儿 round  把所有进行中状态的 round 与其 replies 置为 cancelled"""
+        ...
 
     # -------------------------------------------------------------------- Agents
     async def list_agents(self) -> list[AgentRecord]: ...

@@ -1,16 +1,17 @@
 """核心 Pydantic 数据模型
 
-包含 think-then-choose 流程中的关键实体:
-    - TaskState: 任务状态机枚举
-    - ThinkResult: 单个 LLM 在 think 阶段产出的发言理由
-    - Round: 一轮交互的完整上下文 含若干 think 结果与最终被选中 LLM 的回复
+包含多 agent 并发回答流程中的关键实体:
+    - TaskState: 任务状态机枚举  简化为 4 态 PENDING / REPLYING / DONE / CANCELLED
+    - Round: 一轮交互的完整上下文 含本轮发起的 agents 列表与每个 agent 的独立 reply
+        多 agent 模式下 N 个 agent 并发跑回答  用户从中选一个作为正式回答(selected_reply_agent)
+        单 agent 模式下 agents 仅 1 项  selected_reply_agent 在 reply 完成时由后端自动写入
     - Session: 一次会话 包含多轮 Round 与会话级元数据
     - SessionMeta: 会话列表展示用的轻量元信息
     - AgentRecord: agents collection 中的一条记录 完整数字员工配置
-        裁判选谁存放在独立的 settings collection judge_pointer 文档里 与本模型无关
     - ModelCatalogEntry: agent.available_models 列表中的一项 用户可在 agent 配置中维护
     - McpServerConfig: MCP 服务器配置 支持 stdio / sse / streamable_http 三种传输
         持久化在 mcp_servers 集合中 前后端共享配置结构
+    - SkillConfig: 单个 Skill 配置  持久化在 settings 集合 skills_config 文档中
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 def _utcnow() -> datetime:
@@ -27,53 +28,63 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-# 旧 TaskState 字面量到 spec 新值的映射 仅用于 Round 读取阶段兼容历史数据
+# 旧 TaskState 字面量到新 4 态的映射 仅用于 Round 读取阶段兼容历史数据
+# 老 round 在 mongo 中可能存的是 thinking/think_done/decided/replying 这些中间态
+# 历史已 done 的轮次保持 done  历史中间态归一到 cancelled  防止前端误显示"进行中"
 # 已落库的字面量保持不动 不主动回写 避免触发全文档覆盖丢失其它字段
 _LEGACY_STATE_MAP: dict[str, str] = {
+    # M0/M1 时期的旧值
     "created": "pending",
-    "waiting_decision": "think_done",
+    "waiting_decision": "cancelled",  # 旧 think 阶段中间态  历史轮次直接当作弃用
     "failed": "cancelled",
+    # think 流程下线后的中间态  历史轮次跑到一半留下来的全部归 cancelled
+    "thinking": "cancelled",
+    "think_done": "cancelled",
+    "decided": "cancelled",
+    # replying 历史里通常已有 reply.content  但状态可能没刷成 done
+    # 这里保守归 cancelled  让 _build_history 通过 selected_reply_agent + replies[x].state==done 判定
+    "replying": "cancelled",
 }
 
 
 class TaskState(str, Enum):
-    """think-then-choose 状态机
+    """多 agent 并发回答状态机  4 态
 
-    枚举值与 spec §4 严格对齐 旧值通过 Round.state 的 field_validator 兼容映射:
-        - created          -> pending
-        - waiting_decision -> think_done
-        - failed           -> cancelled
-    实际写入 mongo 时一律使用下面 7 个 spec 值
+    PENDING    刚创建 还没 fan-out 到各 agent
+    REPLYING   至少一个 agent 还在 streaming
+    DONE       所有 agent reply 都终止(done/failed/cancelled)  等用户选答
+    CANCELLED  整轮被全局取消
+
+    不再区分"等用户决策"状态  改由 selected_reply_agent 字段判定
+        DONE 且 selected_reply_agent is None  表示等用户选答
+        DONE 且 selected_reply_agent 非空  表示用户已选 进入下一轮可发提问
     """
 
     PENDING = "pending"
-    THINKING = "thinking"
-    THINK_DONE = "think_done"
-    DECIDED = "decided"
     REPLYING = "replying"
     DONE = "done"
     CANCELLED = "cancelled"
 
 
-class ThinkResult(BaseModel):
-    """单个 LLM 在 think 阶段产出的发言理由"""
-
-    agent_name: str
-    reason: str = ""
-    latency_ms: int = 0
-    error: str | None = None
-
-
 class Round(BaseModel):
-    """一轮交互上下文 一次提问触发的完整 think + reply 周期
+    """一轮交互上下文 一次提问触发的多 agent 并发回答周期
 
     task_id 是 round 全局唯一 id 即对外暴露给前端的 SSE 路径参数
 
-    字段分两套:
-        - 历史字段: think_results / chosen_agent / reply_content 由 storage.create_round
-          默认写入 与 M0/M1 兼容
-        - spec 字段: thinks / decision / reply / think_history 由 task_manager 在运行时
-          通过 update_round_field 增量写入 历史回放与 SSE snapshot 都基于这套
+    本轮发起字段:
+        - agents: 本轮选中发起的 agent name 列表  长度 1~4
+        - input_mode: 'single' | 'multi'  单 agent 时 agents 长度=1 自动选中
+        - thinking_enabled: 大脑开关  对所有 agents 统一生效
+
+    回答状态字段:
+        - replies: dict 形如 {"agent_a": {"state":"streaming|done|failed|cancelled",
+                                          "content":"...","segments":[...],
+                                          "started_at":"...","finished_at":"...",
+                                          "error":"...optional..."}}
+        - selected_reply_agent: 用户从 replies 中选定的 agent name  为 None 表示未选答
+            单 agent 模式 reply 完成时后端自动写入
+            多 agent 模式由前端 /select_reply 路由触发写入
+            未选答时下一轮 /ask 返回 409  阻止用户继续发提问
     """
 
     task_id: str
@@ -85,28 +96,25 @@ class Round(BaseModel):
     # extra_body={"thinking":{"type":"enabled"}}  让支持的模型走深度思考分支
     # 不影响 reasoning_content 提取逻辑  那个始终开 兼容 deepseek-reasoner / glm 等"自带 reasoning"的模型
     thinking_enabled: bool = False
-    # 历史字段 早期持久化结构 兼容已有数据
-    think_results: list[ThinkResult] = Field(default_factory=list)
-    chosen_agent: str | None = None
-    reply_content: str = ""
+    # 本轮发起的 agent name 列表  长度 1~4
+    # 单 agent 模式 长度=1  多 agent 模式 长度 2~4
+    agents: list[str] = Field(default_factory=list)
+    # 输入模式  single 单 agent  multi 多 agent
+    input_mode: Literal["single", "multi"] = "single"
     state: TaskState = TaskState.PENDING
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
 
-    # spec 字段 task_manager 运行时使用 默认空 兼容旧数据
-    # thinks 形如 {"GLM": {"state":"done","content":"..."}, ...}
-    thinks: dict[str, dict[str, Any]] = Field(default_factory=dict)
-    # decision 形如 {"choice":"GLM","reason":"user_pick","decided_at":"..."}
-    decision: dict[str, Any] | None = None
-    # reply 形如 {"agent":"GLM","state":"streaming|done|failed","content":"..."}
-    reply: dict[str, Any] | None = None
-    # think_history 用于 regenerate 之后保留上一轮 think 结果
-    think_history: list[dict[str, Any]] = Field(default_factory=list)
+    # 每个 agent 的独立 reply  key=agent.name  并发跑彼此独立
+    # 形如 {"glm": {"state":"streaming","content":"...","segments":[...]}}
+    replies: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # 用户选中的 agent name  None 表示未选  单 agent 模式 reply 完成时自动赋值
+    selected_reply_agent: str | None = None
 
     @field_validator("state", mode="before")
     @classmethod
     def _migrate_legacy_state(cls, v: Any) -> Any:
-        """读取阶段把历史 state 字面量映射到新枚举 防止 ValidationError"""
+        """读取阶段把历史 state 字面量映射到新 4 态 防止 ValidationError"""
         if isinstance(v, str) and v in _LEGACY_STATE_MAP:
             return _LEGACY_STATE_MAP[v]
         return v
@@ -120,6 +128,70 @@ class Round(BaseModel):
         if isinstance(v, datetime) and v.tzinfo is None:
             return v.replace(tzinfo=timezone.utc)
         return v
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_round(cls, data: Any) -> Any:
+        """读取阶段把老 round 文档(单 reply 模型)迁移到新 replies 模型
+
+        老结构:
+            {
+                "reply": {"agent":"glm","state":"done","content":"...","segments":[...]},
+                "chosen_agent": "glm",
+                "thinks": {...},
+                "decision": {...},
+                ...
+            }
+        新结构:
+            {
+                "agents": ["glm"],
+                "input_mode": "single",
+                "replies": {"glm": {"state":"done","content":"...","segments":[...]}},
+                "selected_reply_agent": "glm",
+            }
+
+        只在数据缺新字段且有老字段时迁移  对新数据透传
+        thinks/decision/think_history/think_results/chosen_agent/reply_content/reply
+        这些老字段 pydantic v2 默认 extra='ignore' 自动丢弃  不需要在这里处理
+        """
+        if not isinstance(data, dict):
+            return data
+
+        # 已经是新结构  直接透传
+        has_replies = bool(data.get("replies"))
+        has_agents = bool(data.get("agents"))
+        if has_replies and has_agents:
+            return data
+
+        legacy_reply = data.get("reply")
+        # 历史 round 没有 reply 字段时无可迁移  保持空 replies + agents
+        if not isinstance(legacy_reply, dict):
+            return data
+
+        legacy_agent = (
+            legacy_reply.get("agent")
+            or data.get("chosen_agent")
+            or ""
+        )
+        if not isinstance(legacy_agent, str) or not legacy_agent:
+            return data
+
+        # 把老 reply 整个塞到 replies[legacy_agent]  剥掉 agent 字段(replies key 已经表达)
+        old_reply_inner: dict[str, Any] = {
+            k: v for k, v in legacy_reply.items() if k != "agent"
+        }
+        if not has_replies:
+            data["replies"] = {legacy_agent: old_reply_inner}
+        if not has_agents:
+            data["agents"] = [legacy_agent]
+        if not data.get("input_mode"):
+            data["input_mode"] = "single"
+        # 老数据如果 reply.state 是 done  默认就把 selected_reply_agent 写为这个 agent
+        # 让历史已完成的轮次刷新页面后能直接进入下一轮提问 不会被 selectedReplyAgent 校验拦截
+        if data.get("selected_reply_agent") is None:
+            if old_reply_inner.get("state") == "done":
+                data["selected_reply_agent"] = legacy_agent
+        return data
 
 
 class Session(BaseModel):
@@ -181,7 +253,7 @@ class AgentRecord(BaseModel):
     """agents 集合中的一条记录 一个独立的"数字员工"完整配置
 
     name 是不可变的内部 ID 由后端生成 形如 agent_<8位hex>
-        round.thinks / decision.choice / SSE event 中的引用都用它
+        round.replies key / SSE event 中的引用都用它
         改 display_name 不会破坏历史 round 的引用关系
     display_name 用户可改 UI 显示用 默认初始值 = name
     其它字段都可改 改了立即触发 deep_agent 实例热替换:

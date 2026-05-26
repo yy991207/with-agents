@@ -17,9 +17,9 @@ import type { RecommendCardDefinition } from './components/lobehub/lobeData';
 import { useChatTask, isFatalSSEError } from './hooks/useChatTask';
 import { useSettings } from './hooks/useSettings';
 import { useChat } from './state/ChatContext';
-import { getAgents, getHistory } from './api/http';
+import { branchSession, getAgents, getHistory, listSessions } from './api/http';
 import { openTaskStream } from './api/sse';
-import { convertAgentView, convertRound } from './state/converters';
+import { convertAgentView, convertRound, convertSession } from './state/converters';
 import { parseContextUsage } from './state/reducer';
 import { findResumableTaskId } from './state/taskResume';
 import {
@@ -59,7 +59,16 @@ export default function App() {
           usageRaw && typeof usageRaw === 'object'
             ? parseContextUsage(usageRaw as Record<string, unknown>)
             : null;
-        dispatch({ type: 'history.loaded', sessionId, rounds, contextUsage });
+        dispatch({
+          type: 'history.loaded',
+          sessionId,
+          rounds,
+          contextUsage,
+          draftMessage:
+            typeof sessRaw['draft_message'] === 'string'
+              ? (sessRaw['draft_message'] as string)
+              : null,
+        });
 
         try {
           const agentsResp = await getAgents();
@@ -157,6 +166,55 @@ export default function App() {
     });
   };
 
+  const handleBranchRound = async (branch: {
+    taskId: string;
+    role: 'user' | 'assistant';
+    agent?: string;
+  }) => {
+    if (!state.sessionId) return;
+    if (state.taskState === 'PENDING' || state.taskState === 'REPLYING') {
+      message.warning('当前还有回复进行中，请先暂停后再创建分支');
+      return;
+    }
+    try {
+      const resp = await branchSession(state.sessionId, {
+        source_task_id: branch.taskId,
+        source_role: branch.role,
+        source_agent: branch.agent,
+      });
+      const hist = await getHistory(resp.session_id);
+      const rounds = (hist.rounds as unknown as unknown[]).map(convertRound);
+      const sessRaw = (hist.session ?? {}) as unknown as Record<string, unknown>;
+      const usageRaw = sessRaw['context_usage'];
+      const contextUsage =
+        usageRaw && typeof usageRaw === 'object'
+          ? parseContextUsage(usageRaw as Record<string, unknown>)
+          : null;
+      dispatch({
+        type: 'history.loaded',
+        sessionId: resp.session_id,
+        rounds,
+        contextUsage,
+        draftMessage:
+          typeof sessRaw['draft_message'] === 'string'
+            ? (sessRaw['draft_message'] as string)
+            : (resp.draft_message ?? null),
+      });
+      try {
+        const metas = await listSessions();
+        dispatch({
+          type: 'sessions.set',
+          sessions: (metas as unknown as unknown[]).map(convertSession),
+        });
+      } catch {
+        // 刷新侧栏失败不阻塞主流程
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      message.error(`创建分支失败:${msg}`);
+    }
+  };
+
   // 推荐卡片  默认走单 agent (judgeTarget 兜底  没设置就第一个 agent)
   const handleRecommendAction = (card: RecommendCardDefinition) => {
     if (card.action === 'send' && card.prompt) {
@@ -187,7 +245,7 @@ export default function App() {
     <ChatInput
       onSend={editingRound ? handleEditSend : send}
       onStop={stop}
-      initialValue={editingRound?.userMessage}
+      initialValue={editingRound?.userMessage ?? state.sessionDraftMessage ?? undefined}
     />
   );
   // 首页输入框  发送时强制新建会话(不带 session_id)  避免接着旧会话发言
@@ -198,7 +256,12 @@ export default function App() {
       onStop={stop}
     />
   );
-  const timelineNode = <Timeline onEditRound={handleStartEdit} />;
+  const timelineNode = (
+    <Timeline
+      onEditRound={handleStartEdit}
+      onBranchRound={handleBranchRound}
+    />
+  );
 
   const renderWorkbenchContent = () => {
     if (state.workbench.activeView === 'home') {

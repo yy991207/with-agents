@@ -108,6 +108,21 @@ body {
   opacity: 1;
 }
 
+.lobe-chat-item-left .reply-bubble-hover-inline-action,
+.lobe-chat-item-left .reply-bubble-toolbar {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.lobe-chat-item-left .reply-bubble-hover-inline-action {
+  display: inline-flex;
+}
+
+.lobe-chat-item-left:hover .reply-bubble-hover-inline-action,
+.lobe-chat-item-left:hover .reply-bubble-toolbar {
+  opacity: 1;
+}
+
 /* HTML 回复内容的基础样式:对齐 LobeChat Markdown(article[data-code-type=markdown])
  * font-size 14 / line-height 1.6 / 标题与段落间距适中 / 代码与表格圆角 8 */
 .reply-html {

@@ -24,7 +24,7 @@ POST /api/sessions/{session_id}/compact 同步触发会话上下文压缩
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 import structlog
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -81,6 +81,17 @@ class CompactResponse(BaseModel):
     model_id: str
 
 
+class BranchSessionRequest(BaseModel):
+    source_task_id: str = Field(min_length=1)
+    source_role: Literal["user", "assistant"]
+    source_agent: str | None = None
+
+
+class BranchSessionResponse(BaseModel):
+    session_id: str
+    draft_message: str | None = None
+
+
 @router.get("/sessions")
 async def list_sessions(
     request: Request,
@@ -132,6 +143,37 @@ async def batch_delete_sessions(
             errors.append(f"{sid}: {e}")
             skipped += 1
     return BatchDeleteResult(deleted=deleted, skipped=skipped, errors=errors)
+
+
+@router.post(
+    "/sessions/{session_id}/branch",
+    response_model=BranchSessionResponse,
+)
+async def branch_session(
+    session_id: str,
+    body: BranchSessionRequest,
+    request: Request,
+) -> BranchSessionResponse:
+    """基于当前会话某个 user / assistant 节点复制一份前缀历史生成子会话
+
+    行为:
+        - user 分支: 复制该轮之前的历史 当前 user 文本作为 draft_message 返回给前端预填
+        - assistant 分支: 复制该轮及其选中的 assistant 回复 draft_message 为空
+        - 若原会话前缀可安全复用摘要则一并复制 否则清空摘要避免未来信息泄漏
+    """
+    storage = request.app.state.storage
+    try:
+        new_session_id, draft_message = await storage.clone_session_branch(
+            source_session_id=session_id,
+            source_task_id=body.source_task_id,
+            source_role=body.source_role,
+            source_agent=body.source_agent,
+        )
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return BranchSessionResponse(session_id=new_session_id, draft_message=draft_message)
 
 
 @router.post(

@@ -241,7 +241,16 @@ class MotorMongoStorage:
         )
 
     # ============================================================ Sessions CRUD
-    async def create_session(self, title: str | None = None) -> str:
+    async def create_session(
+        self,
+        title: str | None = None,
+        *,
+        parent_session_id: str | None = None,
+        branch_from_task_id: str | None = None,
+        branch_from_role: Literal["user", "assistant"] | None = None,
+        branch_from_agent: str | None = None,
+        draft_message: str | None = None,
+    ) -> str:
         """新建会话 返回 string session_id"""
         session_id = _new_id()
         now = _utcnow()
@@ -251,6 +260,11 @@ class MotorMongoStorage:
             "metadata": {},
             "created_at": now,
             "updated_at": now,
+            "parent_session_id": parent_session_id,
+            "branch_from_task_id": branch_from_task_id,
+            "branch_from_role": branch_from_role,
+            "branch_from_agent": branch_from_agent,
+            "draft_message": draft_message,
         }
         await self._db["sessions"].insert_one(doc)
         return session_id
@@ -479,7 +493,8 @@ class MotorMongoStorage:
         await self._db["rounds"].insert_one(doc)
         # 同步 session updated_at 让会话列表能反映最近活动
         await self._db["sessions"].update_one(
-            {"session_id": session_id}, {"$set": {"updated_at": now}}
+            {"session_id": session_id},
+            {"$set": {"updated_at": now, "draft_message": None}},
         )
         return task_id
 
@@ -546,6 +561,118 @@ class MotorMongoStorage:
                 {"$set": {"updated_at": _utcnow()}},
             )
         return int(result.deleted_count or 0)
+
+    async def clone_session_branch(
+        self,
+        *,
+        source_session_id: str,
+        source_task_id: str,
+        source_role: Literal["user", "assistant"],
+        source_agent: str | None = None,
+    ) -> tuple[str, str | None]:
+        """复制一个会话前缀生成分支 session
+
+        规则:
+            - source_role="user": 复制 source_task_id 之前的全部历史
+              并把该 user question 作为 draft_message 返回给前端预填输入框
+            - source_role="assistant": 复制 source_task_id 及其之前的历史
+              source_agent 必填 且该 reply 必须是 done
+              新会话中该 round.selected_reply_agent 强制指向 source_agent
+            - 原会话摘要只有在"完整覆盖范围都落在复制前缀里"时才安全继承
+              否则新会话不带 summary  改走原始 rounds 重算上下文
+            - context_usage 不复制  避免沿用旧会话快照造成误导
+        """
+        source_session = await self._db["sessions"].find_one(
+            {"session_id": source_session_id}
+        )
+        if source_session is None:
+            raise KeyError(f"session 不存在 session_id={source_session_id}")
+
+        source_round = await self.get_round(source_task_id)
+        if source_round is None:
+            raise KeyError(f"round 不存在 task_id={source_task_id}")
+        if source_round.session_id != source_session_id:
+            raise ValueError("source_task_id 不属于当前 session")
+
+        if source_role == "assistant":
+            if not source_agent:
+                raise ValueError("assistant 分支必须提供 source_agent")
+            picked_reply = (source_round.replies or {}).get(source_agent) or {}
+            if picked_reply.get("state") != "done":
+                raise ValueError("只能基于已完成的 assistant 回复创建分支")
+            if (
+                len(source_round.agents or []) > 1
+                and source_round.selected_reply_agent
+                and source_agent != source_round.selected_reply_agent
+            ):
+                raise ValueError("多 agent 场景下只能基于当前已选中的回答创建分支")
+            last_included_round_index = int(source_round.round_index)
+            draft_message: str | None = None
+        elif source_role == "user":
+            last_included_round_index = int(source_round.round_index) - 1
+            draft_message = source_round.question
+        else:
+            raise ValueError(f"source_role 取值非法 {source_role}")
+
+        title_seed = (source_round.question or source_session.get("title") or "分支会话").strip()
+        branch_title = f"分支 · {title_seed[:32]}".strip()
+        new_session_id = await self.create_session(
+            branch_title,
+            parent_session_id=source_session_id,
+            branch_from_task_id=source_task_id,
+            branch_from_role=source_role,
+            branch_from_agent=source_agent if source_role == "assistant" else None,
+            draft_message=draft_message,
+        )
+
+        # 复制前缀 rounds  由于是从头到某个分支点的前缀  round_index 可原样保留
+        # task_id 必须重生成 避免与父会话冲突
+        source_rounds = await self.list_rounds(source_session_id)
+        cloned_docs: list[dict[str, Any]] = []
+        for round_obj in source_rounds:
+            if int(round_obj.round_index) > last_included_round_index:
+                break
+            doc = round_obj.model_dump(mode="python")
+            doc["task_id"] = _new_id()
+            doc["session_id"] = new_session_id
+            doc["state"] = getattr(round_obj.state, "value", str(round_obj.state))
+            if (
+                source_role == "assistant"
+                and round_obj.task_id == source_task_id
+                and source_agent
+            ):
+                doc["selected_reply_agent"] = source_agent
+            cloned_docs.append(doc)
+
+        if cloned_docs:
+            await self._db["rounds"].insert_many(cloned_docs)
+
+        # 摘要只有在完整覆盖都落入复制前缀时才安全继承
+        summary_text = str(source_session.get("summary") or "")
+        summary_until = int(source_session.get("summary_until_round") or 0)
+        summary_safe = bool(summary_text) and summary_until <= last_included_round_index
+        if (
+            summary_safe
+            and source_role == "assistant"
+            and summary_until == int(source_round.round_index)
+            and source_agent != source_round.selected_reply_agent
+        ):
+            summary_safe = False
+        await self._db["sessions"].update_one(
+            {"session_id": new_session_id},
+            {
+                "$set": {
+                    "summary": summary_text if summary_safe else "",
+                    "summary_until_round": summary_until if summary_safe else 0,
+                    "summary_updated_at": source_session.get("summary_updated_at")
+                    if summary_safe
+                    else None,
+                    "context_usage": None,
+                    "updated_at": _utcnow(),
+                }
+            },
+        )
+        return new_session_id, draft_message
 
     async def append_reply_chunk_for_agent(
         self, task_id: str, agent_name: str, chunk: str

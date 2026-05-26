@@ -19,9 +19,14 @@ import { isBusyState } from '../state/types';
 
 export interface TimelineProps {
   onEditRound?: (round: RoundView) => void;
+  onBranchRound?: (branch: {
+    taskId: string;
+    role: 'user' | 'assistant';
+    agent?: string;
+  }) => void;
 }
 
-export default function Timeline({ onEditRound }: TimelineProps) {
+export default function Timeline({ onEditRound, onBranchRound }: TimelineProps) {
   const { state, dispatch } = useChat();
   const { cancelReplyAgent, retryReplyAgent } = useChatTask();
   const agentLabels = buildAgentLabelMap(state.settings.drafts);
@@ -87,6 +92,7 @@ export default function Timeline({ onEditRound }: TimelineProps) {
             agentLabels={agentLabels}
             agentMetas={agentMetas}
             onEditRound={onEditRound}
+            onBranchRound={onBranchRound}
             onFullscreen={handleFullscreen}
             onCancelReply={(agent) => void cancelReplyAgent(round.taskId, agent)}
             onRetryReply={(agent) => void retryReplyAgent(round.taskId, agent)}
@@ -104,6 +110,11 @@ interface RoundBlockProps {
   agentLabels: ReturnType<typeof buildAgentLabelMap>;
   agentMetas: ReturnType<typeof buildAgentMetaMap>;
   onEditRound?: (round: RoundView) => void;
+  onBranchRound?: (branch: {
+    taskId: string;
+    role: 'user' | 'assistant';
+    agent?: string;
+  }) => void;
   onFullscreen: (taskId: string, agent: AgentName) => void;
   onCancelReply: (agent: AgentName) => void;
   onRetryReply: (agent: AgentName) => void;
@@ -116,6 +127,7 @@ function RoundBlock({
   agentLabels,
   agentMetas,
   onEditRound,
+  onBranchRound,
   onFullscreen,
   onCancelReply,
   onRetryReply,
@@ -140,6 +152,7 @@ function RoundBlock({
         createdAt={round.createdAt}
         editable={canEdit}
         onEdit={onEditRound ? () => onEditRound(round) : undefined}
+        onBranch={onBranchRound ? () => onBranchRound({ taskId: round.taskId, role: 'user' }) : undefined}
       />
 
       <div style={{ marginTop: 12, ...gridStyle }}>
@@ -176,6 +189,13 @@ function RoundBlock({
                 onCancel={inProgress ? () => onCancelReply(agent) : undefined}
                 onRetry={!inProgress ? () => onRetryReply(agent) : undefined}
                 onFullscreen={() => onFullscreen(round.taskId, agent)}
+                onBranch={
+                  !inProgress &&
+                  onBranchRound &&
+                  (!isMulti || round.selectedReplyAgent === agent)
+                    ? () => onBranchRound({ taskId: round.taskId, role: 'assistant', agent })
+                    : undefined
+                }
                 selected={isMulti && isSelectedReply}
               />
             </TransientScrollbar>

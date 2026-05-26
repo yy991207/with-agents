@@ -3,19 +3,22 @@ import { ActionIcon } from '@lobehub/ui';
 import {
   Bell,
   Bot,
+  ChevronRight,
   Ellipsis,
+  GitBranch,
   Hash,
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
   Trash2,
 } from 'lucide-react';
+import { useState } from 'react';
 import { Flexbox } from 'react-layout-kit';
 import { deleteSession } from '../../api/http';
 import { useSession } from '../../hooks/useSession';
 import { useSettings } from '../../hooks/useSettings';
 import { useChat } from '../../state/ChatContext';
-import type { WorkbenchView } from '../../state/types';
+import type { SessionMeta, WorkbenchView } from '../../state/types';
 import { PRIMARY_NAV_ITEMS } from './lobeData';
 import LobeNavItem from './LobeNavItem';
 import LobeSectionList from './LobeSectionList';
@@ -34,6 +37,7 @@ export default function LobeSidebar({ onNavigate, onOpenSettings }: LobeSidebarP
   const { state, dispatch } = useChat();
   const { sessions, sessionId, switchSession, refreshSessions } = useSession();
   const { switchTab } = useSettings();
+  const [expandedSessionIds, setExpandedSessionIds] = useState<Record<string, boolean>>({});
 
   const drafts = Object.values(state.settings.drafts);
 
@@ -66,6 +70,100 @@ export default function LobeSidebar({ onNavigate, onOpenSettings }: LobeSidebarP
 
   const handleToggleSidebar = (): void => {
     dispatch({ type: 'ui.sidebar.toggle' });
+  };
+
+  const toggleSessionExpand = (targetSessionId: string): void => {
+    setExpandedSessionIds((prev) => ({
+      ...prev,
+      [targetSessionId]: !prev[targetSessionId],
+    }));
+  };
+
+  const childrenMap = new Map<string | null, SessionMeta[]>();
+  for (const session of sessions) {
+    const key = session.parentSessionId ?? null;
+    const bucket = childrenMap.get(key) ?? [];
+    bucket.push(session);
+    childrenMap.set(key, bucket);
+  }
+  const rootSessions = childrenMap.get(null) ?? [];
+
+  const hasActiveDescendant = (targetSessionId: string): boolean => {
+    const children = childrenMap.get(targetSessionId) ?? [];
+    for (const child of children) {
+      if (child.sessionId === sessionId) return true;
+      if (hasActiveDescendant(child.sessionId)) return true;
+    }
+    return false;
+  };
+
+  const renderSessionNode = (session: SessionMeta, depth: number) => {
+    const children = childrenMap.get(session.sessionId) ?? [];
+    const hasChildren = children.length > 0;
+    const expanded =
+      expandedSessionIds[session.sessionId] ??
+      (session.sessionId === sessionId || hasActiveDescendant(session.sessionId));
+    return (
+      <Flexbox gap={2} key={session.sessionId}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingLeft: depth * 14 }}>
+          {hasChildren ? (
+            <button
+              type="button"
+              aria-label={expanded ? '收起子会话' : '展开子会话'}
+              onClick={() => toggleSessionExpand(session.sessionId)}
+              style={{
+                alignItems: 'center',
+                background: 'transparent',
+                border: 'none',
+                color: 'rgba(71, 85, 105, 0.62)',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                height: 18,
+                justifyContent: 'center',
+                padding: 0,
+                width: 18,
+              }}
+            >
+              <ChevronRight
+                size={14}
+                style={{
+                  transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)',
+                  transition: 'transform 0.2s ease',
+                }}
+              />
+            </button>
+          ) : (
+            <span style={{ display: 'inline-block', width: 18 }} />
+          )}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <LobeNavItem
+              icon={session.parentSessionId ? GitBranch : Hash}
+              label={session.title || '未命名'}
+              active={session.sessionId === sessionId}
+              actions={
+                <Popconfirm
+                  title="确认删除该会话"
+                  description="将一并删除所有对话内容,不可恢复"
+                  okText="删除"
+                  okButtonProps={{ danger: true }}
+                  cancelText="取消"
+                  onConfirm={() => {
+                    void handleDeleteSession(session.sessionId);
+                  }}
+                >
+                  <ActionIcon icon={Trash2} title="删除会话" />
+                </Popconfirm>
+              }
+              onClick={() => {
+                void switchSession(session.sessionId);
+                onNavigate('chat');
+              }}
+            />
+          </div>
+        </div>
+        {hasChildren && expanded ? children.map((child) => renderSessionNode(child, depth + 1)) : null}
+      </Flexbox>
+    );
   };
 
   // 折叠态: 整列收成 ~48px 细窄条  自上而下展示:
@@ -233,32 +331,7 @@ export default function LobeSidebar({ onNavigate, onOpenSettings }: LobeSidebarP
             onToggle={() => dispatch({ type: 'ui.section.toggle', section: 'recent' })}
           >
             <Flexbox gap={2}>
-              {sessions.map((session) => (
-                <LobeNavItem
-                  key={session.sessionId}
-                  icon={Hash}
-                  label={session.title || '未命名'}
-                  active={session.sessionId === sessionId}
-                  actions={
-                    <Popconfirm
-                      title="确认删除该会话"
-                      description="将一并删除所有对话内容,不可恢复"
-                      okText="删除"
-                      okButtonProps={{ danger: true }}
-                      cancelText="取消"
-                      onConfirm={() => {
-                        void handleDeleteSession(session.sessionId);
-                      }}
-                    >
-                      <ActionIcon icon={Trash2} title="删除会话" />
-                    </Popconfirm>
-                  }
-                  onClick={() => {
-                    void switchSession(session.sessionId);
-                    onNavigate('chat');
-                  }}
-                />
-              ))}
+              {rootSessions.map((session) => renderSessionNode(session, 0))}
               {sessions.length === 0 ? (
                 <div style={{ color: 'rgba(71, 85, 105, 0.56)', fontSize: 12, padding: '4px 12px 8px' }}>
                   暂无会话

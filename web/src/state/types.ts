@@ -77,6 +77,11 @@ export interface SessionMeta {
   sessionId: string;
   title: string;
   updatedAt: string;
+  parentSessionId?: string | null;
+  branchFromTaskId?: string | null;
+  branchFromRole?: 'user' | 'assistant' | null;
+  branchFromAgent?: string | null;
+  draftMessage?: string | null;
 }
 
 // /history 返回结构
@@ -246,6 +251,8 @@ export interface ChatState {
   compacting: boolean;
   // 子窗放大全屏状态  点击子窗右上角放大按钮置位  null 表示无放大
   fullscreenReply: FullscreenReply | null;
+  // 当前会话待发送草稿  user 分支进入时由后端 history/session 返回
+  sessionDraftMessage: string | null;
 }
 
 // reducer action 列表
@@ -254,6 +261,7 @@ export type ChatAction =
   | { type: 'session.switch'; sessionId: string | null }
   | { type: 'session.deleted'; sessionId: string }
   | { type: 'sessions.set'; sessions: SessionMeta[] }
+  | { type: 'session.draft.set'; draftMessage: string | null }
   | { type: 'rounds.set'; rounds: RoundView[] }
   | { type: 'round.append'; round: RoundView }
   | { type: 'round.update'; taskId: string; patch: Partial<RoundView> }
@@ -272,7 +280,13 @@ export type ChatAction =
   | { type: 'task.state'; state: TaskState }
   | { type: 'sse.status'; status: SSEStatus }
   | { type: 'sse.event'; taskId?: string; event: SSEEvent }
-  | { type: 'history.loaded'; sessionId: string; rounds: RoundView[]; contextUsage?: ContextUsage | null }
+  | {
+      type: 'history.loaded';
+      sessionId: string;
+      rounds: RoundView[];
+      contextUsage?: ContextUsage | null;
+      draftMessage?: string | null;
+    }
   // 工作台 UI 壳层相关 action
   | { type: 'ui.view.set'; view: WorkbenchView }
   | { type: 'ui.sidebar.toggle'; collapsed?: boolean }

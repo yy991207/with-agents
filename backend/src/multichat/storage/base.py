@@ -24,7 +24,16 @@ class MongoStorage(Protocol):
     async def ensure_indexes(self) -> None: ...
 
     # ------------------------------------------------------------------ Sessions
-    async def create_session(self, title: str | None = None) -> str: ...
+    async def create_session(
+        self,
+        title: str | None = None,
+        *,
+        parent_session_id: str | None = None,
+        branch_from_task_id: str | None = None,
+        branch_from_role: Literal["user", "assistant"] | None = None,
+        branch_from_agent: str | None = None,
+        draft_message: str | None = None,
+    ) -> str: ...
 
     async def list_sessions(self, limit: int = 50) -> list[SessionMeta]: ...
 
@@ -113,6 +122,15 @@ class MongoStorage(Protocol):
         ...
 
     async def clear_session_summary(self, session_id: str) -> None: ...
+
+    async def clone_session_branch(
+        self,
+        *,
+        source_session_id: str,
+        source_task_id: str,
+        source_role: Literal["user", "assistant"],
+        source_agent: str | None = None,
+    ) -> tuple[str, str | None]: ...
 
     async def cancel_orphan_rounds(self, reason: str = "server_restart") -> int:
         """启动时清理孤儿 round  把所有进行中状态的 round 与其 replies 置为 cancelled"""

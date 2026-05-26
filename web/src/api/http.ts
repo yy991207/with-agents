@@ -159,6 +159,30 @@ export function batchDeleteSessions(
   });
 }
 
+export interface BranchSessionPayload {
+  source_task_id: string;
+  source_role: 'user' | 'assistant';
+  source_agent?: string;
+}
+
+export interface BranchSessionResponse {
+  session_id: string;
+  draft_message?: string | null;
+}
+
+export function branchSession(
+  sessionId: string,
+  payload: BranchSessionPayload,
+): Promise<BranchSessionResponse> {
+  return request<BranchSessionResponse>(
+    `/sessions/${encodeURIComponent(sessionId)}/branch`,
+    {
+      method: 'POST',
+      body: payload,
+    },
+  );
+}
+
 // ====== 会话上下文压缩 ======
 
 // POST /api/sessions/{session_id}/compact 一键压缩响应

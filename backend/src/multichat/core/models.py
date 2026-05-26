@@ -217,6 +217,16 @@ class Session(BaseModel):
     summary_until_round: int = 0
     summary_updated_at: datetime | None = None
     context_usage: dict[str, Any] | None = None
+    # 分支会话树字段:
+    #   parent_session_id  指向父会话  None 表示根会话
+    #   branch_from_task_id 指向父会话里触发分支的那一轮
+    #   branch_from_role    分支锚点是 user 还是 assistant
+    #   branch_from_agent   assistant 分支时记录选中的 agent  user 分支为空
+    parent_session_id: str | None = None
+    branch_from_task_id: str | None = None
+    branch_from_role: Literal["user", "assistant"] | None = None
+    branch_from_agent: str | None = None
+    draft_message: str | None = None
 
     @field_validator("summary_updated_at", mode="before")
     @classmethod
@@ -234,6 +244,11 @@ class SessionMeta(BaseModel):
     title: str = ""
     created_at: datetime
     updated_at: datetime
+    parent_session_id: str | None = None
+    branch_from_task_id: str | None = None
+    branch_from_role: Literal["user", "assistant"] | None = None
+    branch_from_agent: str | None = None
+    draft_message: str | None = None
 
 
 class ModelCatalogEntry(BaseModel):

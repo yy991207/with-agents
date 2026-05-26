@@ -51,7 +51,16 @@ export function useSession() {
           usageRaw && typeof usageRaw === 'object'
             ? parseContextUsage(usageRaw as Record<string, unknown>)
             : null;
-        dispatch({ type: 'history.loaded', sessionId, rounds, contextUsage });
+        dispatch({
+          type: 'history.loaded',
+          sessionId,
+          rounds,
+          contextUsage,
+          draftMessage:
+            typeof sessRaw['draft_message'] === 'string'
+              ? (sessRaw['draft_message'] as string)
+              : null,
+        });
       } catch (e) {
         message.error(`加载历史失败:${describeError(e)}`);
       }

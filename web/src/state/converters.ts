@@ -22,6 +22,18 @@ export function convertSession(raw: unknown): SessionMeta {
     sessionId: (r.session_id as string) ?? (r.sessionId as string) ?? '',
     title: (r.title as string) ?? '',
     updatedAt: (r.updated_at as string) ?? (r.updatedAt as string) ?? '',
+    parentSessionId:
+      (r.parent_session_id as string) ?? (r.parentSessionId as string) ?? null,
+    branchFromTaskId:
+      (r.branch_from_task_id as string) ?? (r.branchFromTaskId as string) ?? null,
+    branchFromRole:
+      ((r.branch_from_role as 'user' | 'assistant' | null) ??
+        (r.branchFromRole as 'user' | 'assistant' | null) ??
+        null),
+    branchFromAgent:
+      (r.branch_from_agent as string) ?? (r.branchFromAgent as string) ?? null,
+    draftMessage:
+      (r.draft_message as string) ?? (r.draftMessage as string) ?? null,
   };
 }
 

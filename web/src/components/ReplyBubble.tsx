@@ -10,6 +10,7 @@ import {
   CheckOutlined,
   CloseCircleOutlined,
   ExpandAltOutlined,
+  ForkOutlined,
   LoadingOutlined,
   ReloadOutlined,
   StopOutlined,
@@ -28,6 +29,8 @@ export interface ReplyBubbleProps {
   onCancel?: () => void;
   // 放大全屏  无值时不显示放大按钮
   onFullscreen?: () => void;
+  // 从该 assistant 回复创建分支会话
+  onBranch?: () => void;
   // 是否处于全屏模式  全屏模式下不再显示放大按钮  且 maxHeight 放大
   fullscreen?: boolean;
   // 该子窗是否为本轮选定的正式回答  multi 模式下用于在头像旁加灰色对号徽标
@@ -418,6 +421,7 @@ export default function ReplyBubble({
   onRetry,
   onCancel,
   onFullscreen,
+  onBranch,
   fullscreen = false,
   selected = false,
 }: ReplyBubbleProps) {
@@ -590,6 +594,21 @@ export default function ReplyBubble({
             {timeText}
           </span>
         ) : null}
+        {!isStreaming && onBranch ? (
+          <span className="reply-bubble-hover-inline-action">
+            <Tooltip title="从这条回答创建分支会话">
+              <Button
+                aria-label="从这条回答创建分支会话"
+                className="reply-bubble-action-button"
+                icon={<ForkOutlined />}
+                onClick={onBranch}
+                size="small"
+                type="text"
+                shape="circle"
+              />
+            </Tooltip>
+          </span>
+        ) : null}
         {isStreaming ? (
           <span style={{ color: 'rgba(71, 85, 105, 0.56)', fontSize: 12 }}>
             <LoadingOutlined spin /> 生成中
@@ -597,43 +616,49 @@ export default function ReplyBubble({
         ) : reply.state === 'failed' ? (
           <CloseCircleOutlined style={{ color: 'var(--ant-color-error)', fontSize: 12 }} />
         ) : null}
-        {/* 右侧 toolbar  放大 / 终止 / 重答 */}
-        <span style={{ flex: 1 }} />
-        {isStreaming && onCancel ? (
-          <Tooltip title="终止该 agent 回答">
-            <Button
-              aria-label="终止"
-              icon={<StopOutlined />}
-              onClick={onCancel}
-              size="small"
-              type="text"
-              shape="circle"
-            />
-          </Tooltip>
-        ) : null}
-        {!isStreaming && onRetry ? (
-          <Tooltip title="重新回答">
-            <Button
-              aria-label="重新回答"
-              icon={<ReloadOutlined />}
-              onClick={onRetry}
-              size="small"
-              type="text"
-              shape="circle"
-            />
-          </Tooltip>
-        ) : null}
-        {!fullscreen && onFullscreen ? (
-          <Tooltip title="放大查看">
-            <Button
-              aria-label="放大"
-              icon={<ExpandAltOutlined />}
-              onClick={onFullscreen}
-              size="small"
-              type="text"
-              shape="circle"
-            />
-          </Tooltip>
+        {/* 会话操作  贴近时间 / 分支按钮显示  不再右对齐 */}
+        {(isStreaming && onCancel) || (!isStreaming && onRetry) || (!fullscreen && onFullscreen) ? (
+          <Flexbox horizontal align="center" gap={4} className="reply-bubble-toolbar">
+            {isStreaming && onCancel ? (
+              <Tooltip title="终止该 agent 回答">
+                <Button
+                  aria-label="终止"
+                  className="reply-bubble-action-button"
+                  icon={<StopOutlined />}
+                  onClick={onCancel}
+                  size="small"
+                  type="text"
+                  shape="circle"
+                />
+              </Tooltip>
+            ) : null}
+            {!isStreaming && onRetry ? (
+              <Tooltip title="重新回答">
+                <Button
+                  aria-label="重新回答"
+                  className="reply-bubble-action-button"
+                  icon={<ReloadOutlined />}
+                  onClick={onRetry}
+                  size="small"
+                  type="text"
+                  shape="circle"
+                />
+              </Tooltip>
+            ) : null}
+            {!fullscreen && onFullscreen ? (
+              <Tooltip title="放大查看">
+                <Button
+                  aria-label="放大"
+                  className="reply-bubble-action-button"
+                  icon={<ExpandAltOutlined />}
+                  onClick={onFullscreen}
+                  size="small"
+                  type="text"
+                  shape="circle"
+                />
+              </Tooltip>
+            ) : null}
+          </Flexbox>
         ) : null}
       </Flexbox>
       {/* 正文 */}

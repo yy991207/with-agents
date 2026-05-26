@@ -3,7 +3,7 @@
 // 气泡左侧显示发送时间 (HH:mm) 来自 round.createdAt 后端落库  没值不显示
 import { Flexbox } from 'react-layout-kit';
 import { Button, Tooltip } from 'antd';
-import { EditOutlined } from '@ant-design/icons';
+import { EditOutlined, ForkOutlined } from '@ant-design/icons';
 
 export interface UserBubbleProps {
   content: string;
@@ -11,6 +11,7 @@ export interface UserBubbleProps {
   createdAt?: string;
   editable?: boolean;
   onEdit?: () => void;
+  onBranch?: () => void;
 }
 
 // ISO 字符串 → 本地 HH:mm 显示  失败兜底空串避免渲染异常
@@ -29,6 +30,7 @@ export default function UserBubble({
   createdAt,
   editable = false,
   onEdit,
+  onBranch,
 }: UserBubbleProps) {
   const timeText = formatTime(createdAt);
   return (
@@ -47,6 +49,19 @@ export default function UserBubble({
               className="user-bubble-edit-button"
               icon={<EditOutlined />}
               onClick={onEdit}
+              shape="circle"
+              size="small"
+              type="text"
+            />
+          </Tooltip>
+        ) : null}
+        {onBranch ? (
+          <Tooltip title="从这条用户消息创建分支会话">
+            <Button
+              aria-label="从这条用户消息创建分支会话"
+              className="user-bubble-edit-button"
+              icon={<ForkOutlined />}
+              onClick={onBranch}
               shape="circle"
               size="small"
               type="text"

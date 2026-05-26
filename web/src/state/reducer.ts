@@ -48,6 +48,7 @@ export const initialState: ChatState = {
   contextUsage: null,
   compacting: false,
   fullscreenReply: null,
+  sessionDraftMessage: null,
 };
 
 function patchRound(rounds: RoundView[], taskId: string, patch: Partial<RoundView>): RoundView[] {
@@ -371,6 +372,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         contextUsage: null,
         compacting: false,
         fullscreenReply: null,
+        sessionDraftMessage: null,
         workbench: {
           ...state.workbench,
           activeView: action.sessionId ? 'chat' : 'home',
@@ -390,6 +392,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           contextUsage: null,
           compacting: false,
           fullscreenReply: null,
+          sessionDraftMessage: null,
           workbench: {
             ...state.workbench,
             activeView: 'home',
@@ -398,6 +401,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return { ...state, sessions };
     }
     case 'sessions.set': return { ...state, sessions: action.sessions };
+    case 'session.draft.set':
+      return { ...state, sessionDraftMessage: action.draftMessage };
     case 'rounds.set': return { ...state, rounds: action.rounds };
     case 'history.loaded':
       return {
@@ -409,6 +414,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         contextUsage: action.contextUsage ?? null,
         compacting: false,
         fullscreenReply: null,
+        sessionDraftMessage: action.draftMessage ?? null,
         workbench: {
           ...state.workbench,
           activeView:
@@ -452,6 +458,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         // 切会话同时清 contextUsage  避免显示旧会话的 token 用量
         contextUsage:
           switchedSession || editingIdx >= 0 ? null : state.contextUsage,
+        sessionDraftMessage: null,
         sessions: updatedSessions,
         workbench: {
           ...state.workbench,

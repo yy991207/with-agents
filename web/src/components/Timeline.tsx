@@ -131,19 +131,25 @@ function RoundBlock({
           const inProgress = reply.state === 'streaming' || reply.state === 'pending';
           const isSelectedReply = round.selectedReplyAgent === agent;
           // 子窗外框  多 agent 时给一层卡片样式  单 agent 时不加
+          // maxHeight 364 = 旧 520 × 0.7  视觉更紧凑  超出走 hover 才显示的滚动条
+          // className reply-grid-card 启用 hover 滚动条 (见 styles/global.css)
           const wrapperStyle: React.CSSProperties = isMulti
             ? {
                 background: '#fff',
                 border: '1px solid rgba(15, 23, 42, 0.06)',
                 borderRadius: 16,
                 boxShadow: '0 4px 12px rgba(15, 23, 42, 0.04)',
-                maxHeight: 520,
+                maxHeight: 364,
                 overflow: 'auto',
                 padding: '8px 14px',
               }
             : {};
           return (
-            <div key={`${round.taskId}-${agent}`} style={wrapperStyle}>
+            <div
+              key={`${round.taskId}-${agent}`}
+              className={isMulti ? 'reply-grid-card' : undefined}
+              style={wrapperStyle}
+            >
               <ReplyBubble
                 reply={reply}
                 agentLabel={agentLabelOf(agentLabels, agent)}

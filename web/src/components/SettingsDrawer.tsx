@@ -1,5 +1,5 @@
-// 配置抽屉:数字员工管理 + MCP 服务器配置
-// 左侧菜单: 数字员工配置 | Judge 选择 | MCP 配置
+// 配置抽屉:数字员工管理 + MCP 服务器配置 + Skills 自定义指令
+// 左侧菜单: 数字员工配置 | MCP 配置 | Skills
 // 右侧面板: 根据选中类目切换内容
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -12,7 +12,6 @@ import {
   Menu,
   message,
   Modal,
-  Radio,
   Select,
   Space,
   Spin,
@@ -38,7 +37,7 @@ import type {
 import McpSettingsPanel from './McpSettingsPanel';
 import SkillsPanel from './SkillsPanel';
 
-const { Paragraph, Text } = Typography;
+const { Paragraph } = Typography;
 
 // ====== 新建 agent Modal ======
 interface CreateAgentModalProps {
@@ -627,17 +626,16 @@ export default function SettingsDrawer() {
     setDraftField,
     save,
     reset,
-    setJudge,
     createAgent,
     removeAgent,
     uploadAvatar,
     removeAvatar,
   } = useSettings();
-  const { open, loading, saving, drafts, judgeTarget, activeAgentName } = state;
+  const { open, loading, saving, drafts, activeAgentName } = state;
 
   // 新增 Modal 开关
   const [createOpen, setCreateOpen] = useState(false);
-  // 左侧类目：agents | judge
+  // 左侧类目：agents | mcp | skills
   const [settingsCategory, setSettingsCategory] = useState('agents');
 
   // 从当前选中 agent 的草稿中取预填值，新建弹窗打开时复用
@@ -695,7 +693,6 @@ export default function SettingsDrawer() {
               onClick={({ key }) => setSettingsCategory(key)}
               items={[
                 { key: 'agents', label: 'agent' },
-                { key: 'judge', label: 'Judge 选择' },
                 { key: 'mcp', label: 'MCP' },
                 { key: 'skills', label: 'Skills' },
               ]}
@@ -800,42 +797,6 @@ export default function SettingsDrawer() {
 
             {settingsCategory === 'skills' && <SkillsPanel />}
 
-            {settingsCategory === 'judge' && (
-              <div
-                style={{
-                  background: '#fff',
-                  border: '1px solid #e5e7eb',
-                  borderRadius: 18,
-                  boxShadow: '0 10px 24px rgba(15, 23, 42, 0.04)',
-                  padding: 18,
-                }}
-              >
-                <Text strong style={{ fontSize: 16 }}>Judge 选择</Text>
-                <Paragraph type="secondary" style={{ marginTop: 6 }}>
-                  选中即生效，由该 agent 负责自动决策。
-                </Paragraph>
-                {Object.values(drafts).length === 0 ? (
-                  <Text type="secondary">暂无候选</Text>
-                ) : (
-                  <Radio.Group
-                    value={judgeTarget ?? undefined}
-                    onChange={(e) => setJudge(String(e.target.value))}
-                    disabled={saving || loading}
-                    style={{ marginTop: 12 }}
-                  >
-                    <Space direction="vertical" size="middle">
-                      {Object.values(drafts).map((d) => (
-                        <Radio key={d.name} value={d.name}>
-                          <span style={{ color: 'rgba(15, 23, 42, 0.92)', fontWeight: 500 }}>
-                            {d.displayName || d.name}
-                          </span>
-                        </Radio>
-                      ))}
-                    </Space>
-                  </Radio.Group>
-                )}
-              </div>
-            )}
           </div>
         </div>
       </Spin>

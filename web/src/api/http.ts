@@ -391,6 +391,16 @@ export function toggleMcpServer(name: string, body: McpToggleRequest): Promise<M
   });
 }
 
+// POST /api/mcp/reload 重载所有 agent 让 MCP 配置立即生效
+// 与 /api/skills/reload 共享同一个后端入口  返回 { reloaded: N }
+export interface McpReloadResponse {
+  reloaded: number;
+}
+
+export function reloadMcpAgents(): Promise<McpReloadResponse> {
+  return request<McpReloadResponse>('/api/mcp/reload', { method: 'POST' });
+}
+
 // ====== Skills 配置相关 API ======
 
 export interface SkillItem {

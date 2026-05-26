@@ -300,3 +300,16 @@ async def delete_mcp_server(name: str, request: Request) -> None:
         {"_id": _MCP_CONFIG_DOC_ID},
         {"$set": {"config.mcpServers": mcp_servers}},
     )
+
+
+@router.post("/reload")
+async def reload_agents_for_mcp(request: Request) -> dict:
+    """重载所有 agent 让 MCP 配置变更立刻生效
+
+    与 /api/skills/reload 共享同一份 reload_all 入口
+    内部会重新构建 deep_agent 实例  把当前 enabled 的 MCP 工具集挂回去
+    返回 {"reloaded": N}  N = 重新构建的 agent 数
+    """
+    registry = request.app.state.deep_agents
+    count = await registry.reload_all()
+    return {"reloaded": count}

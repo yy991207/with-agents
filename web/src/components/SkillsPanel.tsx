@@ -217,6 +217,7 @@ export default function SkillsPanel() {
       <Table<SkillEditDraft>
         columns={columns} dataSource={skills} rowKey="name"
         loading={loading} size="small" pagination={false}
+        scroll={{ x: 'max-content' }}
         style={{ marginBottom: 12 }}
         locale={{ emptyText: '暂无 skill，点击"新增 Skill"添加或点击"安装默认 Skills"' }}
       />

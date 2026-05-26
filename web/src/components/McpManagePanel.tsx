@@ -22,6 +22,7 @@ import {
   updateMcpServer,
   deleteMcpServer,
   toggleMcpServer,
+  reloadMcpAgents,
 } from '../api/http';
 
 const { Title, Paragraph, Text } = Typography;
@@ -194,6 +195,10 @@ export default function McpManagePanel() {
       setEditForm(null);
       setEditOriginal(null);
       await loadServers();
+      // 配置变动后重载所有 agent  让 MCP 工具集即时生效  失败仅 warn 不阻塞
+      void reloadMcpAgents().catch(() => {
+        message.warning('配置已保存  但 agent 热重载失败  下次请求才会生效');
+      });
     } catch (e) {
       message.error(`保存失败:${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -211,6 +216,9 @@ export default function McpManagePanel() {
           await deleteMcpServer(record.name);
           message.success(`服务器 "${record.name}" 已删除`);
           await loadServers();
+          void reloadMcpAgents().catch(() => {
+            message.warning('已删除  但 agent 热重载失败  下次请求才会生效');
+          });
         } catch (e) {
           message.error(`删除失败:${e instanceof Error ? e.message : String(e)}`);
         }
@@ -225,6 +233,9 @@ export default function McpManagePanel() {
         s.name === record.name ? { ...s, disabled: !checked } : s
       ));
       message.success(`服务器 "${record.name}" 已${checked ? '启用' : '禁用'}`);
+      void reloadMcpAgents().catch(() => {
+        message.warning('开关已切换  但 agent 热重载失败  下次请求才会生效');
+      });
     } catch (e) {
       message.error(`操作失败:${e instanceof Error ? e.message : String(e)}`);
     }
@@ -284,6 +295,7 @@ export default function McpManagePanel() {
         loading={loading}
         size="small"
         pagination={false}
+        scroll={{ x: 'max-content' }}
         style={{ marginBottom: 12 }}
         locale={{ emptyText: '暂无 MCP 服务器，点击"新增服务器"添加' }}
       />

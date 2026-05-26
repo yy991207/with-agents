@@ -45,6 +45,30 @@ body {
   background-color: rgba(0, 0, 0, 0.32);
 }
 
+/* 多 agent 子窗滚动条  默认隐藏 鼠标悬停时再显示
+ * 给子窗外框加 className="reply-grid-card" 即可启用
+ * Webkit (Chrome / Edge / Safari): 默认 thumb 透明  hover 时变深灰
+ * Firefox: scrollbar-color 直接控制 hover 切换
+ */
+.reply-grid-card {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color 160ms ease;
+}
+.reply-grid-card::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  transition: background-color 160ms ease;
+}
+.reply-grid-card:hover {
+  scrollbar-color: rgba(0, 0, 0, 0.28) transparent;
+}
+.reply-grid-card:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(0, 0, 0, 0.28);
+}
+.reply-grid-card:hover::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(0, 0, 0, 0.4);
+}
+
 /* HTML 回复内容的基础样式:对齐 LobeChat Markdown(article[data-code-type=markdown])
  * font-size 14 / line-height 1.6 / 标题与段落间距适中 / 代码与表格圆角 8 */
 .reply-html {

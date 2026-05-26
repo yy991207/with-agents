@@ -104,6 +104,82 @@ function BrainIcon({ active }: BrainIconProps) {
   );
 }
 
+// solo 图标  单人剪影  active 时填色
+function SoloIcon({ active }: { active: boolean }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style={{ display: 'block' }}>
+      <circle
+        cx="12"
+        cy="8"
+        r="3.4"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        fill={active ? 'currentColor' : 'none'}
+        fillOpacity={active ? 0.18 : 0}
+      />
+      <path
+        d="M5 19.5c0-3.3 3.1-5.5 7-5.5s7 2.2 7 5.5"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        fill={active ? 'currentColor' : 'none'}
+        fillOpacity={active ? 0.18 : 0}
+      />
+    </svg>
+  );
+}
+
+// choice 图标  双人剪影  右人略后置 + 部分重叠  active 时填色
+function ChoiceIcon({ active }: { active: boolean }) {
+  return (
+    <svg width="18" height="16" viewBox="0 0 26 24" fill="none" style={{ display: 'block' }}>
+      {/* 后方人物  整体右上 略小 */}
+      <circle
+        cx="17"
+        cy="7.5"
+        r="3"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        fill={active ? 'currentColor' : 'none'}
+        fillOpacity={active ? 0.18 : 0}
+      />
+      <path
+        d="M11 19c0-3 2.7-5 6-5s6 2 6 5"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        fill={active ? 'currentColor' : 'none'}
+        fillOpacity={active ? 0.18 : 0}
+      />
+      {/* 前方人物  略大居左 */}
+      <circle
+        cx="9"
+        cy="9"
+        r="3.4"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        fill="#fff"
+      />
+      <circle
+        cx="9"
+        cy="9"
+        r="3.4"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        fill={active ? 'currentColor' : '#fff'}
+        fillOpacity={active ? 0.18 : 1}
+      />
+      <path
+        d="M2 20.5c0-3.3 3.1-5.5 7-5.5s7 2.2 7 5.5"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        fill="#fff"
+      />
+    </svg>
+  );
+}
+
 export interface ChatInputProps {
   onSend: (
     message: string,
@@ -448,51 +524,53 @@ export default function ChatInput({ onSend, onStop }: ChatInputProps) {
     </Popover>
   );
 
-  // 模式切换按钮  single ↔ multi  用文字胶囊
+  // 模式切换  纯图标按钮组  solo (单人) / choice (双人)
+  // 视觉跟大脑、添加按钮统一  灰色文字色 + active 时灰底
+  // tooltip 用 solo / choice 替代中文  视觉更轻
   const modeToggle = (
-    <div
-      style={{
-        display: 'inline-flex',
-        background: 'rgba(15, 23, 42, 0.05)',
-        borderRadius: 999,
-        padding: 2,
-        fontSize: 12,
-      }}
-    >
-      <button
-        type="button"
-        onClick={() => setInputMode('single')}
-        style={{
-          background: inputMode === 'single' ? '#fff' : 'transparent',
-          border: 'none',
-          borderRadius: 999,
-          color: inputMode === 'single' ? 'rgba(15, 23, 42, 0.92)' : 'rgba(71, 85, 105, 0.7)',
-          cursor: 'pointer',
-          fontSize: 12,
-          fontWeight: inputMode === 'single' ? 600 : 400,
-          padding: '4px 12px',
-          transition: 'all 120ms ease',
-        }}
-      >
-        单 agent
-      </button>
-      <button
-        type="button"
-        onClick={() => setInputMode('multi')}
-        style={{
-          background: inputMode === 'multi' ? '#fff' : 'transparent',
-          border: 'none',
-          borderRadius: 999,
-          color: inputMode === 'multi' ? 'rgba(15, 23, 42, 0.92)' : 'rgba(71, 85, 105, 0.7)',
-          cursor: 'pointer',
-          fontSize: 12,
-          fontWeight: inputMode === 'multi' ? 600 : 400,
-          padding: '4px 12px',
-          transition: 'all 120ms ease',
-        }}
-      >
-        多 agent
-      </button>
+    <div style={{ display: 'inline-flex', gap: 2 }}>
+      <Tooltip title="solo">
+        <Button
+          shape="circle"
+          type="text"
+          aria-label="solo"
+          aria-pressed={inputMode === 'single'}
+          disabled={compacting}
+          onClick={() => setInputMode('single')}
+          icon={<SoloIcon active={inputMode === 'single'} />}
+          style={{
+            color:
+              inputMode === 'single'
+                ? 'rgba(15, 23, 42, 0.86)'
+                : 'rgba(71, 85, 105, 0.7)',
+            background:
+              inputMode === 'single'
+                ? 'rgba(15, 23, 42, 0.06)'
+                : 'transparent',
+          }}
+        />
+      </Tooltip>
+      <Tooltip title="choice">
+        <Button
+          shape="circle"
+          type="text"
+          aria-label="choice"
+          aria-pressed={inputMode === 'multi'}
+          disabled={compacting}
+          onClick={() => setInputMode('multi')}
+          icon={<ChoiceIcon active={inputMode === 'multi'} />}
+          style={{
+            color:
+              inputMode === 'multi'
+                ? 'rgba(15, 23, 42, 0.86)'
+                : 'rgba(71, 85, 105, 0.7)',
+            background:
+              inputMode === 'multi'
+                ? 'rgba(15, 23, 42, 0.06)'
+                : 'transparent',
+          }}
+        />
+      </Tooltip>
     </div>
   );
 

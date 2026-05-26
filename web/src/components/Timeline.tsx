@@ -68,23 +68,29 @@ export default function Timeline() {
 
   return (
     <div style={{ padding: '0 0 8px' }}>
-      {state.rounds.map((round) => (
-        <RoundBlock
-          key={round.taskId}
-          round={round}
-          agentLabels={agentLabels}
-          agentMetas={agentMetas}
-          onFullscreen={handleFullscreen}
-          onCancelReply={(agent) => void cancelReplyAgent(round.taskId, agent)}
-          onRetryReply={(agent) => void retryReplyAgent(round.taskId, agent)}
-        />
-      ))}
+      {state.rounds.map((round, idx) => {
+        // 锁定:  下一轮已经发起  即本 round 之后还有 round  此时本轮 chips 不可改
+        const locked = idx < state.rounds.length - 1;
+        return (
+          <RoundBlock
+            key={round.taskId}
+            round={round}
+            locked={locked}
+            agentLabels={agentLabels}
+            agentMetas={agentMetas}
+            onFullscreen={handleFullscreen}
+            onCancelReply={(agent) => void cancelReplyAgent(round.taskId, agent)}
+            onRetryReply={(agent) => void retryReplyAgent(round.taskId, agent)}
+          />
+        );
+      })}
     </div>
   );
 }
 
 interface RoundBlockProps {
   round: RoundView;
+  locked: boolean;
   agentLabels: ReturnType<typeof buildAgentLabelMap>;
   agentMetas: ReturnType<typeof buildAgentMetaMap>;
   onFullscreen: (taskId: string, agent: AgentName) => void;
@@ -94,6 +100,7 @@ interface RoundBlockProps {
 
 function RoundBlock({
   round,
+  locked,
   agentLabels,
   agentMetas,
   onFullscreen,
@@ -122,6 +129,7 @@ function RoundBlock({
           const reply = round.replies[agent];
           if (!reply) return null;
           const inProgress = reply.state === 'streaming' || reply.state === 'pending';
+          const isSelectedReply = round.selectedReplyAgent === agent;
           // 子窗外框  多 agent 时给一层卡片样式  单 agent 时不加
           const wrapperStyle: React.CSSProperties = isMulti
             ? {
@@ -143,13 +151,14 @@ function RoundBlock({
                 onCancel={inProgress ? () => onCancelReply(agent) : undefined}
                 onRetry={!inProgress ? () => onRetryReply(agent) : undefined}
                 onFullscreen={() => onFullscreen(round.taskId, agent)}
+                selected={isMulti && isSelectedReply}
               />
             </div>
           );
         })}
       </div>
 
-      <SelectReplyChips round={round} />
+      <SelectReplyChips round={round} locked={locked} />
     </div>
   );
 }

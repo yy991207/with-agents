@@ -71,9 +71,6 @@ export default function ReplyFullscreen() {
         }}
       >
         <Flexbox horizontal align="center" gap={8}>
-          <span style={{ color: 'rgba(15, 23, 42, 0.92)', fontSize: 16, fontWeight: 600 }}>
-            {agentLabelOf(agentLabels, reply.agent)}  全屏视图
-          </span>
           <span style={{ flex: 1 }} />
           <Tooltip title="关闭">
             <Button

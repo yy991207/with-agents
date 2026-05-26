@@ -7,6 +7,7 @@ import { Button, Collapse, Tooltip, Typography } from 'antd';
 import { Avatar } from '@lobehub/ui';
 import { Flexbox } from 'react-layout-kit';
 import {
+  CheckOutlined,
   CloseCircleOutlined,
   ExpandAltOutlined,
   LoadingOutlined,
@@ -29,6 +30,9 @@ export interface ReplyBubbleProps {
   onFullscreen?: () => void;
   // 是否处于全屏模式  全屏模式下不再显示放大按钮  且 maxHeight 放大
   fullscreen?: boolean;
+  // 该子窗是否为本轮选定的正式回答  multi 模式下用于在头像旁加灰色对号徽标
+  // 单 agent 模式自然就是选中  没必要单独标记
+  selected?: boolean;
 }
 
 // segments 时间线节点  thinking / text / tool 三类
@@ -333,14 +337,15 @@ function ThinkingBlock({ content, streaming }: ThinkingBlockProps) {
   }, [streaming, startTime, elapsedMs]);
 
   const charCount = content.length;
-  // 完成态副标 Thought · 5s · 89 字  历史轮次没 elapsed 就只显 Thought · 89 字
+  // 完成态副标  Thought · 5s  历史轮次没 elapsed 就只显 Thought
+  // 字数统计删除  视觉更克制  charCount 仅保留以备用
+  void charCount;
   const renderDoneSubtitle = (): string => {
     const parts: string[] = ['Thought'];
     if (elapsedMs !== null) {
       const seconds = Math.max(1, Math.round(elapsedMs / 1000));
       parts.push(`${seconds}s`);
     }
-    parts.push(`${charCount} 字`);
     return parts.join(' · ');
   };
 
@@ -414,6 +419,7 @@ export default function ReplyBubble({
   onCancel,
   onFullscreen,
   fullscreen = false,
+  selected = false,
 }: ReplyBubbleProps) {
   const color = getAgentColor(reply.agent);
   const title = agentLabel || reply.agent;
@@ -560,6 +566,25 @@ export default function ReplyBubble({
         <span style={{ color: 'rgba(15, 23, 42, 0.92)', fontSize: 14, fontWeight: 500 }}>
           {title}
         </span>
+        {selected ? (
+          <span
+            aria-label="已选定为正式回答"
+            title="已选定为正式回答"
+            style={{
+              alignItems: 'center',
+              background: '#fff',
+              border: '1px solid rgba(15, 23, 42, 0.36)',
+              borderRadius: '50%',
+              color: 'rgba(15, 23, 42, 0.7)',
+              display: 'inline-flex',
+              height: 14,
+              justifyContent: 'center',
+              width: 14,
+            }}
+          >
+            <CheckOutlined style={{ fontSize: 9 }} />
+          </span>
+        ) : null}
         {timeText ? (
           <span style={{ color: 'rgba(71, 85, 105, 0.5)', fontSize: 11 }}>
             {timeText}

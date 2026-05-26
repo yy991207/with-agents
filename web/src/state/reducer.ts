@@ -429,23 +429,29 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       // 否则首页"新建会话"发完  Timeline 会同时显示旧会话历史 + 这条新 round  视觉错乱
       const switchedSession = state.sessionId !== action.sessionId;
       const baseRounds = switchedSession ? [] : state.rounds;
+      const editingIdx =
+        !switchedSession && action.replaceTaskId
+          ? baseRounds.findIndex((round) => round.taskId === action.replaceTaskId)
+          : -1;
+      const nextRound = createEmptyRound(
+        action.taskId,
+        action.userMessage,
+        action.agents,
+        action.inputMode,
+        action.createdAt,
+      );
+      const preservedRounds =
+        editingIdx >= 0 ? baseRounds.slice(0, editingIdx) : baseRounds;
+      const nextRounds = [...preservedRounds, nextRound];
       return {
         ...state,
         sessionId: action.sessionId,
         activeTaskId: action.taskId,
         taskState: 'PENDING',
-        rounds: [
-          ...baseRounds,
-          createEmptyRound(
-            action.taskId,
-            action.userMessage,
-            action.agents,
-            action.inputMode,
-            action.createdAt,
-          ),
-        ],
+        rounds: nextRounds,
         // 切会话同时清 contextUsage  避免显示旧会话的 token 用量
-        contextUsage: switchedSession ? null : state.contextUsage,
+        contextUsage:
+          switchedSession || editingIdx >= 0 ? null : state.contextUsage,
         sessions: updatedSessions,
         workbench: {
           ...state.workbench,

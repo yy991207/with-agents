@@ -2,11 +2,15 @@
 // 无边框/无阴影,padding 适中,圆角与 LobeChat 的 colorFillTertiary 一致
 // 气泡左侧显示发送时间 (HH:mm) 来自 round.createdAt 后端落库  没值不显示
 import { Flexbox } from 'react-layout-kit';
+import { Button, Tooltip } from 'antd';
+import { EditOutlined } from '@ant-design/icons';
 
 export interface UserBubbleProps {
   content: string;
   // ISO8601 字符串 来自后端 round.created_at  没值表示历史数据缺字段不渲染
   createdAt?: string;
+  editable?: boolean;
+  onEdit?: () => void;
 }
 
 // ISO 字符串 → 本地 HH:mm 显示  失败兜底空串避免渲染异常
@@ -23,6 +27,8 @@ function formatTime(iso?: string): string {
 export default function UserBubble({
   content,
   createdAt,
+  editable = false,
+  onEdit,
 }: UserBubbleProps) {
   const timeText = formatTime(createdAt);
   return (
@@ -34,6 +40,19 @@ export default function UserBubble({
       style={{ paddingInlineStart: 36 }}
     >
       <Flexbox horizontal align="flex-end" gap={8}>
+        {editable ? (
+          <Tooltip title="编辑这条消息">
+            <Button
+              aria-label="编辑这条消息"
+              className="user-bubble-edit-button"
+              icon={<EditOutlined />}
+              onClick={onEdit}
+              shape="circle"
+              size="small"
+              type="text"
+            />
+          </Tooltip>
+        ) : null}
         {timeText ? (
           <span
             style={{

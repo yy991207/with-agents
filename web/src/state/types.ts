@@ -265,6 +265,7 @@ export type ChatAction =
       agents: AgentName[];
       inputMode: InputMode;
       createdAt?: string;
+      replaceTaskId?: string;
     }
   // 抗刷新重连场景:把 activeTaskId 重新挂回去 准备接收 snapshot 帧
   | { type: 'task.resume'; taskId: string; taskState?: TaskState }

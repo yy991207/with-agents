@@ -43,6 +43,8 @@ class AskRequest(BaseModel):
     # 是否启用深度思考  对应输入框的大脑开关  本轮一次性
     # 后端据此给 ChatOpenAI 注入 extra_body={"thinking":{"type":"enabled"}}
     thinking: bool = False
+    # 编辑已有历史消息时传入目标 round_id
+    replace_task_id: str | None = None
 
 
 class AskResponse(BaseModel):
@@ -85,6 +87,31 @@ async def _ensure_last_round_selected(storage, session_id: str | None) -> None:
     )
 
 
+async def _resolve_edit_session_id(
+    storage,
+    session_id: str | None,
+    replace_task_id: str,
+) -> str:
+    """把编辑目标解析成真实 session_id 并校验当前会话没有进行中的回复"""
+    target_round = await storage.get_round(replace_task_id)
+    if target_round is None:
+        raise HTTPException(404, f"edit_target_not_found: {replace_task_id}")
+
+    resolved_session_id = session_id or target_round.session_id
+    if session_id and session_id != target_round.session_id:
+        raise HTTPException(409, "edit_replace_session_mismatch: 编辑目标不属于当前会话")
+
+    rounds = await storage.list_rounds(resolved_session_id)
+    if not rounds:
+        raise HTTPException(409, "edit_requires_history: 当前会话没有可编辑消息")
+    from ..core.models import TaskState
+
+    for round_obj in rounds:
+        if round_obj.state in {TaskState.PENDING, TaskState.REPLYING}:
+            raise HTTPException(409, "edit_requires_idle_session: 当前还有回复进行中 不能编辑历史消息")
+    return resolved_session_id
+
+
 @router.post("/ask", response_model=AskResponse)
 async def ask(body: AskRequest, request: Request) -> AskResponse:
     """创建任务并触发 reply 阶段 立刻返回 task_id"""
@@ -106,17 +133,27 @@ async def ask(body: AskRequest, request: Request) -> AskResponse:
         raise HTTPException(422, "agents 不能重复")
 
     storage = request.app.state.storage
-    # 强校验:  上一轮多 agent 未选答 直接 409
-    await _ensure_last_round_selected(storage, body.session_id)
+    session_id = body.session_id
+    if body.replace_task_id is None:
+        # 普通发言仍沿用原规则: 上一轮 multi 未选答时不允许开新轮
+        await _ensure_last_round_selected(storage, session_id)
+    else:
+        # 编辑分支只要求目标轮次已经结束 且必须是当前会话最新一条
+        session_id = await _resolve_edit_session_id(
+            storage,
+            session_id,
+            body.replace_task_id,
+        )
 
     tm = request.app.state.task_manager
     try:
         task_id = await tm.create_task(
-            body.session_id,
+            session_id,
             body.user_message,
             agents=list(body.agents),
             input_mode=body.input_mode,
             thinking_enabled=body.thinking,
+            replace_task_id=body.replace_task_id,
         )
     except ValueError as e:
         # 未知 agent / 模式校验失败 等  task_manager 内部 raise ValueError

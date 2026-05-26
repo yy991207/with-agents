@@ -80,6 +80,8 @@ export interface AskPayload {
   // 是否启用深度思考  对应输入框的大脑开关  本轮一次性
   // 后端据此给 ChatOpenAI 注入 extra_body={"thinking":{"type":"enabled"}}
   thinking?: boolean;
+  // 编辑已有 user 消息后重发时传入  后端会清掉该轮之后的历史
+  replace_task_id?: string;
 }
 
 export interface AskResponse {

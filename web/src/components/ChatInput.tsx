@@ -186,6 +186,10 @@ export interface ChatInputProps {
     options: { thinking?: boolean; agents: AgentName[]; inputMode: InputMode },
   ) => void | Promise<void>;
   onStop?: () => void | Promise<void>;
+  initialValue?: string;
+  sendLabel?: string;
+  editMode?: boolean;
+  onCancelEdit?: () => void;
 }
 
 function getPlaceholder(state: TaskState): string {
@@ -325,7 +329,14 @@ function SingleAgentPopover({
   );
 }
 
-export default function ChatInput({ onSend, onStop }: ChatInputProps) {
+export default function ChatInput({
+  onSend,
+  onStop,
+  initialValue,
+  sendLabel,
+  editMode = false,
+  onCancelEdit,
+}: ChatInputProps) {
   const [value, setValue] = useState('');
   const { state } = useChat();
   const { compact } = useContextActions();
@@ -349,6 +360,10 @@ export default function ChatInput({ onSend, onStop }: ChatInputProps) {
   const [selectedMulti, setSelectedMulti] = useState<Set<AgentName>>(new Set());
   const [singlePopoverOpen, setSinglePopoverOpen] = useState(false);
   const [multiPopoverOpen, setMultiPopoverOpen] = useState(false);
+
+  useEffect(() => {
+    setValue(initialValue ?? '');
+  }, [initialValue]);
 
   // 从 settings.drafts 派生 agent 列表
   const agentLabels = buildAgentLabelMap(state.settings.drafts);
@@ -678,24 +693,33 @@ export default function ChatInput({ onSend, onStop }: ChatInputProps) {
             <Tooltip
               title={
                 compacting
-                  ? '压缩中 暂不可发送'
+                ? '压缩中 暂不可发送'
                   : overLimit
                     ? `超过 ${MAX_CHARS} 字 无法发送`
                     : inputMode === 'multi' && selectedMulti.size < 2
                       ? '多 agent 模式至少选 2 个'
-                      : '发送消息'
+                      : sendLabel || '发送消息'
               }
             >
               <Button
                 type="primary"
                 icon={<SendOutlined />}
                 onClick={handleSend}
-                shape="circle"
                 size="large"
                 disabled={sendDisabled}
-              />
+                shape={editMode ? 'round' : 'circle'}
+              >
+                {editMode ? sendLabel || '重新发送' : null}
+              </Button>
             </Tooltip>
           )}
+          {editMode ? (
+            <Tooltip title="取消编辑">
+              <Button onClick={onCancelEdit} size="large">
+                取消
+              </Button>
+            </Tooltip>
+          ) : null}
         </div>
       </div>
     </div>

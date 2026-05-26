@@ -25,6 +25,8 @@ export interface SendOptions {
   // reducer 的 task.created 看到响应里的 sessionId 与当前 state.sessionId 不一致时
   // 会自动清空旧 rounds  避免视觉上"接着旧会话发言"
   forceNewSession?: boolean;
+  // 编辑历史消息后重发时传入  后端会从该轮开始重算后续上下文
+  replaceTaskId?: string;
 }
 
 export function useChatTask() {
@@ -49,6 +51,7 @@ export function useChatTask() {
           agents: options.agents,
           input_mode: options.inputMode,
           thinking: options.thinking === true ? true : undefined,
+          replace_task_id: options.replaceTaskId,
         });
 
         dispatch({
@@ -59,6 +62,7 @@ export function useChatTask() {
           agents: options.agents,
           inputMode: options.inputMode,
           createdAt: created_at,
+          replaceTaskId: options.replaceTaskId,
         });
 
         const ctrl = new AbortController();

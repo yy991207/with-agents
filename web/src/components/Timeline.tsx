@@ -5,6 +5,7 @@ import { Button } from 'antd';
 import UserBubble from './UserBubble';
 import ReplyBubble from './ReplyBubble';
 import SelectReplyChips from './SelectReplyChips';
+import TransientScrollbar from './TransientScrollbar';
 import { useChat } from '../state/ChatContext';
 import { useChatTask } from '../hooks/useChatTask';
 import {
@@ -14,12 +15,18 @@ import {
   buildAgentMetaMap,
 } from '../state/agentLabels';
 import type { AgentName, RoundView } from '../state/types';
+import { isBusyState } from '../state/types';
 
-export default function Timeline() {
+export interface TimelineProps {
+  onEditRound?: (round: RoundView) => void;
+}
+
+export default function Timeline({ onEditRound }: TimelineProps) {
   const { state, dispatch } = useChat();
   const { cancelReplyAgent, retryReplyAgent } = useChatTask();
   const agentLabels = buildAgentLabelMap(state.settings.drafts);
   const agentMetas = buildAgentMetaMap(state.settings.drafts);
+  const canEditHistory = !isBusyState(state.taskState);
 
   const handleFullscreen = (taskId: string, agent: AgentName) => {
     dispatch({ type: 'ui.fullscreen.set', fullscreen: { taskId, agent } });
@@ -76,8 +83,10 @@ export default function Timeline() {
             key={round.taskId}
             round={round}
             locked={locked}
+            canEdit={canEditHistory}
             agentLabels={agentLabels}
             agentMetas={agentMetas}
+            onEditRound={onEditRound}
             onFullscreen={handleFullscreen}
             onCancelReply={(agent) => void cancelReplyAgent(round.taskId, agent)}
             onRetryReply={(agent) => void retryReplyAgent(round.taskId, agent)}
@@ -91,8 +100,10 @@ export default function Timeline() {
 interface RoundBlockProps {
   round: RoundView;
   locked: boolean;
+  canEdit: boolean;
   agentLabels: ReturnType<typeof buildAgentLabelMap>;
   agentMetas: ReturnType<typeof buildAgentMetaMap>;
+  onEditRound?: (round: RoundView) => void;
   onFullscreen: (taskId: string, agent: AgentName) => void;
   onCancelReply: (agent: AgentName) => void;
   onRetryReply: (agent: AgentName) => void;
@@ -101,8 +112,10 @@ interface RoundBlockProps {
 function RoundBlock({
   round,
   locked,
+  canEdit,
   agentLabels,
   agentMetas,
+  onEditRound,
   onFullscreen,
   onCancelReply,
   onRetryReply,
@@ -122,7 +135,12 @@ function RoundBlock({
 
   return (
     <div style={{ marginBottom: 28 }}>
-      <UserBubble content={round.userMessage} createdAt={round.createdAt} />
+      <UserBubble
+        content={round.userMessage}
+        createdAt={round.createdAt}
+        editable={canEdit}
+        onEdit={onEditRound ? () => onEditRound(round) : undefined}
+      />
 
       <div style={{ marginTop: 12, ...gridStyle }}>
         {agents.map((agent) => {
@@ -131,9 +149,8 @@ function RoundBlock({
           const inProgress = reply.state === 'streaming' || reply.state === 'pending';
           const isSelectedReply = round.selectedReplyAgent === agent;
           // 子窗外框  多 agent 时给一层卡片样式  单 agent 时不加
-          // maxHeight 364  内容少按自身高度撑开  内容多走 hover 滚动条
+          // maxHeight 364  内容少按自身高度撑开  内容多在滚动时短暂显示滚动条
           // 不强制统一高度  各子窗高度按各自内容长短  保留传统聊天卡片视觉
-          // className reply-grid-card 启用 hover 滚动条 (见 styles/global.css)
           const wrapperStyle: React.CSSProperties = isMulti
             ? {
                 background: '#fff',
@@ -146,7 +163,7 @@ function RoundBlock({
               }
             : {};
           return (
-            <div
+            <TransientScrollbar
               key={`${round.taskId}-${agent}`}
               className={isMulti ? 'reply-grid-card' : undefined}
               style={wrapperStyle}
@@ -160,7 +177,7 @@ function RoundBlock({
                 onFullscreen={() => onFullscreen(round.taskId, agent)}
                 selected={isMulti && isSelectedReply}
               />
-            </div>
+            </TransientScrollbar>
           );
         })}
       </div>

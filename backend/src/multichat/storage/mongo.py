@@ -330,6 +330,28 @@ class MotorMongoStorage:
         if result.matched_count == 0:
             raise KeyError(f"session 不存在 session_id={session_id}")
 
+    async def clear_session_summary(self, session_id: str) -> None:
+        """清空 session 摘要与相关快照
+
+        编辑历史消息后 如果摘要已经覆盖到被删除的后续轮次 这份摘要就不再可信
+        这里一次性清掉 summary / summary_until_round / summary_updated_at / context_usage
+        让后续上下文重新从剩余历史计算
+        """
+        result = await self._db["sessions"].update_one(
+            {"session_id": session_id},
+            {
+                "$set": {
+                    "summary": "",
+                    "summary_until_round": 0,
+                    "summary_updated_at": None,
+                    "context_usage": None,
+                    "updated_at": _utcnow(),
+                }
+            },
+        )
+        if result.matched_count == 0:
+            raise KeyError(f"session 不存在 session_id={session_id}")
+
     async def update_session_context_usage(
         self,
         session_id: str,
@@ -507,6 +529,23 @@ class MotorMongoStorage:
         )
         if result.matched_count == 0:
             raise KeyError(f"round 不存在 task_id={task_id}")
+
+    async def delete_rounds_after(self, session_id: str, round_index: int) -> int:
+        """删除指定 round_index 之后的所有轮次
+
+        编辑历史消息时用:
+            保留目标 round 及其之前内容
+            删除所有更晚的 round
+        """
+        result = await self._db["rounds"].delete_many(
+            {"session_id": session_id, "round_index": {"$gt": int(round_index)}}
+        )
+        if result.deleted_count:
+            await self._db["sessions"].update_one(
+                {"session_id": session_id},
+                {"$set": {"updated_at": _utcnow()}},
+            )
+        return int(result.deleted_count or 0)
 
     async def append_reply_chunk_for_agent(
         self, task_id: str, agent_name: str, chunk: str

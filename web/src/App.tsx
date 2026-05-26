@@ -1,8 +1,8 @@
 // 顶层布局:Sider(SessionDrawer) + Content(Timeline + ChatInput) + 配置抽屉入口
 // H1 抗刷新启动:首次 mount 读 localStorage,拉历史 + 重连 SSE
 // 启动时加载 agent 列表填充 settings.drafts，保证 Timeline 渲染前 agentLabel 已有数据
-import { useEffect, useRef } from 'react';
-import { message } from 'antd';
+import { useEffect, useRef, useState } from 'react';
+import { message, Modal } from 'antd';
 import SettingsDrawer from './components/SettingsDrawer';
 import Timeline from './components/Timeline';
 import ChatInput from './components/ChatInput';
@@ -32,6 +32,7 @@ import type { WorkbenchView } from './state/types';
 export default function App() {
   const { send, stop } = useChatTask();
   const { state, dispatch, registerSSEController } = useChat();
+  const [editingRoundId, setEditingRoundId] = useState<string | null>(null);
   // 配置抽屉的开关入口由 useSettings 暴露
   const { openDrawer } = useSettings();
 
@@ -135,6 +136,48 @@ export default function App() {
     dispatch({ type: 'ui.view.set', view });
   };
 
+  const editingRound =
+    editingRoundId === null
+      ? null
+      : state.rounds.find((round) => round.taskId === editingRoundId) ?? null;
+
+  const handleStartEdit = (round: (typeof state.rounds)[number]) => {
+    if (state.taskState === 'PENDING' || state.taskState === 'REPLYING') {
+      message.warning('当前还有回复进行中，请先暂停后再编辑历史消息');
+      return;
+    }
+    setEditingRoundId(round.taskId);
+  };
+
+  const handleCancelEdit = () => {
+    setEditingRoundId(null);
+  };
+
+  useEffect(() => {
+    if (!editingRoundId) return;
+    if (state.taskState === 'PENDING' || state.taskState === 'REPLYING') {
+      setEditingRoundId(null);
+    }
+  }, [editingRoundId, state.taskState]);
+
+  const handleEditSend = (messageText: string, opts: { thinking?: boolean; agents: string[]; inputMode: 'single' | 'multi' }) => {
+    const currentRound = editingRound;
+    if (!currentRound) return;
+    Modal.confirm({
+      title: '重新发送后会丢失后续历史',
+      content: '从这条消息之后的对话记录会被清空；如果这些内容已经压缩进上下文摘要，摘要也会一起删除。',
+      okText: '继续发送',
+      cancelText: '取消',
+      onOk: async () => {
+        await send(messageText, {
+          ...opts,
+          replaceTaskId: currentRound.taskId,
+        });
+        setEditingRoundId(null);
+      },
+    });
+  };
+
   // 推荐卡片  默认走单 agent (judgeTarget 兜底  没设置就第一个 agent)
   const handleRecommendAction = (card: RecommendCardDefinition) => {
     if (card.action === 'send' && card.prompt) {
@@ -161,7 +204,16 @@ export default function App() {
     }
   };
 
-  const inputNode = <ChatInput onSend={send} onStop={stop} />;
+  const inputNode = (
+    <ChatInput
+      onSend={editingRound ? handleEditSend : send}
+      onStop={stop}
+      initialValue={editingRound?.userMessage}
+      editMode={editingRound !== null}
+      sendLabel="重新发送"
+      onCancelEdit={handleCancelEdit}
+    />
+  );
   // 首页输入框  发送时强制新建会话(不带 session_id)  避免接着旧会话发言
   // forceNewSession 在 useChatTask.send 里被识别  reducer 切 sessionId 时会清空旧 rounds
   const homeInputNode = (
@@ -170,7 +222,7 @@ export default function App() {
       onStop={stop}
     />
   );
-  const timelineNode = <Timeline />;
+  const timelineNode = <Timeline onEditRound={handleStartEdit} />;
 
   const renderWorkbenchContent = () => {
     if (state.workbench.activeView === 'home') {

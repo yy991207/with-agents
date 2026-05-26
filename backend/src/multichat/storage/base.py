@@ -73,6 +73,8 @@ class MongoStorage(Protocol):
 
     async def update_round_field(self, task_id: str, path: str, value: Any) -> None: ...
 
+    async def delete_rounds_after(self, session_id: str, round_index: int) -> int: ...
+
     async def append_reply_chunk_for_agent(
         self, task_id: str, agent_name: str, chunk: str
     ) -> None:
@@ -109,6 +111,8 @@ class MongoStorage(Protocol):
             - 已选过则覆盖更新(允许改主意)  不抛错
         """
         ...
+
+    async def clear_session_summary(self, session_id: str) -> None: ...
 
     async def cancel_orphan_rounds(self, reason: str = "server_restart") -> int:
         """启动时清理孤儿 round  把所有进行中状态的 round 与其 replies 置为 cancelled"""

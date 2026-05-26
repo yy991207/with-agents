@@ -76,28 +76,36 @@ body {
   background-color: rgba(0, 0, 0, 0.32);
 }
 
-/* 多 agent 子窗滚动条  默认隐藏 鼠标悬停时再显示
- * 给子窗外框加 className="reply-grid-card" 即可启用
- * Webkit (Chrome / Edge / Safari): 默认 thumb 透明  hover 时变深灰
- * Firefox: scrollbar-color 直接控制 hover 切换
+/* 会话主区 / 多 agent 子窗滚动条:
+ * 默认隐藏  只有鼠标滚动或触摸滚动时短暂显示
+ * 给容器挂 transient-scrollbar 即可启用  JS 会在滚动中补 is-scrolling
  */
-.reply-grid-card {
+.transient-scrollbar {
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
   transition: scrollbar-color 160ms ease;
 }
-.reply-grid-card::-webkit-scrollbar-thumb {
+.transient-scrollbar::-webkit-scrollbar-thumb {
   background-color: transparent;
   transition: background-color 160ms ease;
 }
-.reply-grid-card:hover {
+.transient-scrollbar.is-scrolling {
   scrollbar-color: rgba(0, 0, 0, 0.28) transparent;
 }
-.reply-grid-card:hover::-webkit-scrollbar-thumb {
+.transient-scrollbar.is-scrolling::-webkit-scrollbar-thumb {
   background-color: rgba(0, 0, 0, 0.28);
 }
-.reply-grid-card:hover::-webkit-scrollbar-thumb:hover {
+.transient-scrollbar.is-scrolling::-webkit-scrollbar-thumb:hover {
   background-color: rgba(0, 0, 0, 0.4);
+}
+
+.lobe-chat-item-right .user-bubble-edit-button {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.lobe-chat-item-right:hover .user-bubble-edit-button {
+  opacity: 1;
 }
 
 /* HTML 回复内容的基础样式:对齐 LobeChat Markdown(article[data-code-type=markdown])

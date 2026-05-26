@@ -90,6 +90,7 @@ class TaskManager:
         agents: list[str],
         input_mode: Literal["single", "multi"] = "single",
         thinking_enabled: bool = False,
+        replace_task_id: str | None = None,
     ) -> str:
         """收到用户消息 创建 round 并启动后台驱动 task
 
@@ -109,17 +110,46 @@ class TaskManager:
             if a not in registered:
                 raise ValueError(f"未知 agent: {a}")
 
-        if not session_id:
-            session_id = await self._storage.create_session(
-                title=user_message[:40] or "新会话"
-            )
-
         # @ 直呼优先级最高  把 agents 覆盖为 [mention]  转单 agent 模式
         # 即便用户在输入框选了多 agent  也以 @ 直呼为准
         mention = parse_single_mention(user_message, list(registered))
         if mention:
             agents = [mention]
             input_mode = "single"
+
+        if replace_task_id:
+            round_to_replace = await self._storage.get_round(replace_task_id)
+            if round_to_replace is None:
+                raise ValueError(f"replace_task_id 不存在 {replace_task_id}")
+            if session_id and round_to_replace.session_id != session_id:
+                raise ValueError("replace_task_id 不属于当前 session")
+            session_id = round_to_replace.session_id
+            await self._truncate_history_for_edit(
+                session_id=session_id,
+                replace_round=round_to_replace,
+                new_user_message=user_message,
+                new_agents=agents,
+                new_input_mode=input_mode,
+                new_thinking_enabled=thinking_enabled,
+            )
+            hub = TaskEventHub(replace_task_id)
+            self._hubs[replace_task_id] = hub
+            t = asyncio.create_task(
+                self._run_task_loop(
+                    replace_task_id,
+                    session_id,
+                    user_message,
+                    agents,
+                    input_mode,
+                )
+            )
+            self._tasks[replace_task_id] = t
+            return replace_task_id
+
+        if not session_id:
+            session_id = await self._storage.create_session(
+                title=user_message[:40] or "新会话"
+            )
 
         task_id = await self._storage.create_round(
             session_id,
@@ -139,6 +169,46 @@ class TaskManager:
         )
         self._tasks[task_id] = t
         return task_id
+
+    async def _truncate_history_for_edit(
+        self,
+        *,
+        session_id: str,
+        replace_round: Any,
+        new_user_message: str,
+        new_agents: list[str],
+        new_input_mode: Literal["single", "multi"],
+        new_thinking_enabled: bool,
+    ) -> None:
+        """编辑历史消息时裁掉目标 round 后面的全部内容
+
+        说明:
+            - 只允许编辑最新一条已完成消息  由路由层先校验
+            - 若摘要覆盖到了被编辑 round 或其后续内容  摘要和 context_usage 一并清空
+            - 这样新的历史会从当前编辑点重新计算
+        """
+        round_index = int(getattr(replace_round, "round_index", 0))
+        task_id = str(getattr(replace_round, "task_id"))
+        session = await self._storage.get_session(session_id)
+        summary_until = int(session.summary_until_round or 0) if session is not None else 0
+        await self._storage.delete_rounds_after(session_id, round_index)
+        if summary_until >= round_index:
+            await self._storage.clear_session_summary(session_id)
+        else:
+            await self._storage.update_session_context_usage(session_id, None)
+        # 编辑目标轮次本身也要被重置成新的用户消息和新的回复占位
+        await self._storage.update_round_field(task_id, "question", new_user_message)
+        await self._storage.update_round_field(task_id, "agents", list(new_agents))
+        await self._storage.update_round_field(task_id, "input_mode", new_input_mode)
+        await self._storage.update_round_field(task_id, "thinking_enabled", bool(new_thinking_enabled))
+        await self._storage.update_round_field(task_id, "selected_reply_agent", None)
+        await self._storage.update_round_field(
+            task_id,
+            "replies",
+            {name: {"state": "pending", "content": "", "segments": []} for name in new_agents},
+        )
+        await self._storage.update_round_state(task_id, TaskState.PENDING)
+        await self._storage.update_session_meta(session_id, title=None)
 
     async def cancel_task(self, task_id: str, scope: str) -> None:
         """取消任务

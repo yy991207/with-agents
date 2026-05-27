@@ -206,8 +206,25 @@ export default function SkillsPanel() {
       title: '操作', key: 'actions', width: 120,
       render: (_: unknown, record: SkillEditDraft) => (
         <Space size="small">
-          <Button type="link" size="small" icon={<EditOutlined />} onClick={() => handleEdit(record)}>编辑</Button>
-          <Button type="link" size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(record)}>删除</Button>
+          <Tooltip title="编辑">
+            <Button
+              aria-label={`编辑 skill ${record.name}`}
+              type="link"
+              size="small"
+              icon={<EditOutlined />}
+              onClick={() => handleEdit(record)}
+            />
+          </Tooltip>
+          <Tooltip title="删除">
+            <Button
+              aria-label={`删除 skill ${record.name}`}
+              type="link"
+              size="small"
+              danger
+              icon={<DeleteOutlined />}
+              onClick={() => handleDelete(record)}
+            />
+          </Tooltip>
         </Space>
       ),
     },

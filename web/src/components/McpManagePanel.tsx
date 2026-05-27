@@ -257,29 +257,13 @@ export default function McpManagePanel() {
       return <Text type="secondary">已禁用</Text>;
     }
     if (record.last_load_status === 'loaded') {
-      return (
-        <Space direction="vertical" size={2}>
-          <Tag color="success" style={{ marginInlineEnd: 0 }}>已加载</Tag>
-          {record.last_loaded_at ? (
-            <Text type="secondary" style={{ fontSize: 12 }}>{record.last_loaded_at}</Text>
-          ) : null}
-        </Space>
-      );
+      return <Tag color="success" style={{ marginInlineEnd: 0 }}>已加载</Tag>;
     }
     if (record.last_load_status === 'failed') {
       return (
-        <Space direction="vertical" size={2}>
-          <Tooltip title={record.last_load_error || '加载失败'}>
-            <Tag color="error" style={{ marginInlineEnd: 0, cursor: 'help' }}>加载失败</Tag>
-          </Tooltip>
-          {record.last_load_error ? (
-            <Tooltip title={record.last_load_error}>
-              <Text type="danger" style={{ fontSize: 12, maxWidth: 240 }} ellipsis>
-                {record.last_load_error}
-              </Text>
-            </Tooltip>
-          ) : null}
-        </Space>
+        <Tooltip title={record.last_load_error || '加载失败'}>
+          <Tag color="error" style={{ marginInlineEnd: 0, cursor: 'help' }}>加载失败</Tag>
+        </Tooltip>
       );
     }
     return <Text type="secondary">未重载</Text>;
@@ -297,15 +281,32 @@ export default function McpManagePanel() {
       ),
     },
     {
-      title: '加载状态', key: 'load_status', width: 260,
+      title: '加载状态', key: 'load_status', width: 120,
       render: (_: unknown, record: McpServerDraft) => renderLoadStatus(record),
     },
     {
       title: '操作', key: 'actions', width: 120,
       render: (_: unknown, record: McpServerDraft) => (
         <Space size="small">
-          <Button type="link" size="small" icon={<EditOutlined />} onClick={() => handleEdit(record)}>编辑</Button>
-          <Button type="link" size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(record)}>删除</Button>
+          <Tooltip title="编辑">
+            <Button
+              aria-label={`编辑 MCP 服务器 ${record.name}`}
+              type="link"
+              size="small"
+              icon={<EditOutlined />}
+              onClick={() => handleEdit(record)}
+            />
+          </Tooltip>
+          <Tooltip title="删除">
+            <Button
+              aria-label={`删除 MCP 服务器 ${record.name}`}
+              type="link"
+              size="small"
+              danger
+              icon={<DeleteOutlined />}
+              onClick={() => handleDelete(record)}
+            />
+          </Tooltip>
         </Space>
       ),
     },

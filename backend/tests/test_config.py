@@ -49,6 +49,19 @@ _FULL_YAML: dict = {
         "port": 8888,
         "cors_origins": ["http://localhost:5173"],
     },
+    "auth": {
+        "session_cookie_name": "multi_chat_session",
+        "session_ttl_hours": 168,
+        "password_pepper": "test-pepper",
+        "session_cookie_secure": False,
+    },
+    "minio": {
+        "endpoint": "localhost:9000",
+        "access_key": "minioadmin",
+        "secret_key": "minioadmin",
+        "bucket": "multi-chat",
+        "secure": False,
+    },
 }
 
 
@@ -74,6 +87,10 @@ def test_load_settings_full(tmp_path: Path) -> None:
     assert settings.runtime.history_max_rounds == 5
     assert settings.server.port == 8888
     assert settings.server.cors_origins == ["http://localhost:5173"]
+    assert settings.auth.session_cookie_name == "multi_chat_session"
+    assert settings.auth.session_ttl_hours == 168
+    assert settings.minio is not None
+    assert settings.minio.bucket == "multi-chat"
 
 
 def test_load_settings_missing_required_field(tmp_path: Path) -> None:
@@ -127,3 +144,15 @@ def test_load_settings_root_not_mapping(tmp_path: Path) -> None:
     cfg.write_text("- a\n- b\n", encoding="utf-8")
     with pytest.raises(ValueError):
         load_settings(cfg)
+
+
+def test_load_settings_with_auth_and_minio_sections(tmp_path: Path) -> None:
+    """auth 和 minio 段应能被精确加载"""
+    cfg = _write_yaml(tmp_path, _FULL_YAML)
+    settings = load_settings(cfg)
+
+    assert settings.auth.session_cookie_name == "multi_chat_session"
+    assert settings.auth.password_pepper == "test-pepper"
+    assert settings.minio is not None
+    assert settings.minio.endpoint == "localhost:9000"
+    assert settings.minio.bucket == "multi-chat"

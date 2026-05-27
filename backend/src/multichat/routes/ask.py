@@ -24,8 +24,11 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
+
+from .auth_context import get_current_identity
+from ..core.models import RequestIdentity
 
 router = APIRouter(prefix="", tags=["chat"])
 
@@ -113,7 +116,11 @@ async def _resolve_edit_session_id(
 
 
 @router.post("/ask", response_model=AskResponse)
-async def ask(body: AskRequest, request: Request) -> AskResponse:
+async def ask(
+    body: AskRequest,
+    request: Request,
+    identity: RequestIdentity = Depends(get_current_identity),
+) -> AskResponse:
     """创建任务并触发 reply 阶段 立刻返回 task_id"""
     # agents 字段校验
     if not body.agents:
@@ -150,6 +157,8 @@ async def ask(body: AskRequest, request: Request) -> AskResponse:
         task_id = await tm.create_task(
             session_id,
             body.user_message,
+            tenant_id=identity.tenant_id,
+            owner_user_id=identity.user_id,
             agents=list(body.agents),
             input_mode=body.input_mode,
             thinking_enabled=body.thinking,

@@ -87,6 +87,8 @@ class TaskManager:
         self,
         session_id: str | None,
         user_message: str,
+        tenant_id: str,
+        owner_user_id: str,
         agents: list[str],
         input_mode: Literal["single", "multi"] = "single",
         thinking_enabled: bool = False,
@@ -148,7 +150,9 @@ class TaskManager:
 
         if not session_id:
             session_id = await self._storage.create_session(
-                title=user_message[:40] or "新会话"
+                title=user_message[:40] or "新会话",
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
             )
 
         task_id = await self._storage.create_round(
@@ -691,8 +695,6 @@ class TaskManager:
                 history=history,
                 registry=self._registry,
                 on_event=on_event,
-                # reply 通常更长 这里给 6 倍 timeout 还是有上限不会无限等
-                timeout_s=self._settings.runtime.http_timeout_seconds * 6,
                 thinking_enabled=thinking_enabled,
             )
             # 兜底刷新剩余 chunk 防止丢

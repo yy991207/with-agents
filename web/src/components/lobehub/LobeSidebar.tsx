@@ -1,8 +1,9 @@
-import { message, Popconfirm } from 'antd';
+import { Avatar, Dropdown, Modal, Typography, message, Popconfirm } from 'antd';
 import { ActionIcon } from '@lobehub/ui';
 import {
   Bell,
   Bot,
+  CircleUserRound,
   ChevronRight,
   Ellipsis,
   GitBranch,
@@ -18,13 +19,18 @@ import { deleteSession } from '../../api/http';
 import { useSession } from '../../hooks/useSession';
 import { useSettings } from '../../hooks/useSettings';
 import { useChat } from '../../state/ChatContext';
-import type { SessionMeta, WorkbenchView } from '../../state/types';
+import type { CurrentUserView, SessionMeta, WorkbenchView } from '../../state/types';
 import { PRIMARY_NAV_ITEMS } from './lobeData';
 import LobeNavItem from './LobeNavItem';
 import LobeSectionList from './LobeSectionList';
 
+const { Text } = Typography;
+
 export interface LobeSidebarProps {
+  currentUser: CurrentUserView | null;
   onNavigate: (view: WorkbenchView) => void;
+  onLogout: () => Promise<void>;
+  onSwitchAccount: () => Promise<void>;
   onOpenSettings: () => void | Promise<void>;
 }
 
@@ -33,13 +39,54 @@ function describeError(error: unknown): string {
   return String(error);
 }
 
-export default function LobeSidebar({ onNavigate, onOpenSettings }: LobeSidebarProps) {
+export default function LobeSidebar({
+  currentUser,
+  onNavigate,
+  onLogout,
+  onSwitchAccount,
+  onOpenSettings,
+}: LobeSidebarProps) {
   const { state, dispatch } = useChat();
   const { sessions, sessionId, switchSession, refreshSessions } = useSession();
   const { switchTab } = useSettings();
   const [expandedSessionIds, setExpandedSessionIds] = useState<Record<string, boolean>>({});
 
   const drafts = Object.values(state.settings.drafts);
+
+  const showProfile = () => {
+    Modal.info({
+      title: '个人信息',
+      okText: '关闭',
+      content: (
+        <div style={{ display: 'grid', gap: 8, paddingTop: 8 }}>
+          <Text>账号：{currentUser?.username || '-'}</Text>
+          <Text>租户：{currentUser?.tenant_name || '-'}</Text>
+          <Text type="secondary">ID：{currentUser?.user_id || '-'}</Text>
+        </div>
+      ),
+    });
+  };
+
+  const accountMenu = {
+    items: [
+      { key: 'profile', label: '个人信息' },
+      { key: 'switch', label: '切换账号' },
+      { key: 'logout', label: '退出登录', danger: true },
+    ],
+    onClick: ({ key }: { key: string }) => {
+      if (key === 'profile') {
+        showProfile();
+        return;
+      }
+      if (key === 'switch') {
+        void onSwitchAccount();
+        return;
+      }
+      if (key === 'logout') {
+        void onLogout();
+      }
+    },
+  };
 
   const handleDeleteSession = async (targetSessionId: string): Promise<void> => {
     try {
@@ -284,8 +331,29 @@ export default function LobeSidebar({ onNavigate, onOpenSettings }: LobeSidebarP
           )}
         </Flexbox>
 
-        {/* 设置入口置底  对齐展开态 Bell 位置 */}
-        <ActionIcon icon={Bell} title="打开设置" onClick={() => void onOpenSettings()} />
+        <Dropdown menu={accountMenu} trigger={['click']} placement="topLeft">
+          <button
+            type="button"
+            aria-label="个人菜单"
+            style={{
+              background: 'transparent',
+              border: 'none',
+              cursor: 'pointer',
+              marginTop: 'auto',
+              padding: 0,
+            }}
+          >
+            <Avatar
+              shape="square"
+              size={28}
+              style={{
+                background: 'rgba(15, 23, 42, 0.08)',
+                color: 'rgba(15, 23, 42, 0.72)',
+              }}
+              icon={<CircleUserRound size={16} />}
+            />
+          </button>
+        </Dropdown>
       </Flexbox>
     );
   }
@@ -392,6 +460,50 @@ export default function LobeSidebar({ onNavigate, onOpenSettings }: LobeSidebarP
             </Flexbox>
           </LobeSectionList>
         </Flexbox>
+
+        <Dropdown menu={accountMenu} trigger={['click']} placement="topLeft">
+          <button
+            type="button"
+            aria-label="个人菜单"
+            style={{
+              alignItems: 'center',
+              background: 'rgba(255,255,255,0.76)',
+              border: '1px solid rgba(15, 23, 42, 0.08)',
+              borderRadius: 12,
+              cursor: 'pointer',
+              display: 'flex',
+              gap: 10,
+              padding: '10px 12px',
+              width: '100%',
+            }}
+          >
+            <Avatar
+              shape="square"
+              size={32}
+              style={{
+                background: 'rgba(15, 23, 42, 0.08)',
+                color: 'rgba(15, 23, 42, 0.72)',
+                flex: '0 0 auto',
+              }}
+              icon={<CircleUserRound size={18} />}
+            />
+            <div style={{ display: 'grid', gap: 2, minWidth: 0, textAlign: 'left' }}>
+              <Text
+                style={{
+                  color: 'rgba(15, 23, 42, 0.92)',
+                  fontSize: 13,
+                  fontWeight: 600,
+                }}
+                ellipsis
+              >
+                {currentUser?.username || '未登录'}
+              </Text>
+              <Text type="secondary" style={{ fontSize: 12 }} ellipsis>
+                {currentUser?.tenant_name || '个人信息'}
+              </Text>
+            </div>
+          </button>
+        </Dropdown>
       </Flexbox>
     </Flexbox>
   );

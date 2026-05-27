@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+
+from .auth_context import get_current_identity
+from ..core.models import RequestIdentity
 
 router = APIRouter(prefix="", tags=["history"])
 
 
 @router.get("/history/{session_id}")
-async def get_history(session_id: str, request: Request) -> dict:
+async def get_history(
+    session_id: str,
+    request: Request,
+    identity: RequestIdentity = Depends(get_current_identity),
+) -> dict:
     """获取指定会话的所有轮次详情 给前端进入历史会话时回灌
 
     返回结构
@@ -18,7 +25,11 @@ async def get_history(session_id: str, request: Request) -> dict:
         }
     """
     storage = request.app.state.storage
-    session = await storage.get_session(session_id)
+    session = await storage.get_session(
+        session_id,
+        tenant_id=identity.tenant_id,
+        owner_user_id=identity.user_id,
+    )
     if session is None:
         raise HTTPException(404, f"session not found: {session_id}")
     rounds = await storage.list_rounds(session_id)

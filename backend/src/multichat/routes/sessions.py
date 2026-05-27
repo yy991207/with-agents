@@ -27,9 +27,11 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 
 import structlog
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from .auth_context import get_current_identity
+from ..core.models import RequestIdentity
 from ..core.errors import humanize_llm_error
 from ..llm.summarization import run_session_summary
 from ..llm.token_counter import count_history_tokens, usage_payload
@@ -95,16 +97,25 @@ class BranchSessionResponse(BaseModel):
 @router.get("/sessions")
 async def list_sessions(
     request: Request,
+    identity: RequestIdentity = Depends(get_current_identity),
     limit: int = Query(default=50, ge=1, le=500),
 ) -> list[dict]:
     """列出最近会话 给前端左侧栏初始化用 按 updated_at 降序"""
     storage = request.app.state.storage
-    metas = await storage.list_sessions(limit=limit)
+    metas = await storage.list_sessions(
+        tenant_id=identity.tenant_id,
+        owner_user_id=identity.user_id,
+        limit=limit,
+    )
     return [m.model_dump(mode="json") for m in metas]
 
 
 @router.delete("/sessions/{session_id}", status_code=204)
-async def delete_session(session_id: str, request: Request) -> None:
+async def delete_session(
+    session_id: str,
+    request: Request,
+    identity: RequestIdentity = Depends(get_current_identity),
+) -> None:
     """删除指定 session 及其下所有 rounds
 
     错误码:
@@ -113,7 +124,11 @@ async def delete_session(session_id: str, request: Request) -> None:
     """
     storage = request.app.state.storage
     try:
-        await storage.delete_session(session_id)
+        await storage.delete_session(
+            session_id,
+            tenant_id=identity.tenant_id,
+            owner_user_id=identity.user_id,
+        )
     except KeyError:
         raise HTTPException(status_code=404, detail=f"session not found: {session_id}")
     except ValueError as e:
@@ -125,6 +140,7 @@ async def delete_session(session_id: str, request: Request) -> None:
 async def batch_delete_sessions(
     body: BatchDeleteRequest,
     request: Request,
+    identity: RequestIdentity = Depends(get_current_identity),
 ) -> BatchDeleteResult:
     """批量删除会话 逐条执行，单条失败不阻塞其他条"""
     storage = request.app.state.storage
@@ -133,7 +149,11 @@ async def batch_delete_sessions(
     errors: list[str] = []
     for sid in body.session_ids:
         try:
-            await storage.delete_session(sid)
+            await storage.delete_session(
+                sid,
+                tenant_id=identity.tenant_id,
+                owner_user_id=identity.user_id,
+            )
             deleted += 1
         except KeyError:
             # session 不存在，跳过
@@ -153,6 +173,7 @@ async def branch_session(
     session_id: str,
     body: BranchSessionRequest,
     request: Request,
+    identity: RequestIdentity = Depends(get_current_identity),
 ) -> BranchSessionResponse:
     """基于当前会话某个 user / assistant 节点复制一份前缀历史生成子会话
 
@@ -165,6 +186,8 @@ async def branch_session(
     try:
         new_session_id, draft_message = await storage.clone_session_branch(
             source_session_id=session_id,
+            tenant_id=identity.tenant_id,
+            owner_user_id=identity.user_id,
             source_task_id=body.source_task_id,
             source_role=body.source_role,
             source_agent=body.source_agent,
@@ -183,6 +206,7 @@ async def branch_session(
 async def compact_session(
     session_id: str,
     request: Request,
+    identity: RequestIdentity = Depends(get_current_identity),
 ) -> CompactResponse:
     """同步触发会话压缩  路由层串行调用 LLM 拿到摘要后写回 mongo
 
@@ -211,7 +235,11 @@ async def compact_session(
     storage = request.app.state.storage
 
     # 1 拿 session
-    session = await storage.get_session(session_id)
+    session = await storage.get_session(
+        session_id,
+        tenant_id=identity.tenant_id,
+        owner_user_id=identity.user_id,
+    )
     if session is None:
         raise HTTPException(
             status_code=404, detail=f"session not found: {session_id}"

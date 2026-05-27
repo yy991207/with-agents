@@ -10,7 +10,18 @@ from __future__ import annotations
 
 from typing import Any, Literal, Protocol, runtime_checkable
 
-from ..core.models import AgentRecord, McpServerConfig, ModelCatalogEntry, Round, Session, SessionMeta, TaskState
+from ..core.models import (
+    AgentRecord,
+    AuthSessionRecord,
+    McpServerConfig,
+    ModelCatalogEntry,
+    Round,
+    Session,
+    SessionMeta,
+    TaskState,
+    TenantRecord,
+    UserRecord,
+)
 
 
 @runtime_checkable
@@ -23,11 +34,54 @@ class MongoStorage(Protocol):
 
     async def ensure_indexes(self) -> None: ...
 
+    # --------------------------------------------------------------------- Auth
+    async def create_tenant(
+        self,
+        tenant_name: str,
+    ) -> TenantRecord: ...
+
+    async def get_tenant_by_name(self, tenant_name: str) -> TenantRecord | None: ...
+
+    async def get_tenant_by_id(self, tenant_id: str) -> TenantRecord | None: ...
+
+    async def create_user(
+        self,
+        tenant_id: str,
+        username: str,
+        password_hash: str,
+        *,
+        role: Literal["owner", "member"] = "owner",
+    ) -> UserRecord: ...
+
+    async def get_user_by_username(
+        self,
+        username: str,
+        tenant_id: str | None = None,
+    ) -> UserRecord | None: ...
+
+    async def get_user_by_id(self, user_id: str) -> UserRecord | None: ...
+
+    async def get_user_count_by_tenant(self, tenant_id: str) -> int: ...
+
+    async def create_auth_session(
+        self,
+        tenant_id: str,
+        user_id: str,
+        *,
+        expires_in_hours: int,
+    ) -> AuthSessionRecord: ...
+
+    async def get_auth_session(self, session_id: str) -> AuthSessionRecord | None: ...
+
+    async def delete_auth_session(self, session_id: str) -> None: ...
+
     # ------------------------------------------------------------------ Sessions
     async def create_session(
         self,
         title: str | None = None,
         *,
+        tenant_id: str,
+        owner_user_id: str,
         parent_session_id: str | None = None,
         branch_from_task_id: str | None = None,
         branch_from_role: Literal["user", "assistant"] | None = None,
@@ -35,15 +89,33 @@ class MongoStorage(Protocol):
         draft_message: str | None = None,
     ) -> str: ...
 
-    async def list_sessions(self, limit: int = 50) -> list[SessionMeta]: ...
+    async def list_sessions(
+        self,
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+        limit: int = 50,
+    ) -> list[SessionMeta]: ...
 
-    async def get_session(self, session_id: str) -> Session | None: ...
+    async def get_session(
+        self,
+        session_id: str,
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+    ) -> Session | None: ...
 
     async def update_session_meta(
         self, session_id: str, *, title: str | None = None
     ) -> None: ...
 
-    async def delete_session(self, session_id: str) -> int:
+    async def delete_session(
+        self,
+        session_id: str,
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+    ) -> int:
         """删除 session 与其下所有 rounds  返回删除的 round 数
 
         约束:
@@ -127,6 +199,8 @@ class MongoStorage(Protocol):
         self,
         *,
         source_session_id: str,
+        tenant_id: str,
+        owner_user_id: str,
         source_task_id: str,
         source_role: Literal["user", "assistant"],
         source_agent: str | None = None,

@@ -74,8 +74,27 @@ class ServerConfig(BaseModel):
     cors_origins: list[str] = Field(default_factory=list)
 
 
+class AuthConfig(BaseModel):
+    """登录与会话配置"""
+
+    session_cookie_name: str = "multi_chat_session"
+    session_ttl_hours: int = 24 * 7
+    password_pepper: str = "change-me"
+    session_cookie_secure: bool = False
+
+
+class MinioConfig(BaseModel):
+    """对象存储配置 当前用于头像与 skill 文件"""
+
+    endpoint: str = "localhost:9000"
+    access_key: str = "minioadmin"
+    secret_key: str = "minioadmin"
+    bucket: str = "multi-chat"
+    secure: bool = False
+
+
 class Settings(BaseSettings):
-    """应用总配置 顶层字段直接对齐 yaml 7 个 key"""
+    """应用总配置 顶层字段直接对齐 yaml 9 个 key"""
 
     model_config = SettingsConfigDict(
         env_prefix="MULTICHAT_",
@@ -92,6 +111,8 @@ class Settings(BaseSettings):
     mongo: MongoConfig = Field(default_factory=MongoConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
+    auth: AuthConfig = Field(default_factory=AuthConfig)
+    minio: MinioConfig = Field(default_factory=MinioConfig)
 
     @model_validator(mode="after")
     def _validate_judge_in_agents(self) -> "Settings":

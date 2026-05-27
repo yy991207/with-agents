@@ -7,6 +7,7 @@ export type AgentLabelMap = Record<string, string>;
 // 字段为 null 时调用方走兜底 显示首字母方块
 export interface AgentMeta {
   displayName: string;
+  avatar: AgentEditDraft['avatar'];
   avatarDataUrl: string | null;
 }
 export type AgentMetaMap = Record<string, AgentMeta>;
@@ -30,6 +31,7 @@ export function buildAgentMetaMap(
   for (const [name, draft] of Object.entries(drafts)) {
     out[name] = {
       displayName: draft.displayName || name,
+      avatar: draft.avatar ?? null,
       avatarDataUrl: draft.avatarDataUrl ?? null,
     };
   }
@@ -47,5 +49,7 @@ export function agentAvatarOf(
   metas: AgentMetaMap | undefined,
   name: string,
 ): string | null {
+  // 新模型当前只把头像对象元数据拿到前端  真实可展示 URL 还没单独下发时
+  // 先兼容走旧 avatarDataUrl；后续补头像读取接口后这里统一改成 avatar_url
   return metas?.[name]?.avatarDataUrl ?? null;
 }

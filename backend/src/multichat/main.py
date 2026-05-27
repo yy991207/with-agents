@@ -24,6 +24,7 @@ from .config import Settings, load_settings
 from .core.task_manager import TaskManager
 from .llm.deep_agents import build_registry
 from .routes.agents import router as agents_router
+from .routes.auth import router as auth_router
 from .routes.ask import router as ask_router
 from .routes.cancel import router as cancel_router
 from .routes.history import router as history_router
@@ -33,6 +34,7 @@ from .routes.select_reply import router as select_reply_router
 from .routes.sessions import router as sessions_router
 from .routes.static_spa import mount_spa
 from .routes.stream import router as stream_router
+from .storage.minio_store import MinioObjectStore
 from .storage.mongo import MotorMongoStorage
 
 _logger = structlog.get_logger(__name__)
@@ -44,6 +46,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     config_path: str | None = getattr(app.state, "_config_path", None)
     settings: Settings = load_settings(config_path)
     storage = await MotorMongoStorage.connect(settings.mongo)
+    object_store = MinioObjectStore(
+        endpoint=settings.minio.endpoint,
+        access_key=settings.minio.access_key,
+        secret_key=settings.minio.secret_key,
+        bucket=settings.minio.bucket,
+        secure=settings.minio.secure,
+    )
     seeded = await storage.seed_from_yaml(settings)
     _logger.info("seed: %d agents written" % seeded)
 
@@ -68,6 +77,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.settings = settings
     app.state.storage = storage
+    app.state.object_store = object_store
     app.state.deep_agents = registry
     app.state.task_manager = task_manager
     try:
@@ -92,13 +102,12 @@ def create_app(config_path: str | None = None) -> FastAPI:
     app.state._config_path = config_path
 
     # 跨域中间件 必须在 app 创建后立即添加 不能放进 lifespan
-    # 这里为了兼容前端 dev 模式(5173/5175 等任意端口) 写死宽容策略
-    # allow_credentials 设为 False 是因为 allow_origins=["*"] 与 credentials=True 互斥
-    # 真生产环境再收紧成可配置白名单
+    # 这里为了兼容前端 dev 模式(5173/5175 等任意端口) 放宽到 localhost 段
+    # 登录态走 cookie 时必须 allow_credentials=True 且不能再用 "*"
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=False,
+        allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+        allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -109,6 +118,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
         return {"status": "ok"}
 
     # 路由挂载
+    app.include_router(auth_router)
     # M1: agents/judge CRUD
     app.include_router(agents_router)
     # M3: 对话核心 + 历史

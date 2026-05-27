@@ -41,6 +41,7 @@ async function request<T>(
 ): Promise<T> {
   const resp = await fetch(`${BASE}${path}`, {
     method: init?.method ?? 'GET',
+    credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
     signal: init?.signal,
@@ -59,6 +60,7 @@ async function requestNoContent(
 ): Promise<void> {
   const resp = await fetch(`${BASE}${path}`, {
     method: init?.method ?? 'GET',
+    credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
     signal: init?.signal,
@@ -157,6 +159,50 @@ export function batchDeleteSessions(
     method: 'POST',
     body: { session_ids: sessionIds },
   });
+}
+
+// ====== 认证相关 API ======
+
+export interface RegisterPayload {
+  tenant_name: string;
+  username: string;
+  password: string;
+}
+
+export interface LoginPayload {
+  username: string;
+  password: string;
+}
+
+export interface CurrentUserResponse {
+  tenant_id: string;
+  tenant_name: string;
+  user_id: string;
+  username: string;
+}
+
+export function register(body: RegisterPayload): Promise<CurrentUserResponse> {
+  return request<CurrentUserResponse>('/api/auth/register', {
+    method: 'POST',
+    body,
+  });
+}
+
+export function login(body: LoginPayload): Promise<CurrentUserResponse> {
+  return request<CurrentUserResponse>('/api/auth/login', {
+    method: 'POST',
+    body,
+  });
+}
+
+export function logout(): Promise<void> {
+  return requestNoContent('/api/auth/logout', {
+    method: 'POST',
+  });
+}
+
+export function getCurrentUser(): Promise<CurrentUserResponse> {
+  return request<CurrentUserResponse>('/api/auth/me');
 }
 
 export interface BranchSessionPayload {

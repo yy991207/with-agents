@@ -126,6 +126,12 @@ export interface AgentView {
   prompt: string;
   version: number;
   updated_at: string;
+  avatar: {
+    object_key: string;
+    mime_type: string;
+    size: number;
+    sha256: string;
+  } | null;
   // 头像 data URL 形如 data:image/png;base64,xxx 没设置时 null
   // 直出给 <img src=> 用 后端 base64 内联存进 mongo agent doc
   avatar_data_url: string | null;
@@ -182,6 +188,7 @@ export interface AgentEditDraft {
   prompt: string;
   version: number;             // 服务端版本 用于乐观锁
   dirty: boolean;              // 是否有未保存改动
+  avatar: AgentView['avatar'];
   // 头像 data URL  null = 未设置  上传 / 删除走独立接口  不参与 dirty / save
   avatarDataUrl: string | null;
 }
@@ -238,6 +245,13 @@ export interface ContextUsage {
   model_id: string;
 }
 
+export interface CurrentUserView {
+  tenant_id: string;
+  tenant_name: string;
+  user_id: string;
+  username: string;
+}
+
 // 全屏子窗状态  null 表示无放大  非 null 表示某 round 的某 agent 处于全屏
 export interface FullscreenReply {
   taskId: string;
@@ -246,6 +260,7 @@ export interface FullscreenReply {
 
 // 全局 Chat 状态
 export interface ChatState {
+  currentUser: CurrentUserView | null;
   sessionId: string | null;
   sessions: SessionMeta[];
   rounds: RoundView[];
@@ -266,6 +281,7 @@ export interface ChatState {
 
 // reducer action 列表
 export type ChatAction =
+  | { type: 'auth.current_user.set'; user: CurrentUserView | null }
   | { type: 'session.set'; sessionId: string | null }
   | { type: 'session.switch'; sessionId: string | null }
   | { type: 'session.deleted'; sessionId: string }

@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 import structlog
@@ -24,12 +24,15 @@ from pymongo import ASCENDING, DESCENDING
 
 from ..core.models import (
     AgentRecord,
+    AuthSessionRecord,
     McpServerConfig,
     ModelCatalogEntry,
     Round,
     Session,
     SessionMeta,
     TaskState,
+    TenantRecord,
+    UserRecord,
 )
 
 _logger = structlog.get_logger(__name__)
@@ -134,6 +137,8 @@ def _agent_doc_to_record(doc: dict[str, Any]) -> AgentRecord:
     return AgentRecord.model_validate(
         {
             "name": doc["name"],
+            "tenant_id": doc.get("tenant_id", "legacy"),
+            "owner_user_id": doc.get("owner_user_id", "system"),
             "display_name": doc.get("display_name") or doc["name"],
             "provider_type": doc.get("provider_type", "openai_compatible"),
             "base_url": doc.get("base_url", ""),
@@ -143,6 +148,7 @@ def _agent_doc_to_record(doc: dict[str, Any]) -> AgentRecord:
             "prompt": doc.get("prompt", ""),
             "version": int(doc.get("version", 1)),
             "updated_at": doc.get("updated_at", _utcnow()),
+            "avatar": doc.get("avatar"),
             # 老数据可能没这个字段 兜底 None
             "avatar_data_url": doc.get("avatar_data_url"),
         }
@@ -228,6 +234,19 @@ class MotorMongoStorage:
             [("name", ASCENDING)], unique=True, name="uniq_agent_name"
         )
 
+        # tenants / users / auth_sessions 为多租户登录基础设施
+        await self._db["tenants"].create_index(
+            [("tenant_name", ASCENDING)], unique=True, name="uniq_tenant_name"
+        )
+        await self._db["users"].create_index(
+            [("username", ASCENDING)],
+            unique=True,
+            name="uniq_username",
+        )
+        await self._db["auth_sessions"].create_index(
+            [("session_id", ASCENDING)], unique=True, name="uniq_auth_session_id"
+        )
+
         # agent_history 集合 按 (name, version 降序) 查最近版本快
         # version 不强制唯一 因为同一名字不同时间会有多版 但同名同 version 唯一
         await self._db["agent_history"].create_index(
@@ -240,11 +259,130 @@ class MotorMongoStorage:
             [("name", ASCENDING)], unique=True, name="uniq_mcp_server_name"
         )
 
+    # ================================================================ Auth
+    async def create_tenant(
+        self,
+        tenant_name: str,
+    ) -> TenantRecord:
+        """创建租户 tenant_name 全局唯一"""
+        now = _utcnow()
+        tenant_id = _new_id()
+        doc = {
+            "tenant_id": tenant_id,
+            "tenant_name": tenant_name,
+            "created_at": now,
+        }
+        try:
+            await self._db["tenants"].insert_one(doc)
+        except Exception as exc:
+            raise ValueError(f"tenant_name 已存在 name={tenant_name}") from exc
+        return TenantRecord.model_validate(doc)
+
+    async def get_tenant_by_name(self, tenant_name: str) -> TenantRecord | None:
+        """按 tenant_name 查询租户"""
+        doc = await self._db["tenants"].find_one({"tenant_name": tenant_name}, {"_id": 0})
+        if doc is None:
+            return None
+        return TenantRecord.model_validate(doc)
+
+    async def get_tenant_by_id(self, tenant_id: str) -> TenantRecord | None:
+        """按 tenant_id 查询租户"""
+        doc = await self._db["tenants"].find_one({"tenant_id": tenant_id}, {"_id": 0})
+        if doc is None:
+            return None
+        return TenantRecord.model_validate(doc)
+
+    async def create_user(
+        self,
+        tenant_id: str,
+        username: str,
+        password_hash: str,
+        *,
+        role: Literal["owner", "member"] = "owner",
+    ) -> UserRecord:
+        """在指定租户下创建用户 username 在租户内唯一"""
+        now = _utcnow()
+        user_id = _new_id()
+        doc = {
+            "user_id": user_id,
+            "tenant_id": tenant_id,
+            "username": username,
+            "password_hash": password_hash,
+            "role": role,
+            "created_at": now,
+        }
+        try:
+            await self._db["users"].insert_one(doc)
+        except Exception as exc:
+            raise ValueError(
+                f"username 已存在 tenant_id={tenant_id} username={username}"
+            ) from exc
+        return UserRecord.model_validate(doc)
+
+    async def get_user_by_username(
+        self,
+        username: str,
+        tenant_id: str | None = None,
+    ) -> UserRecord | None:
+        """按用户名查用户 tenant_id 传入时再额外做租户过滤"""
+        query: dict[str, Any] = {"username": username}
+        if tenant_id is not None:
+            query["tenant_id"] = tenant_id
+        doc = await self._db["users"].find_one(query, {"_id": 0})
+        if doc is None:
+            return None
+        return UserRecord.model_validate(doc)
+
+    async def get_user_by_id(self, user_id: str) -> UserRecord | None:
+        """按 user_id 查询用户"""
+        doc = await self._db["users"].find_one({"user_id": user_id}, {"_id": 0})
+        if doc is None:
+            return None
+        return UserRecord.model_validate(doc)
+
+    async def get_user_count_by_tenant(self, tenant_id: str) -> int:
+        """统计租户下已有用户数 用于决定首个用户角色"""
+        return int(await self._db["users"].count_documents({"tenant_id": tenant_id}))
+
+    async def create_auth_session(
+        self,
+        tenant_id: str,
+        user_id: str,
+        *,
+        expires_in_hours: int,
+    ) -> AuthSessionRecord:
+        """创建登录态 session"""
+        now = _utcnow()
+        session_id = _new_id()
+        expires_at = now + timedelta(hours=expires_in_hours)
+        doc = {
+            "session_id": session_id,
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "expires_at": expires_at,
+            "created_at": now,
+        }
+        await self._db["auth_sessions"].insert_one(doc)
+        return AuthSessionRecord.model_validate(doc)
+
+    async def get_auth_session(self, session_id: str) -> AuthSessionRecord | None:
+        """按 session_id 读取登录态"""
+        doc = await self._db["auth_sessions"].find_one({"session_id": session_id}, {"_id": 0})
+        if doc is None:
+            return None
+        return AuthSessionRecord.model_validate(doc)
+
+    async def delete_auth_session(self, session_id: str) -> None:
+        """删除登录态 session 不存在时静默忽略"""
+        await self._db["auth_sessions"].delete_one({"session_id": session_id})
+
     # ============================================================ Sessions CRUD
     async def create_session(
         self,
         title: str | None = None,
         *,
+        tenant_id: str,
+        owner_user_id: str,
         parent_session_id: str | None = None,
         branch_from_task_id: str | None = None,
         branch_from_role: Literal["user", "assistant"] | None = None,
@@ -256,6 +394,8 @@ class MotorMongoStorage:
         now = _utcnow()
         doc = {
             "session_id": session_id,
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
             "title": title or "",
             "metadata": {},
             "created_at": now,
@@ -269,11 +409,20 @@ class MotorMongoStorage:
         await self._db["sessions"].insert_one(doc)
         return session_id
 
-    async def list_sessions(self, limit: int = 50) -> list[SessionMeta]:
+    async def list_sessions(
+        self,
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+        limit: int = 50,
+    ) -> list[SessionMeta]:
         """按 updated_at 倒序拉最近会话列表 不含 rounds 详情"""
         cursor = (
             self._db["sessions"]
-            .find({}, {"_id": 0})
+            .find(
+                {"tenant_id": tenant_id, "owner_user_id": owner_user_id},
+                {"_id": 0},
+            )
             .sort("updated_at", DESCENDING)
             .limit(limit)
         )
@@ -282,9 +431,21 @@ class MotorMongoStorage:
             out.append(SessionMeta.model_validate(doc))
         return out
 
-    async def get_session(self, session_id: str) -> Session | None:
+    async def get_session(
+        self,
+        session_id: str,
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+    ) -> Session | None:
         """单个会话详情 不内联 rounds 路由层视情况再 list_rounds"""
-        doc = await self._db["sessions"].find_one({"session_id": session_id})
+        doc = await self._db["sessions"].find_one(
+            {
+                "session_id": session_id,
+                "tenant_id": tenant_id,
+                "owner_user_id": owner_user_id,
+            }
+        )
         if doc is None:
             return None
         _strip_internal(doc)
@@ -387,7 +548,13 @@ class MotorMongoStorage:
             {"$set": {"context_usage": usage}},
         )
 
-    async def delete_session(self, session_id: str) -> int:
+    async def delete_session(
+        self,
+        session_id: str,
+        *,
+        tenant_id: str,
+        owner_user_id: str,
+    ) -> int:
         """删除 session 与其下所有 rounds 返回删除的 round 数
 
         约束:
@@ -395,7 +562,13 @@ class MotorMongoStorage:
             - 若 session 下存在进行中的 round 抛 ValueError 路由层映射 409
               进行中状态包含 spec 新值 + 历史值 与 cancel_orphan_rounds 对齐
         """
-        sess = await self._db["sessions"].find_one({"session_id": session_id})
+        sess = await self._db["sessions"].find_one(
+            {
+                "session_id": session_id,
+                "tenant_id": tenant_id,
+                "owner_user_id": owner_user_id,
+            }
+        )
         if sess is None:
             raise KeyError(f"session 不存在 session_id={session_id}")
 
@@ -422,7 +595,13 @@ class MotorMongoStorage:
 
         # 先删 rounds 再删 session 顺序保证即便中途失败也不会留下"无 session 的孤儿 round"
         rounds_res = await self._db["rounds"].delete_many({"session_id": session_id})
-        await self._db["sessions"].delete_one({"session_id": session_id})
+        await self._db["sessions"].delete_one(
+            {
+                "session_id": session_id,
+                "tenant_id": tenant_id,
+                "owner_user_id": owner_user_id,
+            }
+        )
         return int(rounds_res.deleted_count or 0)
 
     # =============================================================== Rounds CRUD
@@ -566,6 +745,8 @@ class MotorMongoStorage:
         self,
         *,
         source_session_id: str,
+        tenant_id: str,
+        owner_user_id: str,
         source_task_id: str,
         source_role: Literal["user", "assistant"],
         source_agent: str | None = None,
@@ -583,7 +764,11 @@ class MotorMongoStorage:
             - context_usage 不复制  避免沿用旧会话快照造成误导
         """
         source_session = await self._db["sessions"].find_one(
-            {"session_id": source_session_id}
+            {
+                "session_id": source_session_id,
+                "tenant_id": tenant_id,
+                "owner_user_id": owner_user_id,
+            }
         )
         if source_session is None:
             raise KeyError(f"session 不存在 session_id={source_session_id}")
@@ -618,6 +803,8 @@ class MotorMongoStorage:
         branch_title = f"分支 · {title_seed[:32]}".strip()
         new_session_id = await self.create_session(
             branch_title,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
             parent_session_id=source_session_id,
             branch_from_task_id=source_task_id,
             branch_from_role=source_role,
@@ -977,17 +1164,17 @@ class MotorMongoStorage:
     # 头像变更不触发 version 自增也不归档进 agent_history
     # 因为头像是展示数据  和 prompt/model/api_key 这些会影响 LLM 行为的字段不同
     async def set_agent_avatar(
-        self, name: str, avatar_data_url: str
+        self, name: str, avatar: dict[str, Any]
     ) -> AgentRecord:
-        """更新 agent 头像  data URL 直接覆盖  不存在抛 KeyError"""
+        """更新 agent 头像对象引用  不存在抛 KeyError"""
         existing = await self._db["agents"].find_one({"name": name}, {"_id": 0})
         if existing is None:
             raise KeyError(f"agent 不存在 name={name}")
         await self._db["agents"].update_one(
             {"name": name},
-            {"$set": {"avatar_data_url": avatar_data_url}},
+            {"$set": {"avatar": avatar, "avatar_data_url": None}},
         )
-        merged = {**existing, "avatar_data_url": avatar_data_url}
+        merged = {**existing, "avatar": avatar, "avatar_data_url": None}
         return _agent_doc_to_record(merged)
 
     async def clear_agent_avatar(self, name: str) -> AgentRecord:
@@ -997,9 +1184,9 @@ class MotorMongoStorage:
             raise KeyError(f"agent 不存在 name={name}")
         await self._db["agents"].update_one(
             {"name": name},
-            {"$set": {"avatar_data_url": None}},
+            {"$set": {"avatar": None, "avatar_data_url": None}},
         )
-        merged = {**existing, "avatar_data_url": None}
+        merged = {**existing, "avatar": None, "avatar_data_url": None}
         return _agent_doc_to_record(merged)
 
     # --------------------------------------------------------- Agent History

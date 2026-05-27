@@ -3,6 +3,9 @@
 // 启动时加载 agent 列表填充 settings.drafts，保证 Timeline 渲染前 agentLabel 已有数据
 import { useEffect, useRef, useState } from 'react';
 import { message, Modal } from 'antd';
+import AuthGate from './components/auth/AuthGate';
+import type { LoginFormValue } from './components/auth/LoginPage';
+import type { RegisterFormValue } from './components/auth/RegisterPage';
 import SettingsDrawer from './components/SettingsDrawer';
 import Timeline from './components/Timeline';
 import TimelineReadOnly from './components/TimelineReadOnly';
@@ -19,7 +22,14 @@ import { useChatTask, isFatalSSEError } from './hooks/useChatTask';
 import { useBranchSession } from './hooks/useBranchSession';
 import { useSettings } from './hooks/useSettings';
 import { useChat } from './state/ChatContext';
-import { getAgents, getHistory } from './api/http';
+import {
+  getAgents,
+  getCurrentUser,
+  getHistory,
+  login,
+  logout,
+  register,
+} from './api/http';
 import { openTaskStream } from './api/sse';
 import { convertAgentView, convertRound } from './state/converters';
 import { parseContextUsage } from './state/reducer';
@@ -58,6 +68,7 @@ export default function App() {
   const { send, stop } = useChatTask();
   const { branch } = useBranchSession();
   const { state, dispatch, registerSSEController, closeSSEController } = useChat();
+  const [authState, setAuthState] = useState<'checking' | 'anonymous' | 'authenticated'>('checking');
   const [editingRoundId, setEditingRoundId] = useState<string | null>(null);
   const [activePaneIndex, setActivePaneIndex] = useState(0);
   const [paneHistories, setPaneHistories] = useState<
@@ -77,6 +88,24 @@ export default function App() {
   const bootstrappedRef = useRef(false);
   // 滚动容器 ref 用于自动滚到底部
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const me = await getCurrentUser();
+        dispatch({ type: 'auth.current_user.set', user: me });
+        setAuthState('authenticated');
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg.includes('401')) {
+          setAuthState('anonymous');
+          return;
+        }
+        message.error(`登录态校验失败:${msg}`);
+        setAuthState('anonymous');
+      }
+    })();
+  }, [dispatch]);
 
   const cachePaneHistory = (
     sessionId: string,
@@ -115,6 +144,7 @@ export default function App() {
 
   // 首次 mount:读取 localStorage,尝试恢复 session + 重连 SSE
   useEffect(() => {
+    if (authState !== 'authenticated') return;
     if (bootstrappedRef.current) return;
     bootstrappedRef.current = true;
 
@@ -183,7 +213,7 @@ export default function App() {
         }
       }
     })();
-  }, [dispatch, registerSSEController]);
+  }, [authState, dispatch, registerSSEController]);
 
   const handleNavigate = (view: WorkbenchView) => {
     dispatch({ type: 'ui.view.set', view });
@@ -502,11 +532,32 @@ export default function App() {
     );
   };
 
-  return (
+  const appShell = (
     <LobeWorkbenchShell
       sidebar={
         <LobeSidebar
+          currentUser={state.currentUser}
           onNavigate={handleNavigate}
+          onLogout={async () => {
+            await logout();
+            closeSSEController();
+            clearPersisted();
+            dispatch({ type: 'auth.current_user.set', user: null });
+            dispatch({ type: 'session.set', sessionId: null });
+            dispatch({ type: 'sessions.set', sessions: [] });
+            dispatch({ type: 'rounds.set', rounds: [] });
+            setAuthState('anonymous');
+          }}
+          onSwitchAccount={async () => {
+            await logout();
+            closeSSEController();
+            clearPersisted();
+            dispatch({ type: 'auth.current_user.set', user: null });
+            dispatch({ type: 'session.set', sessionId: null });
+            dispatch({ type: 'sessions.set', sessions: [] });
+            dispatch({ type: 'rounds.set', rounds: [] });
+            setAuthState('anonymous');
+          }}
           onOpenSettings={() => {
             void openDrawer();
           }}
@@ -517,5 +568,32 @@ export default function App() {
       <SettingsDrawer />
       <ReplyFullscreen />
     </LobeWorkbenchShell>
+  );
+
+  const handleLogin = async (payload: LoginFormValue) => {
+    const me = await login({
+      username: payload.username.trim(),
+      password: payload.password,
+    });
+    dispatch({ type: 'auth.current_user.set', user: me });
+    setAuthState('authenticated');
+  };
+
+  const handleRegister = async (payload: RegisterFormValue) => {
+    await register({
+      tenant_name: payload.tenantName.trim(),
+      username: payload.username.trim(),
+      password: payload.password,
+    });
+  };
+
+  return (
+    <AuthGate
+      authState={authState}
+      onLogin={handleLogin}
+      onRegister={handleRegister}
+    >
+      {appShell}
+    </AuthGate>
   );
 }

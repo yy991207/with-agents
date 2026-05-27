@@ -79,7 +79,6 @@ async def run_reply(
     history: list[dict[str, Any]],
     registry: DeepAgentRegistry,
     on_event: EventCallback,
-    timeout_s: float,
     thinking_enabled: bool = False,
 ) -> str:
     """运行被选中 agent 的 reply 流式调用
@@ -90,7 +89,11 @@ async def run_reply(
     chunk 里的 reasoning_content 不依赖 thinking_enabled 始终提取  推 reply.thinking 事件
         deepseek-reasoner / glm 等"自带 reasoning"模型即便不开关也能展示
     返回最终完整 reply 文本(由 chunk 拼接)
-    超时直接抛 asyncio.TimeoutError
+
+    超时策略:
+        - reply 阶段不再包业务层总时长超时
+        - 仅依赖底层 LLM API 客户端自身的网络请求超时
+          这样模型即使执行十几分钟  只要连接持续正常返回就不会被业务层误杀
     """
     if thinking_enabled:
         deep_agent = await registry.build_thinking_reply(agent_name)
@@ -160,7 +163,7 @@ async def run_reply(
                     )
                 )
 
-    await asyncio.wait_for(_stream(), timeout=timeout_s)
+    await _stream()
     return "".join(full_text_parts)
 
 

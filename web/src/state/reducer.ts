@@ -39,6 +39,7 @@ const initialWorkbench: WorkbenchState = {
 };
 
 export const initialState: ChatState = {
+  currentUser: null,
   sessionId: null,
   sessions: [],
   rounds: [],
@@ -73,6 +74,7 @@ function viewToDraft(a: AgentView): AgentEditDraft {
     prompt: a.prompt,
     version: a.version,
     dirty: false,
+    avatar: a.avatar ?? null,
     avatarDataUrl: a.avatar_data_url ?? null,
   };
 }
@@ -362,6 +364,8 @@ function applySSEEvent(
 
 export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
+    case 'auth.current_user.set':
+      return { ...state, currentUser: action.user };
     case 'session.set': return { ...state, sessionId: action.sessionId };
     case 'session.switch':
       return {

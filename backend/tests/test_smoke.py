@@ -22,3 +22,13 @@ def test_create_app_module_importable() -> None:
     from multichat.main import create_app
 
     assert callable(create_app)
+
+
+def test_create_app_registers_auth_routes() -> None:
+    """应用工厂应显式挂上 /api/auth 路由  否则前端刷新会直接 404"""
+    from multichat.main import create_app
+
+    app = create_app()
+    paths = {route.path for route in app.routes}
+    assert "/api/auth/me" in paths
+    assert "/api/auth/login" in paths

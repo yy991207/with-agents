@@ -23,14 +23,15 @@ POST   /api/agents/{name}/revert   回滚到指定历史版本
 
 from __future__ import annotations
 
-import base64
+import uuid
 
 import structlog
 import httpx
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 
-from ..core.models import ModelCatalogEntry
+from .auth_context import get_current_identity
+from ..core.models import AgentAvatarRef, ModelCatalogEntry, RequestIdentity
 
 router = APIRouter(prefix="/api", tags=["agents"])
 
@@ -73,6 +74,7 @@ class AgentView(BaseModel):
     prompt: str
     version: int
     updated_at: str
+    avatar: AgentAvatarRef | None = None
     # 头像 data URL 形如 data:image/png;base64,xxx 没设过为 None
     avatar_data_url: str | None = None
 
@@ -207,6 +209,7 @@ def _to_view(record) -> AgentView:
         updated_at=record.updated_at.isoformat()
         if hasattr(record.updated_at, "isoformat")
         else str(record.updated_at),
+        avatar=getattr(record, "avatar", None),
         avatar_data_url=getattr(record, "avatar_data_url", None),
     )
 
@@ -301,7 +304,10 @@ async def _discover_openai_compatible_models(
 
 
 @router.get("/agents", response_model=AgentsListResponse)
-async def list_agents(request: Request) -> AgentsListResponse:
+async def list_agents(
+    request: Request,
+    _identity: RequestIdentity = Depends(get_current_identity),
+) -> AgentsListResponse:
     """列出全部 agent 配置与当前 judge 指针 给前端 SettingsDrawer 初始化用"""
     storage = request.app.state.storage
     records = await storage.list_agents()
@@ -688,11 +694,16 @@ async def upload_agent_avatar(
     if not payload:
         raise HTTPException(400, "empty file")
 
-    encoded = base64.b64encode(payload).decode("ascii")
-    data_url = f"data:{canon_mime};base64,{encoded}"
+    object_store = request.app.state.object_store
+    ext = canon_mime.split("/")[-1]
+    object_key = (
+        f"tenants/{existing.tenant_id}/users/{existing.owner_user_id}/"
+        f"avatars/{name}/{uuid.uuid4().hex}.{ext}"
+    )
+    avatar_meta = await object_store.put_bytes(object_key, payload, canon_mime)
 
     try:
-        record = await storage.set_agent_avatar(name, data_url)
+        record = await storage.set_agent_avatar(name, avatar_meta)
     except KeyError as exc:
         # 极小概率上面查到了 但写时 agent 已被删  当 404 兜底
         raise HTTPException(404, str(exc)) from exc
@@ -700,10 +711,38 @@ async def upload_agent_avatar(
     return _to_view(record)
 
 
+@router.get("/agents/{name}/avatar")
+async def get_agent_avatar(name: str, request: Request) -> Response:
+    """返回 agent 头像原始二进制 给前端 img src 直接展示"""
+    storage = request.app.state.storage
+    object_store = request.app.state.object_store
+    record = await storage.get_agent(name)
+    if record is None:
+        raise HTTPException(404, f"agent not found: {name}")
+    if record.avatar is None:
+        raise HTTPException(404, f"avatar not found: {name}")
+
+    try:
+        stored = await object_store.get_bytes(record.avatar.object_key)
+    except KeyError as exc:
+        raise HTTPException(404, f"avatar object not found: {name}") from exc
+    return Response(content=stored.content, media_type=stored.mime_type)
+
+
 @router.delete("/agents/{name}/avatar", response_model=AgentView)
 async def delete_agent_avatar(name: str, request: Request) -> AgentView:
     """清除 agent 头像  返回更新后的 AgentView (avatar_data_url=None)"""
     storage = request.app.state.storage
+    object_store = request.app.state.object_store
+    existing = await storage.get_agent(name)
+    if existing is None:
+        raise HTTPException(404, f"agent not found: {name}")
+    if existing.avatar is not None:
+        try:
+            await object_store.delete(existing.avatar.object_key)
+        except KeyError:
+            # 对象已不存在时忽略 继续删 mongo 引用
+            pass
     try:
         record = await storage.clear_agent_avatar(name)
     except KeyError as exc:

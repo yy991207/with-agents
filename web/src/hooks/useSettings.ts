@@ -163,6 +163,7 @@ export function useSettings() {
               prompt: draft.prompt,
               version: updated.version,
               updated_at: new Date().toISOString(),
+              avatar: draft.avatar ?? null,
               avatar_data_url: draft.avatarDataUrl,
             },
           });

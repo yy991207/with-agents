@@ -192,7 +192,28 @@ export function convertAgentView(raw: unknown): AgentView {
       max_input_tokens: tokens,
     };
   });
+  const avatarMetaRaw = r.avatar;
+  const avatarMeta =
+    avatarMetaRaw && typeof avatarMetaRaw === 'object'
+      ? {
+          object_key:
+            ((avatarMetaRaw as Record<string, unknown>).object_key as string) ?? '',
+          mime_type:
+            ((avatarMetaRaw as Record<string, unknown>).mime_type as string) ?? '',
+          size:
+            (typeof (avatarMetaRaw as Record<string, unknown>).size === 'number'
+              ? ((avatarMetaRaw as Record<string, unknown>).size as number)
+              : 0),
+          sha256:
+            ((avatarMetaRaw as Record<string, unknown>).sha256 as string) ?? '',
+        }
+      : null;
   const avatarRaw = r.avatar_data_url;
+  const avatarUrl = avatarMeta
+    ? `/api/agents/${encodeURIComponent((r.name as string) ?? '')}/avatar?v=${encodeURIComponent(avatarMeta.sha256)}`
+    : typeof avatarRaw === 'string' && avatarRaw
+      ? avatarRaw
+      : null;
   return {
     name: (r.name as string) ?? '',
     display_name:
@@ -205,6 +226,7 @@ export function convertAgentView(raw: unknown): AgentView {
     prompt: (r.prompt as string) ?? '',
     version: (r.version as number) ?? 1,
     updated_at: (r.updated_at as string) ?? '',
-    avatar_data_url: typeof avatarRaw === 'string' && avatarRaw ? avatarRaw : null,
+    avatar: avatarMeta,
+    avatar_data_url: avatarUrl,
   };
 }

@@ -1,14 +1,50 @@
+# MongoDB 连接配置
 mongo:
+  # MongoDB 连接地址
   uri: mongodb://localhost:27017
+  # 当前项目使用的数据库名
   db: multi_chat
 
+# 运行时调优参数
 runtime:
-  history_max_rounds: 10
+  # 每次组装历史消息时最多保留多少轮已选答对话
+  # 设为 0 表示不按轮数截断  只依赖摘要与模型上下文窗口控制
+  history_max_rounds: 0
+  # 流式回复写入 MongoDB 的节流间隔  单位毫秒
   reply_flush_interval_ms: 200
+  # 底层 LLM HTTP 网络超时  单位秒  不是整段任务总时长超时
   http_timeout_seconds: 30
 
+# HTTP 服务监听配置
 server:
+  # 服务监听地址
   host: 0.0.0.0
+  # 服务监听端口
   port: 8002
+  # 允许跨域访问的前端来源列表
   cors_origins:
     - http://localhost:5173
+
+# 登录与会话配置
+auth:
+  # 登录态 cookie 名称
+  session_cookie_name: multi_chat_session
+  # 登录态有效期  单位小时
+  session_ttl_hours: 168
+  # 密码哈希附加 pepper  生产环境必须改成安全值
+  password_pepper: change-me
+  # HTTPS 环境建议设为 true
+  session_cookie_secure: false
+
+# MinIO 对象存储配置
+minio:
+  # MinIO 服务地址
+  endpoint: localhost:9000
+  # 访问 key
+  access_key: minioadmin
+  # 密钥
+  secret_key: minioadmin
+  # 默认 bucket
+  bucket: multi-chat
+  # 是否启用 https
+  secure: false

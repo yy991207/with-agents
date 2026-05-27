@@ -1,1 +1,1 @@
-"""持久化模块 抽象 MongoStorage 接口与 motor 实现"""
+"""持久化模块 抽象 MongoStorage 接口、对象存储接口与具体实现"""

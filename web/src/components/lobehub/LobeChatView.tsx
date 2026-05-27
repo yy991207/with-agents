@@ -1,4 +1,6 @@
 import { useMemo, useState, type DragEvent, type ReactNode, type RefObject } from 'react';
+import { ActionIcon } from '@lobehub/ui';
+import { X } from 'lucide-react';
 import { Flexbox } from 'react-layout-kit';
 import TransientScrollbar from '../TransientScrollbar';
 import type { ChatMultiViewLayout } from '../../state/types';
@@ -15,6 +17,7 @@ export interface LobeChatViewProps {
   activePaneIndex?: number;
   onDropSession?: (sessionId: string) => void;
   onSelectPane?: (index: number) => void;
+  onClosePane?: (index: number) => void;
 }
 
 export default function LobeChatView({
@@ -29,6 +32,7 @@ export default function LobeChatView({
   activePaneIndex = 0,
   onDropSession,
   onSelectPane,
+  onClosePane,
 }: LobeChatViewProps) {
   const paneNodes = (panes && panes.length > 0 ? panes : [timeline]).slice(0, 2);
   const isSplit = layout !== 'single' && paneNodes.length > 1;
@@ -74,17 +78,39 @@ export default function LobeChatView({
           index === activePaneIndex
             ? '0 0 0 2px rgba(37, 99, 235, 0.28) inset'
             : '0 0 0 1px rgba(15, 23, 42, 0.06) inset',
+        display: 'flex',
+        flexDirection: 'column',
         height: '100%',
         minHeight: 0,
         minWidth: 0,
         overflow: 'hidden',
       }}
     >
+      {isSplit ? (
+        <div
+          style={{
+            alignItems: 'center',
+            display: 'flex',
+            flex: '0 0 auto',
+            justifyContent: 'flex-end',
+            padding: '12px 12px 0',
+          }}
+        >
+          <ActionIcon
+            icon={X}
+            title="关闭会话视图"
+            onClick={(event) => {
+              event.stopPropagation();
+              onClosePane?.(index);
+            }}
+          />
+        </div>
+      ) : null}
       <TransientScrollbar
         followResetKey={paneResetKeys?.[index]}
         resetPosition={paneResetPositions?.[index] ?? 'top'}
         style={{
-          height: '100%',
+          flex: 1,
           minHeight: 0,
           minWidth: 0,
           overflow: 'auto',

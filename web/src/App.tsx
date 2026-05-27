@@ -23,6 +23,7 @@ import { getAgents, getHistory } from './api/http';
 import { openTaskStream } from './api/sse';
 import { convertAgentView, convertRound } from './state/converters';
 import { parseContextUsage } from './state/reducer';
+import { closeChatPane } from './state/chatPanes';
 import { findResumableTaskId } from './state/taskResume';
 import {
   clearPersisted,
@@ -316,6 +317,44 @@ export default function App() {
     }
   };
 
+  const handleClosePane = (index: number) => {
+    const result = closeChatPane(
+      state.workbench.chatPanes,
+      index,
+      state.workbench.chatLayout,
+    );
+    if (!result) return;
+
+    dispatch({
+      type: 'ui.chat.panes.set',
+      panes: result.panes,
+      layout: result.layout,
+    });
+    setActivePaneIndex(result.activePaneIndex);
+
+    if (!result.remainingSessionId || result.remainingSessionId === state.sessionId) {
+      return;
+    }
+
+    closeSSEController();
+    dispatch({ type: 'session.switch', sessionId: result.remainingSessionId });
+    void (async () => {
+      try {
+        const snapshot = await loadSessionSnapshot(result.remainingSessionId as string);
+        dispatch({
+          type: 'history.loaded',
+          sessionId: result.remainingSessionId as string,
+          rounds: snapshot.rounds,
+          contextUsage: snapshot.contextUsage,
+          draftMessage: snapshot.draftMessage,
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        message.error(`切换会话失败:${msg}`);
+      }
+    })();
+  };
+
   // 推荐卡片  默认走单 agent (judgeTarget 兜底  没设置就第一个 agent)
   const handleRecommendAction = (card: RecommendCardDefinition) => {
     if (card.action === 'send' && card.prompt) {
@@ -436,6 +475,7 @@ export default function App() {
             void handleDropSession(sessionId);
           }}
           onSelectPane={handleSelectPane}
+          onClosePane={handleClosePane}
           followResetKey={state.sessionId}
         />
       );

@@ -123,6 +123,41 @@ body {
   opacity: 1;
 }
 
+.ant-modal-confirm .ant-modal-content,
+.ant-popconfirm .ant-popover-inner {
+  border-radius: 14px;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.12);
+}
+
+.ant-modal-confirm .ant-modal-content {
+  padding: 18px 18px 16px;
+}
+
+.ant-modal-confirm .ant-modal-confirm-title,
+.ant-popconfirm .ant-popconfirm-title {
+  color: rgba(15, 23, 42, 0.92);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.ant-modal-confirm .ant-modal-confirm-content,
+.ant-popconfirm .ant-popconfirm-description {
+  color: rgba(71, 85, 105, 0.78);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.ant-modal-confirm .ant-modal-confirm-btns,
+.ant-popconfirm .ant-popconfirm-buttons {
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.ant-popconfirm .ant-popover-inner {
+  padding: 12px 12px 10px;
+}
+
 /* HTML 回复内容的基础样式:对齐 LobeChat Markdown(article[data-code-type=markdown])
  * font-size 14 / line-height 1.6 / 标题与段落间距适中 / 代码与表格圆角 8 */
 .reply-html {

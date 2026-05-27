@@ -220,6 +220,22 @@ export default function App() {
         '从这条消息之后的对话记录会被清空；如果这些内容已经压缩进上下文摘要，摘要也会一起删除。',
       okText: '继续发送',
       cancelText: '取消',
+      centered: true,
+      width: 420,
+      okButtonProps: {
+        style: {
+          background: 'rgba(15, 23, 42, 0.92)',
+          borderColor: 'rgba(15, 23, 42, 0.92)',
+          boxShadow: 'none',
+        },
+      },
+      cancelButtonProps: {
+        style: {
+          borderColor: 'rgba(15, 23, 42, 0.12)',
+          boxShadow: 'none',
+          color: 'rgba(15, 23, 42, 0.72)',
+        },
+      },
       onOk: async () => {
         await send(messageText, {
           ...opts,

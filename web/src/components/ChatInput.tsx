@@ -673,14 +673,21 @@ export default function ChatInput({
           {allowStop ? (
             <Tooltip title={compacting ? '压缩中 暂不可停止' : '停止当前任务'}>
               <Button
-                danger
                 icon={<StopOutlined />}
                 onClick={() => {
                   void onStop?.();
                 }}
                 shape="circle"
-                size="large"
+                size="middle"
                 disabled={!onStop || compacting}
+                type="text"
+                style={{
+                  color: 'rgba(15, 23, 42, 0.82)',
+                  border: '1px solid rgba(15, 23, 42, 0.12)',
+                  boxShadow: 'none',
+                  height: 36,
+                  width: 36,
+                }}
               />
             </Tooltip>
           ) : (
@@ -696,12 +703,19 @@ export default function ChatInput({
               }
             >
               <Button
-                type="primary"
                 icon={<SendOutlined />}
                 onClick={handleSend}
-                size="large"
+                size="middle"
                 disabled={sendDisabled}
                 shape="circle"
+                style={{
+                  background: sendDisabled ? 'rgba(15, 23, 42, 0.04)' : 'rgba(15, 23, 42, 0.92)',
+                  border: '1px solid rgba(15, 23, 42, 0.08)',
+                  boxShadow: 'none',
+                  color: sendDisabled ? 'rgba(71, 85, 105, 0.42)' : '#fff',
+                  height: 36,
+                  width: 36,
+                }}
               />
             </Tooltip>
           )}

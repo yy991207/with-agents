@@ -145,7 +145,20 @@ export default function LobeSidebar({ onNavigate, onOpenSettings }: LobeSidebarP
                   title="确认删除该会话"
                   description="将一并删除所有对话内容,不可恢复"
                   okText="删除"
-                  okButtonProps={{ danger: true }}
+                  okButtonProps={{
+                    style: {
+                      background: 'rgba(15, 23, 42, 0.92)',
+                      borderColor: 'rgba(15, 23, 42, 0.92)',
+                      boxShadow: 'none',
+                    },
+                  }}
+                  cancelButtonProps={{
+                    style: {
+                      borderColor: 'rgba(15, 23, 42, 0.12)',
+                      boxShadow: 'none',
+                      color: 'rgba(15, 23, 42, 0.72)',
+                    },
+                  }}
                   cancelText="取消"
                   onConfirm={() => {
                     void handleDeleteSession(session.sessionId);

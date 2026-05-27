@@ -1167,6 +1167,16 @@ class MotorMongoStorage:
         # 数据迁移 仅对老 profile_name 数据生效 不影响新数据
         await self._migrate_legacy_agents()
 
+        has_seed_config = bool(
+            getattr(settings, "key", None)
+            and getattr(settings, "base_url", None)
+            and getattr(settings, "agents", None)
+            and getattr(settings, "judge", None)
+        )
+        if not has_seed_config:
+            _logger.info("未提供 yaml 种子配置 跳过 seed")
+            return 0
+
         existing = await self._db["agents"].count_documents({})
         if existing > 0:
             _logger.info("agents 已存在 跳过 seed", existing=existing)

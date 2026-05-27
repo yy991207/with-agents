@@ -40,6 +40,18 @@ runtime:
   history_max_rounds: 10
   reply_flush_interval_ms: 200
   http_timeout_seconds: 30
+  # 允许模型通过 deepagents 文件工具直接读写的本地文档目录
+  # 统一写相对项目根路径 例如 doc / docs / data/manuals
+  document_roots:
+    - doc
+    - docs
+  # 仓库外的本地文档目录挂载为虚拟路径
+  # 例如配置 ~/Desktop 后 模型里可用 /desktop/xxx 访问
+  external_document_mounts:
+    - name: desktop
+      path: ~/Desktop
+    - name: documents
+      path: ~/Documents
 
 server:
   host: 0.0.0.0

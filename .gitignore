@@ -23,7 +23,7 @@ node_modules/
 web/dist/
 web/.vite/
 *.local
-
+large_tool_results/
 # IDE 与编辑器
 .idea/
 .vscode/

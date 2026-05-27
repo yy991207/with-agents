@@ -369,7 +369,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         sessionId: action.sessionId,
         rounds: [],
         activeTaskId: null,
-        taskState: 'PENDING',
+        // 切会话只是等待历史接口返回  不是在发新任务
+        // 这里保持 DONE 避免 Timeline 抢先渲染默认空会话占位页
+        taskState: 'DONE',
         sseStatus: 'idle',
         contextUsage: null,
         compacting: false,

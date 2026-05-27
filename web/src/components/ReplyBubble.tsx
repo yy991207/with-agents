@@ -538,55 +538,41 @@ export default function ReplyBubble({
   let body: ReactNode;
   if (reply.state === 'failed') {
     // 失败态  纯文字风  无背景容器
-    //   第一行: 红色 X 图标 + "回答失败" + 灰色 monospace 错误摘要(单行截断 鼠标悬停看全文)
-    //   第二行: 重新回答 icon-only 圆形按钮  左对齐
+    //   保留错误提示和错误摘要
+    //   重新回答按钮复用头部 toolbar 的通用位置逻辑
+    //   头部不再重复显示一份失败状态图标
     const errorText = reply.error || '未知错误';
     body = (
-      <Flexbox gap={8} style={{ minWidth: 0 }}>
-        <Flexbox horizontal align="center" gap={10} style={{ minWidth: 0 }}>
-          <CloseCircleOutlined
-            style={{ color: 'var(--ant-color-error)', fontSize: 13, flexShrink: 0 }}
-          />
-          <span
-            style={{
-              color: 'rgba(15, 23, 42, 0.86)',
-              fontSize: 13,
-              fontWeight: 500,
-              flexShrink: 0,
-            }}
-          >
-            回答失败
-          </span>
-          <span
-            title={errorText}
-            style={{
-              color: 'rgba(71, 85, 105, 0.7)',
-              fontFamily:
-                'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-              fontSize: 12,
-              flex: 1,
-              minWidth: 0,
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {errorText}
-          </span>
-        </Flexbox>
-        {onRetry ? (
-          <Tooltip title="重新回答">
-            <Button
-              aria-label="重新回答"
-              icon={<ReloadOutlined />}
-              onClick={onRetry}
-              size="small"
-              type="text"
-              shape="circle"
-              style={{ alignSelf: 'flex-start' }}
-            />
-          </Tooltip>
-        ) : null}
+      <Flexbox horizontal align="center" gap={10} style={{ minWidth: 0 }}>
+        <CloseCircleOutlined
+          style={{ color: 'var(--ant-color-error)', fontSize: 13, flexShrink: 0 }}
+        />
+        <span
+          style={{
+            color: 'rgba(15, 23, 42, 0.86)',
+            fontSize: 13,
+            fontWeight: 500,
+            flexShrink: 0,
+          }}
+        >
+          回答失败
+        </span>
+        <span
+          title={errorText}
+          style={{
+            color: 'rgba(71, 85, 105, 0.7)',
+            fontFamily:
+              'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+            fontSize: 12,
+            flex: 1,
+            minWidth: 0,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {errorText}
+        </span>
       </Flexbox>
     );
   } else if (timeline.length === 0 && !reply.content) {
@@ -722,8 +708,6 @@ export default function ReplyBubble({
           <span style={{ color: 'rgba(71, 85, 105, 0.56)', fontSize: 12 }}>
             <LoadingOutlined spin /> 生成中
           </span>
-        ) : reply.state === 'failed' ? (
-          <CloseCircleOutlined style={{ color: 'var(--ant-color-error)', fontSize: 12 }} />
         ) : null}
         {/* 会话操作  贴近时间 / 分支按钮显示  不再右对齐 */}
         {(isStreaming && onCancel) || (!isStreaming && onRetry) || (!fullscreen && onFullscreen) ? (

@@ -24,6 +24,7 @@ import {
   buildAgentLabelMap,
   buildAgentMetaMap,
 } from '../state/agentLabels';
+import { resolveDisplayContextUsage } from './chatInputContext';
 
 // 单条消息最大字符数  超出禁止发送
 const MAX_CHARS = 5000;
@@ -368,6 +369,16 @@ export default function ChatInput({
     agentAvatarsMap[n] = agentAvatarOf(agentMetas, n);
   }
 
+  const displayContextUsage = state.contextUsage
+    ? resolveDisplayContextUsage({
+        usage: state.contextUsage,
+        inputMode,
+        selectedSingle,
+        selectedMulti,
+        drafts: state.settings.drafts,
+      })
+    : null;
+
   // 初始化默认选中  优先 judgeTarget  否则第一个 agent
   useEffect(() => {
     if (selectedSingle === null && agentNames.length > 0) {
@@ -449,11 +460,11 @@ export default function ChatInput({
     );
   };
 
-  const cylinderButton = state.contextUsage ? (
+  const cylinderButton = displayContextUsage ? (
     <Popover
       content={
         <ContextUsagePopoverContent
-          usage={state.contextUsage}
+          usage={displayContextUsage}
           compacting={compacting}
           canCompact={canCompact}
           onCompact={handleCompact}
@@ -466,8 +477,8 @@ export default function ChatInput({
     >
       <Tooltip
         title={
-          state.contextUsage
-            ? `已用上下文 ${formatTokens(state.contextUsage.used_tokens)} / ${formatTokens(state.contextUsage.max_input_tokens)}  点击查看`
+          displayContextUsage
+            ? `已用上下文 ${formatTokens(displayContextUsage.used_tokens)} / ${formatTokens(displayContextUsage.max_input_tokens)}  点击查看`
             : ''
         }
       >
@@ -477,8 +488,8 @@ export default function ChatInput({
           aria-label="查看上下文用量"
           icon={
             <ContextCylinder
-              ratio={Math.max(0, Math.min(1, state.contextUsage.ratio))}
-              color={pickUsageColor(Math.max(0, Math.min(1, state.contextUsage.ratio)))}
+              ratio={Math.max(0, Math.min(1, displayContextUsage.ratio))}
+              color={pickUsageColor(Math.max(0, Math.min(1, displayContextUsage.ratio)))}
             />
           }
           style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}

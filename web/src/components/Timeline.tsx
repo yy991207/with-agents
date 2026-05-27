@@ -1,7 +1,6 @@
 // 时间线:遍历所有 round  渲染用户气泡 + (单/多) agent 回答 grid + 选答 chips
 // 多 agent 模式  每行 2 列 grid  最多 4 个子窗
 // 单 agent 模式  单卡铺满
-import { Button } from 'antd';
 import UserBubble from './UserBubble';
 import ReplyBubble from './ReplyBubble';
 import SelectReplyChips from './SelectReplyChips';
@@ -36,47 +35,6 @@ export default function Timeline({ onEditRound, onBranchRound }: TimelineProps) 
   const handleFullscreen = (taskId: string, agent: AgentName) => {
     dispatch({ type: 'ui.fullscreen.set', fullscreen: { taskId, agent } });
   };
-
-  if (state.rounds.length === 0) {
-    return (
-      <div
-        style={{
-          alignItems: 'center',
-          display: 'flex',
-          justifyContent: 'center',
-          minHeight: '48vh',
-          padding: '24px 0',
-        }}
-      >
-        <div
-          style={{
-            background: '#fff',
-            border: '1px solid #e5e7eb',
-            borderRadius: 24,
-            boxShadow: '0 16px 40px rgba(15, 23, 42, 0.06)',
-            maxWidth: 560,
-            padding: '28px 24px',
-            textAlign: 'center',
-            width: '100%',
-          }}
-        >
-          <div style={{ color: 'rgba(15, 23, 42, 0.92)', fontSize: 20, fontWeight: 700, marginBottom: 8 }}>
-            从任何想法开始
-          </div>
-          <div style={{ color: 'rgba(51, 65, 85, 0.72)', fontSize: 14, lineHeight: 1.8, marginBottom: 18 }}>
-            当前聊天工作台已经准备好，可以直接发起一轮 1 个或多个 agent 并行回答。
-          </div>
-          <Button
-            shape="round"
-            type="primary"
-            onClick={() => dispatch({ type: 'ui.view.set', view: 'home' })}
-          >
-            返回首页
-          </Button>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div style={{ padding: '0 0 8px' }}>

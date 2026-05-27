@@ -214,16 +214,52 @@ async def load_mcp_tools_from_db(storage: Any) -> tuple[list[Any], list[str]]:
 
     try:
         client = MultiServerMCPClient(connections=connections)
-        all_tools = await client.get_tools()
-        _mcp_logger.info(
-            "mcp 工具加载完成",
-            server_count=len(connections),
-            tool_count=len(all_tools),
-        )
-        return list(all_tools), enabled_names
     except Exception as e:
-        _mcp_logger.warning("mcp 工具加载失败", error=str(e))
+        _mcp_logger.warning("mcp client 初始化失败", error=str(e))
         return [], []
+
+    # 逐个 server 拉工具 坏的跳过 好的继续挂载
+    # 这样单个 MCP server 崩掉时 不会把整批可用工具一起拖没
+    all_tools: list[Any] = []
+    loaded_names: list[str] = []
+    for name in enabled_names:
+        try:
+            server_tools = await client.get_tools(server_name=name)
+        except Exception as e:
+            await storage._db["settings"].update_one(
+                {"_id": "mcp_config"},
+                {
+                    "$set": {
+                        f"config.mcpServers.{name}.last_load_status": "failed",
+                        f"config.mcpServers.{name}.last_load_error": str(e),
+                        f"config.mcpServers.{name}.last_loaded_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                },
+            )
+            _mcp_logger.warning("mcp 单个 server 工具加载失败 已跳过", name=name, error=str(e))
+            continue
+        all_tools.extend(server_tools)
+        loaded_names.append(name)
+        await storage._db["settings"].update_one(
+            {"_id": "mcp_config"},
+            {
+                "$set": {
+                    f"config.mcpServers.{name}.last_load_status": "loaded",
+                    f"config.mcpServers.{name}.last_load_error": "",
+                    f"config.mcpServers.{name}.last_loaded_at": datetime.now(timezone.utc).isoformat(),
+                }
+            },
+        )
+
+    if not loaded_names:
+        return [], []
+
+    _mcp_logger.info(
+        "mcp 工具加载完成",
+        server_count=len(loaded_names),
+        tool_count=len(all_tools),
+    )
+    return all_tools, loaded_names
 
 
 async def load_skills_from_db(storage: Any) -> tuple[str, list[str]]:

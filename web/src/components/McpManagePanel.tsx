@@ -10,10 +10,12 @@ import {
   Space,
   Switch,
   Table,
+  Tag,
+  Tooltip,
   Typography,
   message,
 } from 'antd';
-import { PlusOutlined, DeleteOutlined, EditOutlined } from '@ant-design/icons';
+import { PlusOutlined, DeleteOutlined, EditOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { McpServerItem } from '../api/http';
 import {
   listMcpServers,
@@ -50,6 +52,7 @@ export default function McpManagePanel() {
   const [servers, setServers] = useState<McpServerDraft[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [reloading, setReloading] = useState(false);
 
   const [editOpen, setEditOpen] = useState(false);
   const [editForm, setEditForm] = useState<McpFormState | null>(null);
@@ -123,6 +126,9 @@ export default function McpManagePanel() {
       always_allow,
       disabled: f.disabled,
       updated_at: '',
+      last_load_status: '',
+      last_load_error: '',
+      last_loaded_at: '',
     };
   };
 
@@ -194,10 +200,7 @@ export default function McpManagePanel() {
       setEditForm(null);
       setEditOriginal(null);
       await loadServers();
-      // 配置变动后重载所有 agent  让 MCP 工具集即时生效  失败仅 warn 不阻塞
-      void reloadMcpAgents().catch(() => {
-        message.warning('配置已保存  但 agent 热重载失败  下次请求才会生效');
-      });
+      message.info('配置已保存，点击右上角重载应用后即可即时生效');
     } catch (e) {
       message.error(`保存失败:${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -215,9 +218,7 @@ export default function McpManagePanel() {
           await deleteMcpServer(record.name);
           message.success(`服务器 "${record.name}" 已删除`);
           await loadServers();
-          void reloadMcpAgents().catch(() => {
-            message.warning('已删除  但 agent 热重载失败  下次请求才会生效');
-          });
+          message.info('删除已保存，点击右上角重载应用后即可即时生效');
         } catch (e) {
           message.error(`删除失败:${e instanceof Error ? e.message : String(e)}`);
         }
@@ -232,12 +233,56 @@ export default function McpManagePanel() {
         s.name === record.name ? { ...s, disabled: !checked } : s
       ));
       message.success(`服务器 "${record.name}" 已${checked ? '启用' : '禁用'}`);
-      void reloadMcpAgents().catch(() => {
-        message.warning('开关已切换  但 agent 热重载失败  下次请求才会生效');
-      });
+      message.info('开关已保存，点击右上角重载应用后即可即时生效');
     } catch (e) {
       message.error(`操作失败:${e instanceof Error ? e.message : String(e)}`);
     }
+  };
+
+  const handleReload = async () => {
+    setReloading(true);
+    try {
+      const resp = await reloadMcpAgents();
+      await loadServers();
+      message.success(`已重载 ${resp.reloaded} 个 agent，最新 MCP 配置已即时生效`);
+    } catch (e) {
+      message.error(`重载失败:${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setReloading(false);
+    }
+  };
+
+  const renderLoadStatus = (record: McpServerDraft) => {
+    if (record.disabled) {
+      return <Text type="secondary">已禁用</Text>;
+    }
+    if (record.last_load_status === 'loaded') {
+      return (
+        <Space direction="vertical" size={2}>
+          <Tag color="success" style={{ marginInlineEnd: 0 }}>已加载</Tag>
+          {record.last_loaded_at ? (
+            <Text type="secondary" style={{ fontSize: 12 }}>{record.last_loaded_at}</Text>
+          ) : null}
+        </Space>
+      );
+    }
+    if (record.last_load_status === 'failed') {
+      return (
+        <Space direction="vertical" size={2}>
+          <Tooltip title={record.last_load_error || '加载失败'}>
+            <Tag color="error" style={{ marginInlineEnd: 0, cursor: 'help' }}>加载失败</Tag>
+          </Tooltip>
+          {record.last_load_error ? (
+            <Tooltip title={record.last_load_error}>
+              <Text type="danger" style={{ fontSize: 12, maxWidth: 240 }} ellipsis>
+                {record.last_load_error}
+              </Text>
+            </Tooltip>
+          ) : null}
+        </Space>
+      );
+    }
+    return <Text type="secondary">未重载</Text>;
   };
 
   const columns = [
@@ -250,6 +295,10 @@ export default function McpManagePanel() {
       render: (disabled: boolean, record: McpServerDraft) => (
         <Switch size="small" checked={!disabled} onChange={(v) => handleToggle(record, v)} />
       ),
+    },
+    {
+      title: '加载状态', key: 'load_status', width: 260,
+      render: (_: unknown, record: McpServerDraft) => renderLoadStatus(record),
     },
     {
       title: '操作', key: 'actions', width: 120,
@@ -266,14 +315,39 @@ export default function McpManagePanel() {
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
         <Title level={5} style={{ margin: 0 }}>MCP 服务器管理</Title>
-        <Button icon={<PlusOutlined />} onClick={handleAdd} disabled={saving || loading}>
-          新增服务器
-        </Button>
+        <Space>
+          <Tooltip title="重载应用">
+            <Button
+              aria-label="重载应用"
+              type="text"
+              shape="circle"
+              icon={<ReloadOutlined />}
+              onClick={handleReload}
+              loading={reloading}
+              disabled={saving || loading}
+            />
+          </Tooltip>
+          <Tooltip title="新增服务器">
+            <Button
+              aria-label="新增服务器"
+              type="text"
+              shape="circle"
+              icon={<PlusOutlined />}
+              onClick={handleAdd}
+              disabled={saving || loading}
+            />
+          </Tooltip>
+        </Space>
       </div>
       <Paragraph type="secondary" style={{ marginTop: 4 }}>
         可视化管理 MCP 服务器。每个服务器提供一组工具供 agent 调用。
-        修改后保存即生效，下次对话时 agent 会加载已启用的 MCP 工具。
+        编辑完配置后点击“重载应用”，不用重启整个服务，最新 MCP 修改就会即时生效。
       </Paragraph>
+      <div style={{ marginBottom: 12 }}>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          重载后会刷新每个 MCP 的最近加载结果。某个 server 启动失败时，会在表格里直接显示异常提示。
+        </Text>
+      </div>
 
       <Table<McpServerDraft>
         columns={columns}

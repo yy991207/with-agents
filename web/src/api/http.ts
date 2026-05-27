@@ -360,6 +360,9 @@ export interface McpServerItem {
   always_allow: string[];
   disabled: boolean;
   updated_at: string;
+  last_load_status: string;
+  last_load_error: string;
+  last_loaded_at: string;
 }
 
 export interface McpServersListResponse {

@@ -87,6 +87,9 @@ class McpServerItem(BaseModel):
     always_allow: list[str] = []
     disabled: bool = False
     updated_at: str = ""
+    last_load_status: str = ""
+    last_load_error: str = ""
+    last_loaded_at: str = ""
 
 
 class McpServerUpdate(BaseModel):
@@ -153,6 +156,9 @@ def _server_to_item(server_config: dict) -> McpServerItem:
         always_allow=server_config.get("alwaysAllow", server_config.get("always_allow", [])),
         disabled=server_config.get("disabled", False),
         updated_at=server_config.get("updated_at", ""),
+        last_load_status=server_config.get("last_load_status", ""),
+        last_load_error=server_config.get("last_load_error", ""),
+        last_loaded_at=server_config.get("last_loaded_at", ""),
     )
 
 
@@ -170,6 +176,9 @@ def _item_to_server(item: McpServerItem) -> dict:
         "always_allow": item.always_allow,
         "disabled": item.disabled,
         "updated_at": item.updated_at or _utcnow().isoformat(),
+        "last_load_status": item.last_load_status,
+        "last_load_error": item.last_load_error,
+        "last_loaded_at": item.last_loaded_at,
     }
 
 

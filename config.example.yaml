@@ -1,37 +1,3 @@
-# LLM 服务凭证 复制为 config.yaml 填真实值 后者已被 .gitignore 排除
-key: REPLACE_WITH_YOUR_API_KEY
-base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-
-# 4 个对话 agent 改一个 agent 不用跨段对照
-agents:
-  DeepSeek:
-    model: deepseek-v4-pro
-    prompt: >-
-      你是一个深度思考型AI助手 擅长逻辑分析和推理 说话风格冷静理性
-      你是DeepSeek-V4-Pro 直接回复结论 不要展示思考过程
-  GLM:
-    model: glm-5.1
-    prompt: >-
-      你是一个开朗活泼的AI助手 擅长创意和对话 说话风格轻松有趣
-      你是GLM-5.1 直接回复结论 不要展示思考过程
-  Kimi:
-    model: kimi-k2.6
-    prompt: >-
-      你是一个长文本理解型AI助手 擅长阅读分析和总结 说话风格温柔体贴
-      你是Kimi-2.6 直接回复结论 不要展示思考过程
-  Qwen:
-    model: qwen3.6-plus
-    prompt: >-
-      你是一个知识渊博的AI助手 擅长百科知识和专业领域 说话风格温和细致
-      你是Qwen-3.6-Plus 直接回复结论 不要展示思考过程
-
-# 帮我选裁判 必须是 agents 段中已存在的某一个名字
-judge:
-  agent: GLM
-  prompt: >-
-    你是一个公正的对话调度器 下面是 4 个 AI 助手对用户问题给出的发言意愿
-    请只输出你认为最适合回答的助手名字 可选 DeepSeek GLM Kimi Qwen 不要解释
-
 mongo:
   uri: mongodb://localhost:27017
   db: multi_chat
@@ -40,18 +6,6 @@ runtime:
   history_max_rounds: 10
   reply_flush_interval_ms: 200
   http_timeout_seconds: 30
-  # 允许模型通过 deepagents 文件工具直接读写的本地文档目录
-  # 统一写相对项目根路径 例如 doc / docs / data/manuals
-  document_roots:
-    - doc
-    - docs
-  # 仓库外的本地文档目录挂载为虚拟路径
-  # 例如配置 ~/Desktop 后 模型里可用 /desktop/xxx 访问
-  external_document_mounts:
-    - name: desktop
-      path: ~/Desktop
-    - name: documents
-      path: ~/Documents
 
 server:
   host: 0.0.0.0

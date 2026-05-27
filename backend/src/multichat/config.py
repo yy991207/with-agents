@@ -18,12 +18,12 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 import structlog
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # 启动日志 用于打印加载结果
@@ -64,100 +64,6 @@ class RuntimeConfig(BaseModel):
     history_max_rounds: int = 10
     reply_flush_interval_ms: int = 200
     http_timeout_seconds: int = 30
-    # 当前允许模型读写的项目内文档目录 相对项目根路径配置
-    # 运行时会映射成 deepagents 的虚拟绝对路径 例如 "doc" -> "/doc"
-    document_roots: list[str] = Field(default_factory=lambda: ["doc", "docs"])
-    # 仓库外的本地文档挂载点 例如桌面/文稿
-    # name 是模型看到的虚拟目录名 path 是宿主机真实路径(支持 ~/)
-    external_document_mounts: list[dict[str, str]] = Field(default_factory=list)
-
-    @field_validator("document_roots", mode="before")
-    @classmethod
-    def _normalize_document_roots(cls, value: Any) -> list[str]:
-        """把文档目录统一规整成相对项目根的 posix 路径
-
-        约束:
-            - 必须是字符串列表
-            - 只允许相对路径 不允许绝对路径
-            - 禁止出现 .. 和 ~ 避免目录逃逸
-        """
-        if value is None:
-            return ["doc", "docs"]
-        if not isinstance(value, list):
-            raise ValueError("runtime.document_roots 必须是字符串列表")
-
-        normalized: list[str] = []
-        for raw in value:
-            if not isinstance(raw, str):
-                raise ValueError("runtime.document_roots 里的每一项都必须是字符串")
-            cleaned = raw.strip().replace("\\", "/")
-            if not cleaned:
-                continue
-            path = PurePosixPath(cleaned)
-            if path.is_absolute():
-                raise ValueError(
-                    f"runtime.document_roots 只允许相对路径 收到绝对路径 {raw!r}"
-                )
-            if ".." in path.parts:
-                raise ValueError(
-                    f"runtime.document_roots 不允许包含 .. 收到 {raw!r}"
-                )
-            if "~" in path.parts:
-                raise ValueError(
-                    f"runtime.document_roots 不允许包含 ~ 收到 {raw!r}"
-                )
-            posix = path.as_posix()
-            if posix in ("", "."):
-                continue
-            normalized.append(posix)
-
-        deduped = list(dict.fromkeys(normalized))
-        return deduped or ["doc", "docs"]
-
-    @field_validator("external_document_mounts", mode="before")
-    @classmethod
-    def _normalize_external_document_mounts(
-        cls,
-        value: Any,
-    ) -> list[dict[str, str]]:
-        """规整仓库外文档挂载点
-
-        约束:
-            - name 只允许字母数字下划线中划线
-            - path 必须是绝对路径或 ~/ 开头
-            - 不允许重复 name
-        """
-        if value is None:
-            return []
-        if not isinstance(value, list):
-            raise ValueError("runtime.external_document_mounts 必须是对象列表")
-
-        normalized: list[dict[str, str]] = []
-        seen_names: set[str] = set()
-        for raw in value:
-            if not isinstance(raw, dict):
-                raise ValueError("runtime.external_document_mounts 里的每一项都必须是对象")
-            name = str(raw.get("name", "")).strip()
-            path = str(raw.get("path", "")).strip()
-            if not name or not path:
-                raise ValueError("runtime.external_document_mounts 的 name 和 path 都不能为空")
-            safe_name = name.replace("\\", "/").strip("/").strip()
-            if not safe_name:
-                raise ValueError("runtime.external_document_mounts.name 不能为空")
-            if safe_name in seen_names:
-                raise ValueError(f"runtime.external_document_mounts.name 重复 {safe_name!r}")
-            allowed_chars = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
-            if any(ch not in allowed_chars for ch in safe_name):
-                raise ValueError(
-                    f"runtime.external_document_mounts.name 只能包含字母数字下划线中划线 收到 {safe_name!r}"
-                )
-            if not (path.startswith("~/") or path.startswith("/")):
-                raise ValueError(
-                    f"runtime.external_document_mounts.path 必须是绝对路径或 ~/ 开头 收到 {path!r}"
-                )
-            normalized.append({"name": safe_name, "path": path})
-            seen_names.add(safe_name)
-        return normalized
 
 
 class ServerConfig(BaseModel):

@@ -29,7 +29,6 @@ from typing import Any, Literal
 import structlog
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend
-from deepagents.middleware.filesystem import FilesystemPermission
 from langchain_openai import ChatOpenAI
 
 from .chat_models import ReasoningChatOpenAI
@@ -89,34 +88,19 @@ MCP_SYSTEM_PROMPT = """
 - 如果用户明确问"你接了哪些 MCP 服务" 就如实告诉用户上述服务器列表
 """
 
-
-def _resolve_project_root() -> Path:
-    """解析项目根目录 供本地文档 backend 绑定用"""
-    return Path(__file__).resolve().parents[4]
-
-
 def _build_document_backend_and_permissions(
     settings: Settings,
-) -> tuple[CompositeBackend, list[FilesystemPermission]]:
-    """为 reply 模式构造可访问本地文档目录的 backend 与权限
+) -> tuple[CompositeBackend, list[Any]]:
+    """为 reply 模式构造默认整机可见的文件系统 backend
 
     设计取舍:
         - 默认 backend 指向整机根目录 /  让模型默认可见宿主机所有目录
-        - 仓库外目录(桌面/文稿等)通过 CompositeBackend 额外挂到虚拟路由
-        - 所有 backend 都走 virtual_mode=True  模型统一使用虚拟绝对路径
-          例如 /doc/a.md /desktop/todo.md
+        - 保留 CompositeBackend 形态 便于后续需要时再扩展额外挂载
+        - 不再使用白名单权限 rules  模型直接使用虚拟绝对路径访问整机文件
     """
     default_backend = FilesystemBackend(root_dir=Path("/"), virtual_mode=True)
-    routes: dict[str, FilesystemBackend] = {}
-    permissions: list[FilesystemPermission] = []
-    for mount in settings.runtime.external_document_mounts:
-        mount_name = mount["name"].strip("/")
-        mount_root = Path(mount["path"]).expanduser().resolve()
-        route_prefix = f"/{mount_name}/"
-        routes[route_prefix] = FilesystemBackend(root_dir=mount_root, virtual_mode=True)
-
-    backend = CompositeBackend(default=default_backend, routes=routes)
-    return backend, permissions
+    backend = CompositeBackend(default=default_backend, routes={})
+    return backend, []
 
 
 async def _build_one(

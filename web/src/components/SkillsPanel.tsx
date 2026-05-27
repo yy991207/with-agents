@@ -49,6 +49,7 @@ export default function SkillsPanel() {
   const [skills, setSkills] = useState<SkillEditDraft[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [reloading, setReloading] = useState(false);
 
   const [editOpen, setEditOpen] = useState(false);
   const [editingSkill, setEditingSkill] = useState<SkillEditDraft | null>(null);
@@ -149,11 +150,14 @@ export default function SkillsPanel() {
   };
 
   const handleReload = async () => {
+    setReloading(true);
     try {
       const resp = await reloadAgents();
       message.success(`已重载 ${resp.reloaded} 个 agent，skills 已生效`);
     } catch (e) {
       message.error(`重载失败:${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setReloading(false);
     }
   };
 
@@ -217,7 +221,27 @@ export default function SkillsPanel() {
           {skills.length === 0 && !loading && (
             <Button onClick={handleInstallDefaults} loading={saving}>安装默认 Skills</Button>
           )}
-          <Button icon={<PlusOutlined />} onClick={handleAdd} disabled={saving || loading}>新增 Skill</Button>
+          <Tooltip title="重载应用">
+            <Button
+              aria-label="重载应用"
+              type="text"
+              shape="circle"
+              icon={<ReloadOutlined />}
+              onClick={handleReload}
+              loading={reloading}
+              disabled={saving || loading}
+            />
+          </Tooltip>
+          <Tooltip title="新增 Skill">
+            <Button
+              aria-label="新增 Skill"
+              type="text"
+              shape="circle"
+              icon={<PlusOutlined />}
+              onClick={handleAdd}
+              disabled={saving || loading}
+            />
+          </Tooltip>
         </Space>
       </div>
       <Paragraph type="secondary" style={{ marginTop: 4 }}>
@@ -227,7 +251,6 @@ export default function SkillsPanel() {
       <div style={{ marginBottom: 12 }}>
         <Space>
           <Text type="secondary" style={{ fontSize: 12 }}>修改 skills 配置后需点击"重载应用"才会对模型生效</Text>
-          <Button icon={<ReloadOutlined />} size="small" onClick={handleReload}>重载应用</Button>
         </Space>
       </div>
 

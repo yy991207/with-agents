@@ -31,7 +31,6 @@ from ..core.models import (
     Session,
     SessionMeta,
     TaskState,
-    TenantRecord,
     UserRecord,
 )
 
@@ -137,7 +136,6 @@ def _agent_doc_to_record(doc: dict[str, Any]) -> AgentRecord:
     return AgentRecord.model_validate(
         {
             "name": doc["name"],
-            "tenant_id": doc.get("tenant_id", "legacy"),
             "owner_user_id": doc.get("owner_user_id", "system"),
             "display_name": doc.get("display_name") or doc["name"],
             "provider_type": doc.get("provider_type", "openai_compatible"),
@@ -234,10 +232,7 @@ class MotorMongoStorage:
             [("name", ASCENDING)], unique=True, name="uniq_agent_name"
         )
 
-        # tenants / users / auth_sessions 为多租户登录基础设施
-        await self._db["tenants"].create_index(
-            [("tenant_name", ASCENDING)], unique=True, name="uniq_tenant_name"
-        )
+        # users / auth_sessions
         await self._db["users"].create_index(
             [("username", ASCENDING)],
             unique=True,
@@ -260,52 +255,18 @@ class MotorMongoStorage:
         )
 
     # ================================================================ Auth
-    async def create_tenant(
-        self,
-        tenant_name: str,
-    ) -> TenantRecord:
-        """创建租户 tenant_name 全局唯一"""
-        now = _utcnow()
-        tenant_id = _new_id()
-        doc = {
-            "tenant_id": tenant_id,
-            "tenant_name": tenant_name,
-            "created_at": now,
-        }
-        try:
-            await self._db["tenants"].insert_one(doc)
-        except Exception as exc:
-            raise ValueError(f"tenant_name 已存在 name={tenant_name}") from exc
-        return TenantRecord.model_validate(doc)
-
-    async def get_tenant_by_name(self, tenant_name: str) -> TenantRecord | None:
-        """按 tenant_name 查询租户"""
-        doc = await self._db["tenants"].find_one({"tenant_name": tenant_name}, {"_id": 0})
-        if doc is None:
-            return None
-        return TenantRecord.model_validate(doc)
-
-    async def get_tenant_by_id(self, tenant_id: str) -> TenantRecord | None:
-        """按 tenant_id 查询租户"""
-        doc = await self._db["tenants"].find_one({"tenant_id": tenant_id}, {"_id": 0})
-        if doc is None:
-            return None
-        return TenantRecord.model_validate(doc)
-
     async def create_user(
         self,
-        tenant_id: str,
         username: str,
         password_hash: str,
         *,
         role: Literal["owner", "member"] = "owner",
     ) -> UserRecord:
-        """在指定租户下创建用户 username 在租户内唯一"""
+        """创建用户 username 全局唯一"""
         now = _utcnow()
         user_id = _new_id()
         doc = {
             "user_id": user_id,
-            "tenant_id": tenant_id,
             "username": username,
             "password_hash": password_hash,
             "role": role,
@@ -315,20 +276,16 @@ class MotorMongoStorage:
             await self._db["users"].insert_one(doc)
         except Exception as exc:
             raise ValueError(
-                f"username 已存在 tenant_id={tenant_id} username={username}"
+                f"username 已存在 username={username}"
             ) from exc
         return UserRecord.model_validate(doc)
 
     async def get_user_by_username(
         self,
         username: str,
-        tenant_id: str | None = None,
     ) -> UserRecord | None:
-        """按用户名查用户 tenant_id 传入时再额外做租户过滤"""
-        query: dict[str, Any] = {"username": username}
-        if tenant_id is not None:
-            query["tenant_id"] = tenant_id
-        doc = await self._db["users"].find_one(query, {"_id": 0})
+        """按用户名全局查询用户"""
+        doc = await self._db["users"].find_one({"username": username}, {"_id": 0})
         if doc is None:
             return None
         return UserRecord.model_validate(doc)
@@ -340,13 +297,8 @@ class MotorMongoStorage:
             return None
         return UserRecord.model_validate(doc)
 
-    async def get_user_count_by_tenant(self, tenant_id: str) -> int:
-        """统计租户下已有用户数 用于决定首个用户角色"""
-        return int(await self._db["users"].count_documents({"tenant_id": tenant_id}))
-
     async def create_auth_session(
         self,
-        tenant_id: str,
         user_id: str,
         *,
         expires_in_hours: int,
@@ -357,7 +309,6 @@ class MotorMongoStorage:
         expires_at = now + timedelta(hours=expires_in_hours)
         doc = {
             "session_id": session_id,
-            "tenant_id": tenant_id,
             "user_id": user_id,
             "expires_at": expires_at,
             "created_at": now,
@@ -381,7 +332,6 @@ class MotorMongoStorage:
         self,
         title: str | None = None,
         *,
-        tenant_id: str,
         owner_user_id: str,
         parent_session_id: str | None = None,
         branch_from_task_id: str | None = None,
@@ -394,7 +344,6 @@ class MotorMongoStorage:
         now = _utcnow()
         doc = {
             "session_id": session_id,
-            "tenant_id": tenant_id,
             "owner_user_id": owner_user_id,
             "title": title or "",
             "metadata": {},
@@ -412,7 +361,6 @@ class MotorMongoStorage:
     async def list_sessions(
         self,
         *,
-        tenant_id: str,
         owner_user_id: str,
         limit: int = 50,
     ) -> list[SessionMeta]:
@@ -420,7 +368,7 @@ class MotorMongoStorage:
         cursor = (
             self._db["sessions"]
             .find(
-                {"tenant_id": tenant_id, "owner_user_id": owner_user_id},
+                {"owner_user_id": owner_user_id},
                 {"_id": 0},
             )
             .sort("updated_at", DESCENDING)
@@ -435,14 +383,12 @@ class MotorMongoStorage:
         self,
         session_id: str,
         *,
-        tenant_id: str,
         owner_user_id: str,
     ) -> Session | None:
         """单个会话详情 不内联 rounds 路由层视情况再 list_rounds"""
         doc = await self._db["sessions"].find_one(
             {
                 "session_id": session_id,
-                "tenant_id": tenant_id,
                 "owner_user_id": owner_user_id,
             }
         )
@@ -552,7 +498,6 @@ class MotorMongoStorage:
         self,
         session_id: str,
         *,
-        tenant_id: str,
         owner_user_id: str,
     ) -> int:
         """删除 session 与其下所有 rounds 返回删除的 round 数
@@ -565,7 +510,6 @@ class MotorMongoStorage:
         sess = await self._db["sessions"].find_one(
             {
                 "session_id": session_id,
-                "tenant_id": tenant_id,
                 "owner_user_id": owner_user_id,
             }
         )
@@ -598,7 +542,6 @@ class MotorMongoStorage:
         await self._db["sessions"].delete_one(
             {
                 "session_id": session_id,
-                "tenant_id": tenant_id,
                 "owner_user_id": owner_user_id,
             }
         )
@@ -745,7 +688,6 @@ class MotorMongoStorage:
         self,
         *,
         source_session_id: str,
-        tenant_id: str,
         owner_user_id: str,
         source_task_id: str,
         source_role: Literal["user", "assistant"],
@@ -766,7 +708,6 @@ class MotorMongoStorage:
         source_session = await self._db["sessions"].find_one(
             {
                 "session_id": source_session_id,
-                "tenant_id": tenant_id,
                 "owner_user_id": owner_user_id,
             }
         )
@@ -803,7 +744,6 @@ class MotorMongoStorage:
         branch_title = f"分支 · {title_seed[:32]}".strip()
         new_session_id = await self.create_session(
             branch_title,
-            tenant_id=tenant_id,
             owner_user_id=owner_user_id,
             parent_session_id=source_session_id,
             branch_from_task_id=source_task_id,
@@ -1026,16 +966,35 @@ class MotorMongoStorage:
         return modified
 
     # =============================================================== Agents CRUD
-    async def list_agents(self) -> list[AgentRecord]:
-        """按 name 升序列出所有 agent"""
-        cursor = self._db["agents"].find({}, {"_id": 0}).sort("name", ASCENDING)
+    async def list_agents(self, *, owner_user_id: str | None = None) -> list[AgentRecord]:
+        """按 name 升序列出 agent  owner_user_id 为 None 时列出全部（内部用）"""
+        if owner_user_id is None:
+            cursor = self._db["agents"].find({}, {"_id": 0}).sort("name", ASCENDING)
+        else:
+            cursor = (
+                self._db["agents"]
+                .find(
+                    {"$or": [
+                        {"owner_user_id": {"$in": [owner_user_id, "system"]}},
+                        {"owner_user_id": {"$exists": False}},
+                    ]},
+                    {"_id": 0},
+                )
+                .sort("name", ASCENDING)
+            )
         out: list[AgentRecord] = []
         async for doc in cursor:
             out.append(_agent_doc_to_record(doc))
         return out
 
-    async def get_agent(self, name: str) -> AgentRecord | None:
-        doc = await self._db["agents"].find_one({"name": name}, {"_id": 0})
+    async def get_agent(self, name: str, *, owner_user_id: str) -> AgentRecord | None:
+        doc = await self._db["agents"].find_one(
+            {"name": name, "$or": [
+                {"owner_user_id": {"$in": [owner_user_id, "system"]}},
+                {"owner_user_id": {"$exists": False}},
+            ]},
+            {"_id": 0},
+        )
         if doc is None:
             return None
         return _agent_doc_to_record(doc)
@@ -1050,6 +1009,8 @@ class MotorMongoStorage:
         prompt: str,
         available_models: list[ModelCatalogEntry] | None = None,
         provider_type: str = "openai_compatible",
+        *,
+        owner_user_id: str,
     ) -> AgentRecord:
         """新建 agent  name 不传则自动生成 agent_<8位hex>  name 重复抛 ValueError
 
@@ -1066,6 +1027,7 @@ class MotorMongoStorage:
         models_list = _normalize_models(available_models) or []
         doc: dict[str, Any] = {
             "name": final_name,
+            "owner_user_id": owner_user_id,
             "display_name": display_name.strip() or final_name,
             "provider_type": provider_type or "openai_compatible",
             "base_url": base_url,
@@ -1079,13 +1041,20 @@ class MotorMongoStorage:
         await self._db["agents"].insert_one(dict(doc))
         return _agent_doc_to_record(doc)
 
-    async def delete_agent(self, name: str) -> None:
+    async def delete_agent(self, name: str, *, owner_user_id: str) -> None:
         """删除 agent  若该 name 是当前 judge_target 抛 ValueError 路由层映射 409
 
-        不存在抛 KeyError 路由层映射 404
+        不存在或不属于当前用户抛 KeyError 路由层映射 404
+        system agent 不可删除
         """
         existing = await self._db["agents"].find_one({"name": name}, {"_id": 0})
         if existing is None:
+            raise KeyError(f"agent 不存在 name={name}")
+
+        existing_owner = existing.get("owner_user_id", "system")
+        if existing_owner == "system":
+            raise ValueError(f"system agent 不可删除 name={name}")
+        if existing_owner != owner_user_id:
             raise KeyError(f"agent 不存在 name={name}")
 
         # 校验是否被 judge 指针引用
@@ -1106,15 +1075,23 @@ class MotorMongoStorage:
         available_models: list | None = None,
         prompt: str | None = None,
         provider_type: str | None = None,
+        owner_user_id: str,
     ) -> AgentRecord:
         """部分更新 agent  None 表示保留旧值  version 自增  不存在抛 KeyError
 
+        system agent 不可更新
         新增 H7 配置回滚:
             - 写新值前 先把当前值整体归档到 agent_history 集合
             - 归档文档保留 完整字段 + archived_at archived_reason
         """
         existing = await self._db["agents"].find_one({"name": name}, {"_id": 0})
         if existing is None:
+            raise KeyError(f"agent 不存在 name={name}")
+
+        existing_owner = existing.get("owner_user_id", "system")
+        if existing_owner == "system":
+            raise ValueError(f"system agent 不可修改 name={name}")
+        if existing_owner != owner_user_id:
             raise KeyError(f"agent 不存在 name={name}")
 
         now = _utcnow()

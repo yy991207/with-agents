@@ -157,7 +157,6 @@ async def ask(
         task_id = await tm.create_task(
             session_id,
             body.user_message,
-            tenant_id=identity.tenant_id,
             owner_user_id=identity.user_id,
             agents=list(body.agents),
             input_mode=body.input_mode,

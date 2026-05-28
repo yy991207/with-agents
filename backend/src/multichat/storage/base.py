@@ -19,7 +19,6 @@ from ..core.models import (
     Session,
     SessionMeta,
     TaskState,
-    TenantRecord,
     UserRecord,
 )
 
@@ -35,18 +34,8 @@ class MongoStorage(Protocol):
     async def ensure_indexes(self) -> None: ...
 
     # --------------------------------------------------------------------- Auth
-    async def create_tenant(
-        self,
-        tenant_name: str,
-    ) -> TenantRecord: ...
-
-    async def get_tenant_by_name(self, tenant_name: str) -> TenantRecord | None: ...
-
-    async def get_tenant_by_id(self, tenant_id: str) -> TenantRecord | None: ...
-
     async def create_user(
         self,
-        tenant_id: str,
         username: str,
         password_hash: str,
         *,
@@ -56,16 +45,12 @@ class MongoStorage(Protocol):
     async def get_user_by_username(
         self,
         username: str,
-        tenant_id: str | None = None,
     ) -> UserRecord | None: ...
 
     async def get_user_by_id(self, user_id: str) -> UserRecord | None: ...
 
-    async def get_user_count_by_tenant(self, tenant_id: str) -> int: ...
-
     async def create_auth_session(
         self,
-        tenant_id: str,
         user_id: str,
         *,
         expires_in_hours: int,
@@ -80,7 +65,6 @@ class MongoStorage(Protocol):
         self,
         title: str | None = None,
         *,
-        tenant_id: str,
         owner_user_id: str,
         parent_session_id: str | None = None,
         branch_from_task_id: str | None = None,
@@ -92,7 +76,6 @@ class MongoStorage(Protocol):
     async def list_sessions(
         self,
         *,
-        tenant_id: str,
         owner_user_id: str,
         limit: int = 50,
     ) -> list[SessionMeta]: ...
@@ -101,7 +84,6 @@ class MongoStorage(Protocol):
         self,
         session_id: str,
         *,
-        tenant_id: str,
         owner_user_id: str,
     ) -> Session | None: ...
 
@@ -113,7 +95,6 @@ class MongoStorage(Protocol):
         self,
         session_id: str,
         *,
-        tenant_id: str,
         owner_user_id: str,
     ) -> int:
         """删除 session 与其下所有 rounds  返回删除的 round 数
@@ -199,7 +180,6 @@ class MongoStorage(Protocol):
         self,
         *,
         source_session_id: str,
-        tenant_id: str,
         owner_user_id: str,
         source_task_id: str,
         source_role: Literal["user", "assistant"],
@@ -211,9 +191,9 @@ class MongoStorage(Protocol):
         ...
 
     # -------------------------------------------------------------------- Agents
-    async def list_agents(self) -> list[AgentRecord]: ...
+    async def list_agents(self, *, owner_user_id: str | None = None) -> list[AgentRecord]: ...
 
-    async def get_agent(self, name: str) -> AgentRecord | None: ...
+    async def get_agent(self, name: str, *, owner_user_id: str) -> AgentRecord | None: ...
 
     async def create_agent(
         self,
@@ -225,11 +205,13 @@ class MongoStorage(Protocol):
         prompt: str,
         available_models: list[ModelCatalogEntry] | None = None,
         provider_type: str = "openai_compatible",
+        *,
+        owner_user_id: str,
     ) -> AgentRecord:
         """新建 agent  name 不传则自动生成 agent_<8位hex>  name 重复抛 ValueError"""
         ...
 
-    async def delete_agent(self, name: str) -> None:
+    async def delete_agent(self, name: str, *, owner_user_id: str) -> None:
         """删除 agent  若该 name 是当前 judge_target 抛 ValueError 路由层映射 409  不存在抛 KeyError"""
         ...
 
@@ -244,6 +226,7 @@ class MongoStorage(Protocol):
         available_models: list | None = None,
         prompt: str | None = None,
         provider_type: str | None = None,
+        owner_user_id: str,
     ) -> AgentRecord:
         """部分更新 agent  None 表示保留旧值  version 自增  不存在抛 KeyError"""
         ...

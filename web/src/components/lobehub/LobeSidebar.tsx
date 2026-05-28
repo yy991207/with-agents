@@ -60,7 +60,6 @@ export default function LobeSidebar({
       content: (
         <div style={{ display: 'grid', gap: 8, paddingTop: 8 }}>
           <Text>账号：{currentUser?.username || '-'}</Text>
-          <Text>租户：{currentUser?.tenant_name || '-'}</Text>
           <Text type="secondary">ID：{currentUser?.user_id || '-'}</Text>
         </div>
       ),
@@ -499,7 +498,7 @@ export default function LobeSidebar({
                 {currentUser?.username || '未登录'}
               </Text>
               <Text type="secondary" style={{ fontSize: 12 }} ellipsis>
-                {currentUser?.tenant_name || '个人信息'}
+                个人信息
               </Text>
             </div>
           </button>

@@ -103,7 +103,6 @@ async def list_sessions(
     """列出最近会话 给前端左侧栏初始化用 按 updated_at 降序"""
     storage = request.app.state.storage
     metas = await storage.list_sessions(
-        tenant_id=identity.tenant_id,
         owner_user_id=identity.user_id,
         limit=limit,
     )
@@ -126,7 +125,6 @@ async def delete_session(
     try:
         await storage.delete_session(
             session_id,
-            tenant_id=identity.tenant_id,
             owner_user_id=identity.user_id,
         )
     except KeyError:
@@ -151,7 +149,6 @@ async def batch_delete_sessions(
         try:
             await storage.delete_session(
                 sid,
-                tenant_id=identity.tenant_id,
                 owner_user_id=identity.user_id,
             )
             deleted += 1
@@ -186,7 +183,6 @@ async def branch_session(
     try:
         new_session_id, draft_message = await storage.clone_session_branch(
             source_session_id=session_id,
-            tenant_id=identity.tenant_id,
             owner_user_id=identity.user_id,
             source_task_id=body.source_task_id,
             source_role=body.source_role,
@@ -237,7 +233,6 @@ async def compact_session(
     # 1 拿 session
     session = await storage.get_session(
         session_id,
-        tenant_id=identity.tenant_id,
         owner_user_id=identity.user_id,
     )
     if session is None:
@@ -273,7 +268,7 @@ async def compact_session(
     last_reply = done_rounds[-1].reply or {}
     last_agent = last_reply.get("agent")
     if isinstance(last_agent, str) and last_agent:
-        cand = await storage.get_agent(last_agent)
+        cand = await storage.get_agent(last_agent, owner_user_id=identity.user_id)
         if cand is not None:
             agent_name = last_agent
 
@@ -284,7 +279,7 @@ async def compact_session(
         except KeyError:
             judge = ""
         if judge:
-            cand = await storage.get_agent(judge)
+            cand = await storage.get_agent(judge, owner_user_id=identity.user_id)
             if cand is not None:
                 agent_name = judge
 
@@ -294,7 +289,7 @@ async def compact_session(
             status_code=503, detail="no agent available for summarization"
         )
 
-    record = await storage.get_agent(agent_name)
+    record = await storage.get_agent(agent_name, owner_user_id=identity.user_id)
     if record is None:
         # 拿到 name 但 agent 已被并发删除  极少见  保险起见再判一次
         raise HTTPException(

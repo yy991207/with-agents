@@ -209,7 +209,6 @@ class Session(BaseModel):
     """
 
     session_id: str
-    tenant_id: str = "legacy"
     owner_user_id: str = "system"
     title: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -243,7 +242,6 @@ class SessionMeta(BaseModel):
     """会话列表展示用 轻量元信息 不带 rounds 详细内容"""
 
     session_id: str
-    tenant_id: str = "legacy"
     owner_user_id: str = "system"
     title: str = ""
     created_at: datetime
@@ -268,19 +266,10 @@ class ModelCatalogEntry(BaseModel):
     max_input_tokens: int = Field(..., gt=0, description="模型最大输入 token 窗口")
 
 
-class TenantRecord(BaseModel):
-    """租户记录 最小可用版只包含全局唯一租户名"""
-
-    tenant_id: str
-    tenant_name: str
-    created_at: datetime = Field(default_factory=_utcnow)
-
-
 class UserRecord(BaseModel):
-    """用户记录 与租户强绑定"""
+    """用户记录 username 全局唯一"""
 
     user_id: str
-    tenant_id: str
     username: str
     password_hash: str
     role: Literal["owner", "member"] = "owner"
@@ -291,7 +280,6 @@ class AuthSessionRecord(BaseModel):
     """登录态会话记录 通过 cookie session_id 反查"""
 
     session_id: str
-    tenant_id: str
     user_id: str
     expires_at: datetime
     created_at: datetime = Field(default_factory=_utcnow)
@@ -300,10 +288,8 @@ class AuthSessionRecord(BaseModel):
 class RequestIdentity(BaseModel):
     """请求上下文里的当前身份 由鉴权依赖层注入"""
 
-    tenant_id: str
     user_id: str
     username: str = ""
-    tenant_name: str = ""
 
 
 class AgentAvatarRef(BaseModel):
@@ -319,7 +305,6 @@ class SkillBundleRecord(BaseModel):
     """skill bundle 头信息 一条记录代表一个用户自己的 skill 包"""
 
     skill_id: str
-    tenant_id: str
     owner_user_id: str
     name: str
     description: str = ""
@@ -334,7 +319,6 @@ class SkillBundleFileRecord(BaseModel):
 
     file_id: str
     skill_id: str
-    tenant_id: str
     owner_user_id: str
     path: str
     kind: Literal["markdown", "python", "json", "text", "other"] = "other"
@@ -362,7 +346,6 @@ class AgentRecord(BaseModel):
     """
 
     name: str
-    tenant_id: str = "legacy"
     owner_user_id: str = "system"
     display_name: str = ""
     provider_type: Literal["openai_compatible"] = "openai_compatible"

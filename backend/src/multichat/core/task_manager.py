@@ -87,7 +87,6 @@ class TaskManager:
         self,
         session_id: str | None,
         user_message: str,
-        tenant_id: str,
         owner_user_id: str,
         agents: list[str],
         input_mode: Literal["single", "multi"] = "single",
@@ -151,7 +150,6 @@ class TaskManager:
         if not session_id:
             session_id = await self._storage.create_session(
                 title=user_message[:40] or "新会话",
-                tenant_id=tenant_id,
                 owner_user_id=owner_user_id,
             )
 

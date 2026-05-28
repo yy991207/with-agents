@@ -27,7 +27,6 @@ async def get_history(
     storage = request.app.state.storage
     session = await storage.get_session(
         session_id,
-        tenant_id=identity.tenant_id,
         owner_user_id=identity.user_id,
     )
     if session is None:

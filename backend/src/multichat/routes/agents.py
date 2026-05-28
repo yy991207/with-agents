@@ -306,11 +306,11 @@ async def _discover_openai_compatible_models(
 @router.get("/agents", response_model=AgentsListResponse)
 async def list_agents(
     request: Request,
-    _identity: RequestIdentity = Depends(get_current_identity),
+    identity: RequestIdentity = Depends(get_current_identity),
 ) -> AgentsListResponse:
-    """列出全部 agent 配置与当前 judge 指针 给前端 SettingsDrawer 初始化用"""
+    """列出当前用户可见的 agent 配置与当前 judge 指针 给前端 SettingsDrawer 初始化用"""
     storage = request.app.state.storage
-    records = await storage.list_agents()
+    records = await storage.list_agents(owner_user_id=identity.user_id)
     try:
         judge = await storage.get_judge_target()
     except KeyError:
@@ -339,15 +339,18 @@ async def discover_models(body: DiscoverModelsRequest) -> DiscoverModelsResponse
 
 @router.post("/agents/{name}/models/discover", response_model=DiscoverModelsResponse)
 async def discover_agent_models(
-    name: str, body: DiscoverAgentModelsRequest, request: Request
+    name: str,
+    body: DiscoverAgentModelsRequest,
+    request: Request,
+    identity: RequestIdentity = Depends(get_current_identity),
 ) -> DiscoverModelsResponse:
     """用已有 agent 的凭证动态获取模型列表
 
     如果前端刚改了 base_url 或 api_key，可在 body 中带上临时值；否则使用 DB 中当前值。
-    这个接口只读取模型，不修改 agent，避免“查询模型”动作隐式保存配置。
+    这个接口只读取模型，不修改 agent，避免"查询模型"动作隐式保存配置。
     """
     storage = request.app.state.storage
-    existing = await storage.get_agent(name)
+    existing = await storage.get_agent(name, owner_user_id=identity.user_id)
     if existing is None:
         raise HTTPException(404, f"agent not found: {name}")
 
@@ -363,7 +366,11 @@ async def discover_agent_models(
 
 
 @router.post("/agents", response_model=AgentView, status_code=201)
-async def create_agent(body: CreateAgentRequest, request: Request) -> AgentView:
+async def create_agent(
+    body: CreateAgentRequest,
+    request: Request,
+    identity: RequestIdentity = Depends(get_current_identity),
+) -> AgentView:
     """新建 agent  name 由后端生成 形如 agent_<8位hex>  display_name 由用户决定
 
     新建即热注册 让后续对话立即可见
@@ -375,7 +382,7 @@ async def create_agent(body: CreateAgentRequest, request: Request) -> AgentView:
     # 从已有 agent 复制 key
     api_key = body.api_key
     if body.copy_key_from:
-        existing = await storage.get_agent(body.copy_key_from)
+        existing = await storage.get_agent(body.copy_key_from, owner_user_id=identity.user_id)
         if existing is None:
             raise HTTPException(400, f"copy_key_from agent not found: {body.copy_key_from}")
         api_key = existing.api_key
@@ -392,6 +399,7 @@ async def create_agent(body: CreateAgentRequest, request: Request) -> AgentView:
             prompt=body.prompt,
             available_models=_models_payload(body.available_models) or [],
             provider_type=body.provider_type,
+            owner_user_id=identity.user_id,
         )
     except ValueError as exc:
         # 极小概率 uuid 碰撞 让前端重试
@@ -402,7 +410,7 @@ async def create_agent(body: CreateAgentRequest, request: Request) -> AgentView:
     except Exception as exc:
         _logger.error("create_agent reload 失败 回滚", name=record.name, err=str(exc))
         try:
-            await storage.delete_agent(record.name)
+            await storage.delete_agent(record.name, owner_user_id=identity.user_id)
         except Exception:
             _logger.exception("回滚 delete_agent 失败 忽略", name=record.name)
         raise HTTPException(500, f"reload failed reverted: {exc}") from exc
@@ -410,12 +418,16 @@ async def create_agent(body: CreateAgentRequest, request: Request) -> AgentView:
 
 
 @router.delete("/agents/{name}", status_code=204)
-async def delete_agent(name: str, request: Request) -> None:
+async def delete_agent(
+    name: str,
+    request: Request,
+    identity: RequestIdentity = Depends(get_current_identity),
+) -> None:
     """删除 agent  若该 name 是当前 judge target 返回 409  不存在返回 404"""
     storage = request.app.state.storage
     registry = request.app.state.deep_agents
     try:
-        await storage.delete_agent(name)
+        await storage.delete_agent(name, owner_user_id=identity.user_id)
     except KeyError as exc:
         raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:
@@ -425,7 +437,10 @@ async def delete_agent(name: str, request: Request) -> None:
 
 @router.put("/agents/{name}", response_model=UpdateAgentResponse)
 async def update_agent(
-    name: str, body: UpdateAgentRequest, request: Request
+    name: str,
+    body: UpdateAgentRequest,
+    request: Request,
+    identity: RequestIdentity = Depends(get_current_identity),
 ) -> UpdateAgentResponse:
     """局部更新 agent 任意字段 成功后立即热替换 deep_agent 实例
 
@@ -439,7 +454,7 @@ async def update_agent(
     storage = request.app.state.storage
     registry = request.app.state.deep_agents
 
-    existing = await storage.get_agent(name)
+    existing = await storage.get_agent(name, owner_user_id=identity.user_id)
     if existing is None:
         raise HTTPException(404, f"agent not found: {name}")
 
@@ -489,6 +504,7 @@ async def update_agent(
         available_models=_models_payload(body.available_models),
         prompt=body.prompt,
         provider_type=body.provider_type,
+        owner_user_id=identity.user_id,
     )
 
     # 热替换 失败回滚 DB 重新写回旧值 让 DB 与内存一致
@@ -515,6 +531,7 @@ async def update_agent(
             ],
             prompt=existing.prompt,
             provider_type=existing.provider_type,
+            owner_user_id=identity.user_id,
         )
         raise HTTPException(500, f"reload failed reverted: {exc}") from exc
 
@@ -536,11 +553,14 @@ async def update_judge(body: UpdateJudgeRequest, request: Request) -> None:
 # ============================================================ 配置历史/回滚
 @router.get("/agents/{name}/history", response_model=list[AgentHistoryItem])
 async def list_agent_history(
-    name: str, request: Request, limit: int = 20
+    name: str,
+    request: Request,
+    limit: int = 20,
+    identity: RequestIdentity = Depends(get_current_identity),
 ) -> list[AgentHistoryItem]:
     """列出指定 agent 的历史版本 按 version 降序"""
     storage = request.app.state.storage
-    if await storage.get_agent(name) is None:
+    if await storage.get_agent(name, owner_user_id=identity.user_id) is None:
         raise HTTPException(404, f"agent not found: {name}")
     history = await storage.list_agent_history(name, limit=limit)
     out: list[AgentHistoryItem] = []
@@ -580,13 +600,16 @@ async def list_agent_history(
 
 @router.post("/agents/{name}/revert", response_model=UpdateAgentResponse)
 async def revert_agent(
-    name: str, body: RevertAgentRequest, request: Request
+    name: str,
+    body: RevertAgentRequest,
+    request: Request,
+    identity: RequestIdentity = Depends(get_current_identity),
 ) -> UpdateAgentResponse:
     """把 agent 回滚到指定历史版本 内部走 upsert 让 version 继续 +1"""
     storage = request.app.state.storage
     registry = request.app.state.deep_agents
 
-    current = await storage.get_agent(name)
+    current = await storage.get_agent(name, owner_user_id=identity.user_id)
     if current is None:
         raise HTTPException(404, f"agent not found: {name}")
     target = await storage.get_agent_history(name, body.target_version)
@@ -613,6 +636,7 @@ async def revert_agent(
         available_models=target_models,
         prompt=str(target.get("prompt", current.prompt)),
         provider_type=str(target.get("provider_type", current.provider_type)),
+        owner_user_id=identity.user_id,
     )
     try:
         await registry.reload(new_record)
@@ -635,6 +659,7 @@ async def revert_agent(
             ],
             prompt=current.prompt,
             provider_type=current.provider_type,
+            owner_user_id=identity.user_id,
         )
         raise HTTPException(500, f"reload failed reverted: {exc}") from exc
     return UpdateAgentResponse(
@@ -661,7 +686,10 @@ _ALLOWED_IMAGE_MIMES: dict[str, str] = {
 
 @router.post("/agents/{name}/avatar", response_model=AgentView)
 async def upload_agent_avatar(
-    name: str, request: Request, file: UploadFile = File(...)
+    name: str,
+    request: Request,
+    file: UploadFile = File(...),
+    identity: RequestIdentity = Depends(get_current_identity),
 ) -> AgentView:
     """上传 agent 头像  返回更新后的 AgentView
 
@@ -671,7 +699,7 @@ async def upload_agent_avatar(
         - 415 mime 不在白名单
     """
     storage = request.app.state.storage
-    existing = await storage.get_agent(name)
+    existing = await storage.get_agent(name, owner_user_id=identity.user_id)
     if existing is None:
         raise HTTPException(404, f"agent not found: {name}")
 
@@ -697,7 +725,7 @@ async def upload_agent_avatar(
     object_store = request.app.state.object_store
     ext = canon_mime.split("/")[-1]
     object_key = (
-        f"tenants/{existing.tenant_id}/users/{existing.owner_user_id}/"
+        f"users/{existing.owner_user_id}/"
         f"avatars/{name}/{uuid.uuid4().hex}.{ext}"
     )
     avatar_meta = await object_store.put_bytes(object_key, payload, canon_mime)
@@ -712,11 +740,15 @@ async def upload_agent_avatar(
 
 
 @router.get("/agents/{name}/avatar")
-async def get_agent_avatar(name: str, request: Request) -> Response:
+async def get_agent_avatar(
+    name: str,
+    request: Request,
+    identity: RequestIdentity = Depends(get_current_identity),
+) -> Response:
     """返回 agent 头像原始二进制 给前端 img src 直接展示"""
     storage = request.app.state.storage
     object_store = request.app.state.object_store
-    record = await storage.get_agent(name)
+    record = await storage.get_agent(name, owner_user_id=identity.user_id)
     if record is None:
         raise HTTPException(404, f"agent not found: {name}")
     if record.avatar is None:
@@ -730,11 +762,15 @@ async def get_agent_avatar(name: str, request: Request) -> Response:
 
 
 @router.delete("/agents/{name}/avatar", response_model=AgentView)
-async def delete_agent_avatar(name: str, request: Request) -> AgentView:
+async def delete_agent_avatar(
+    name: str,
+    request: Request,
+    identity: RequestIdentity = Depends(get_current_identity),
+) -> AgentView:
     """清除 agent 头像  返回更新后的 AgentView (avatar_data_url=None)"""
     storage = request.app.state.storage
     object_store = request.app.state.object_store
-    existing = await storage.get_agent(name)
+    existing = await storage.get_agent(name, owner_user_id=identity.user_id)
     if existing is None:
         raise HTTPException(404, f"agent not found: {name}")
     if existing.avatar is not None:

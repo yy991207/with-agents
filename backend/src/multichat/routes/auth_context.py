@@ -1,6 +1,6 @@
 """认证上下文依赖
 
-负责把 cookie session 解析成当前请求身份，供后续多租户路由统一复用。
+负责把 cookie session 解析成当前请求身份，供后续路由统一复用。
 """
 
 from __future__ import annotations
@@ -35,14 +35,11 @@ async def get_current_identity(request: Request) -> RequestIdentity:
         await storage.delete_auth_session(session.session_id)
         raise HTTPException(401, "登录态已过期")
 
-    tenant = await storage.get_tenant_by_id(session.tenant_id)
     user = await storage.get_user_by_id(session.user_id)
-    if tenant is None or user is None:
+    if user is None:
         raise HTTPException(401, "登录态无效")
 
     return RequestIdentity(
-        tenant_id=tenant.tenant_id,
         user_id=user.user_id,
         username=user.username,
-        tenant_name=tenant.tenant_name,
     )

@@ -1,7 +1,6 @@
 import { Button, Form, Input } from 'antd';
 
 export interface RegisterFormValue {
-  tenantName: string;
   username: string;
   password: string;
   confirmPassword: string;
@@ -47,13 +46,6 @@ export default function RegisterPage({
       </div>
 
       <Form<RegisterFormValue> className="auth-form" layout="vertical" onFinish={onSubmit} requiredMark={false}>
-        <Form.Item
-          label="租户名"
-          name="tenantName"
-          rules={[{ required: true, message: '请输入租户名' }]}
-        >
-          <Input placeholder="输入租户/团队名称" />
-        </Form.Item>
         <Form.Item
           label="账号"
           name="username"

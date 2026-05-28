@@ -581,7 +581,6 @@ export default function App() {
 
   const handleRegister = async (payload: RegisterFormValue) => {
     await register({
-      tenant_name: payload.tenantName.trim(),
       username: payload.username.trim(),
       password: payload.password,
     });

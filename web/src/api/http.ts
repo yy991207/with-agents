@@ -164,7 +164,6 @@ export function batchDeleteSessions(
 // ====== 认证相关 API ======
 
 export interface RegisterPayload {
-  tenant_name: string;
   username: string;
   password: string;
 }
@@ -175,8 +174,6 @@ export interface LoginPayload {
 }
 
 export interface CurrentUserResponse {
-  tenant_id: string;
-  tenant_name: string;
   user_id: string;
   username: string;
 }

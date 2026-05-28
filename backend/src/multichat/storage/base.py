@@ -85,7 +85,7 @@ class MongoStorage(Protocol):
         self,
         session_id: str,
         *,
-        owner_user_id: str,
+        owner_user_id: str | None = None,
     ) -> Session | None: ...
 
     async def update_session_meta(
@@ -194,7 +194,7 @@ class MongoStorage(Protocol):
     # -------------------------------------------------------------------- Agents
     async def list_agents(self, *, owner_user_id: str | None = None) -> list[AgentRecord]: ...
 
-    async def get_agent(self, name: str, *, owner_user_id: str) -> AgentRecord | None: ...
+    async def get_agent(self, name: str, *, owner_user_id: str | None = None) -> AgentRecord | None: ...
 
     async def create_agent(
         self,

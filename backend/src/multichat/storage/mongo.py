@@ -399,15 +399,17 @@ class MotorMongoStorage:
         self,
         session_id: str,
         *,
-        owner_user_id: str,
+        owner_user_id: str | None = None,
     ) -> Session | None:
-        """单个会话详情 不内联 rounds 路由层视情况再 list_rounds"""
-        doc = await self._db["sessions"].find_one(
-            {
-                "session_id": session_id,
-                "owner_user_id": owner_user_id,
-            }
-        )
+        """单个会话详情 不内联 rounds 路由层视情况再 list_rounds
+
+        owner_user_id 有值时按用户过滤 防止越权读取
+        为 None 时仅按 session_id 查询 内部调用场景(任务管理器/摘要等)
+        """
+        query: dict[str, Any] = {"session_id": session_id}
+        if owner_user_id is not None:
+            query["owner_user_id"] = owner_user_id
+        doc = await self._db["sessions"].find_one(query)
         if doc is None:
             return None
         _strip_internal(doc)
@@ -1003,15 +1005,13 @@ class MotorMongoStorage:
             out.append(_agent_doc_to_record(doc))
         return out
 
-    async def get_agent(self, name: str, *, owner_user_id: str) -> AgentRecord | None:
-        # 严格按 owner_user_id 过滤 只返回属于当前用户的 agent
-        doc = await self._db["agents"].find_one(
-            {
-                "name": name,
-                "owner_user_id": owner_user_id,
-            },
-            {"_id": 0},
-        )
+    async def get_agent(self, name: str, *, owner_user_id: str | None = None) -> AgentRecord | None:
+        # owner_user_id 有值时严格过滤只返回属于当前用户的 agent
+        # 为 None 时仅按 name 查询(内部调用场景: 任务管理器/上下文用量等)
+        query: dict[str, Any] = {"name": name}
+        if owner_user_id is not None:
+            query["owner_user_id"] = owner_user_id
+        doc = await self._db["agents"].find_one(query, {"_id": 0})
         if doc is None:
             return None
         return _agent_doc_to_record(doc)

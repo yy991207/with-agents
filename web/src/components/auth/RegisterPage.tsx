@@ -1,4 +1,4 @@
-import { Button, Form, Input, Typography } from 'antd';
+import { Button, Form, Input } from 'antd';
 
 export interface RegisterFormValue {
   tenantName: string;
@@ -6,8 +6,6 @@ export interface RegisterFormValue {
   password: string;
   confirmPassword: string;
 }
-
-const { Title, Text } = Typography;
 
 interface RegisterPageProps {
   loading?: boolean;
@@ -21,46 +19,54 @@ export default function RegisterPage({
   onSwitchLogin,
 }: RegisterPageProps) {
   return (
-    <div
-      style={{
-        width: '100%',
-        maxWidth: 420,
-      }}
-    >
-      <div style={{ marginBottom: 20, textAlign: 'center' }}>
-        <Title
-          level={4}
+    <div style={{ width: '100%' }}>
+      {/* 标题 */}
+      <div style={{ marginBottom: 28 }}>
+        <h2
           style={{
             margin: 0,
-            color: 'rgba(15, 23, 42, 0.92)',
+            color: '#1f2937',
+            fontSize: 22,
             fontWeight: 700,
-            letterSpacing: '-0.02em',
+            letterSpacing: '-0.03em',
+            lineHeight: 1.2,
           }}
         >
           注册
-        </Title>
+        </h2>
+        <p
+          style={{
+            margin: '6px 0 0',
+            color: '#6b7280',
+            fontSize: 13,
+            lineHeight: 1.5,
+          }}
+        >
+          创建你的工作空间
+        </p>
       </div>
-      <Form<RegisterFormValue> layout="vertical" onFinish={onSubmit}>
+
+      <Form<RegisterFormValue> className="auth-form" layout="vertical" onFinish={onSubmit} requiredMark={false}>
         <Form.Item
           label="租户名"
           name="tenantName"
           rules={[{ required: true, message: '请输入租户名' }]}
         >
-          <Input size="large" />
+          <Input placeholder="输入租户/团队名称" />
         </Form.Item>
         <Form.Item
           label="账号"
           name="username"
           rules={[{ required: true, message: '请输入账号' }]}
         >
-          <Input autoComplete="username" size="large" />
+          <Input autoComplete="username" placeholder="输入账号" />
         </Form.Item>
         <Form.Item
           label="密码"
           name="password"
           rules={[{ required: true, message: '请输入密码' }]}
         >
-          <Input.Password autoComplete="new-password" size="large" />
+          <Input.Password autoComplete="new-password" placeholder="输入密码" />
         </Form.Item>
         <Form.Item
           label="确认密码"
@@ -78,28 +84,27 @@ export default function RegisterPage({
             }),
           ]}
         >
-          <Input.Password autoComplete="new-password" size="large" />
+          <Input.Password autoComplete="new-password" placeholder="再次输入密码" />
         </Form.Item>
         <Button
           htmlType="submit"
-          type="primary"
+          className="auth-btn-primary"
           block
           loading={loading}
-          style={{ marginTop: 4, height: 40 }}
+          style={{ marginTop: 6 }}
         >
           注 册
         </Button>
-        <div style={{ display: 'flex', justifyContent: 'center', marginTop: 14 }}>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            <Button
-              type="link"
-              data-auth-switch="login"
-              onClick={onSwitchLogin}
-              style={{ paddingInline: 6, color: 'rgba(15, 23, 42, 0.62)' }}
-            >
-              登 录
-            </Button>
-          </Text>
+        <div style={{ display: 'flex', justifyContent: 'center', marginTop: 20 }}>
+          <Button
+            type="link"
+            className="auth-switch-link"
+            data-auth-switch="login"
+            onClick={onSwitchLogin}
+            style={{ paddingInline: 0 }}
+          >
+            已有账号？登 录
+          </Button>
         </div>
       </Form>
     </div>

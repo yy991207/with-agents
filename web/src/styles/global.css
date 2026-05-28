@@ -15,6 +15,134 @@ body {
   overflow: hidden;
 }
 
+/* ── 认证页面主题 ── */
+.auth-gate-root {
+  /* 左面板: 近黑底 + 微弱噪点纹理 */
+  --auth-dark-bg: #111827;
+  --auth-dark-text: #f9fafb;
+  --auth-dark-sub: rgba(249,250,251,0.52);
+  /* 右面板: 浅灰底 */
+  --auth-light-bg: #f5f5f5;
+  --auth-card-bg: #ffffff;
+  --auth-border: #d1d5db;
+  --auth-border-focus: #1f2937;
+  --auth-text-primary: #1f2937;
+  --auth-text-secondary: #6b7280;
+  --auth-btn-bg: #1f2937;
+  --auth-btn-hover: #111827;
+  --auth-btn-text: #f9fafb;
+  --auth-link: #6b7280;
+  --auth-link-hover: #1f2937;
+  --auth-error: #dc2626;
+  --auth-divider: rgba(255,255,255,0.08);
+}
+
+/* 认证输入框覆盖 Ant Design 默认样式 */
+/* 普通输入框: 直接样式 */
+.auth-form .ant-input {
+  background: var(--auth-card-bg) !important;
+  border: 1px solid var(--auth-border) !important;
+  border-radius: 10px !important;
+  font-size: 14px !important;
+  height: 44px !important;
+  padding: 10px 14px !important;
+  color: var(--auth-text-primary) !important;
+  transition: border-color 180ms ease, box-shadow 180ms ease !important;
+}
+
+/* 密码输入框: affix-wrapper 负责外壳，内部 input 去掉边框 */
+.auth-form .ant-input-affix-wrapper {
+  background: var(--auth-card-bg) !important;
+  border: 1px solid var(--auth-border) !important;
+  border-radius: 10px !important;
+  font-size: 14px !important;
+  height: 44px !important;
+  padding: 0 14px !important;
+  color: var(--auth-text-primary) !important;
+  transition: border-color 180ms ease, box-shadow 180ms ease !important;
+}
+
+.auth-form .ant-input-affix-wrapper .ant-input {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  height: auto !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+  color: var(--auth-text-primary) !important;
+  font-size: 14px !important;
+}
+
+/* 眼睛图标颜色 */
+.auth-form .ant-input-password .ant-input-suffix {
+  color: var(--auth-text-secondary) !important;
+}
+
+.auth-form .ant-input:hover {
+  border-color: var(--auth-border-focus) !important;
+}
+
+.auth-form .ant-input-affix-wrapper:hover,
+.auth-form .ant-input-affix-wrapper-focused {
+  border-color: var(--auth-border-focus) !important;
+}
+
+.auth-form .ant-input:focus {
+  border-color: var(--auth-border-focus) !important;
+  box-shadow: 0 0 0 2px rgba(31,41,55,0.06) !important;
+}
+
+.auth-form .ant-input-affix-wrapper:focus-within,
+.auth-form .ant-input-affix-wrapper-focused {
+  border-color: var(--auth-border-focus) !important;
+  box-shadow: 0 0 0 2px rgba(31,41,55,0.06) !important;
+}
+
+.auth-form .ant-form-item-label > label {
+  color: var(--auth-text-secondary) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.04em !important;
+  height: auto !important;
+}
+
+.auth-form .ant-form-item {
+  margin-bottom: 18px !important;
+}
+
+/* 认证按钮 */
+.auth-btn-primary {
+  background: var(--auth-btn-bg) !important;
+  border: none !important;
+  border-radius: 10px !important;
+  color: var(--auth-btn-text) !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  height: 44px !important;
+  letter-spacing: 0.08em !important;
+  transition: background 160ms ease, transform 80ms ease !important;
+}
+
+.auth-btn-primary:hover {
+  background: var(--auth-btn-hover) !important;
+  transform: translateY(-1px) !important;
+}
+
+.auth-btn-primary:active {
+  transform: translateY(0) !important;
+}
+
+/* 认证切换链接 */
+.auth-switch-link {
+  color: var(--auth-link) !important;
+  font-size: 13px !important;
+  transition: color 160ms ease !important;
+}
+
+.auth-switch-link:hover {
+  color: var(--auth-link-hover) !important;
+}
+
 .workbench-main-shell {
   background: linear-gradient(180deg, #fcfcfd 0%, #f8fafc 100%);
   border: 1px solid #e5e7eb;

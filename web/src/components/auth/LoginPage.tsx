@@ -1,11 +1,9 @@
-import { Button, Form, Input, Typography } from 'antd';
+import { Button, Form, Input } from 'antd';
 
 export interface LoginFormValue {
   username: string;
   password: string;
 }
-
-const { Title, Text } = Typography;
 
 interface LoginPageProps {
   loading?: boolean;
@@ -19,60 +17,67 @@ export default function LoginPage({
   onSwitchRegister,
 }: LoginPageProps) {
   return (
-    <div
-      style={{
-        width: '100%',
-        maxWidth: 420,
-      }}
-    >
-      <div style={{ marginBottom: 20, textAlign: 'center' }}>
-        <Title
-          level={4}
+    <div style={{ width: '100%' }}>
+      {/* 标题 */}
+      <div style={{ marginBottom: 28 }}>
+        <h2
           style={{
             margin: 0,
-            color: 'rgba(15, 23, 42, 0.92)',
+            color: '#1f2937',
+            fontSize: 22,
             fontWeight: 700,
-            letterSpacing: '-0.02em',
+            letterSpacing: '-0.03em',
+            lineHeight: 1.2,
           }}
         >
           登录
-        </Title>
+        </h2>
+        <p
+          style={{
+            margin: '6px 0 0',
+            color: '#6b7280',
+            fontSize: 13,
+            lineHeight: 1.5,
+          }}
+        >
+          输入账号和密码继续
+        </p>
       </div>
-      <Form<LoginFormValue> layout="vertical" onFinish={onSubmit}>
+
+      <Form<LoginFormValue> className="auth-form" layout="vertical" onFinish={onSubmit} requiredMark={false}>
         <Form.Item
           label="账号"
           name="username"
           rules={[{ required: true, message: '请输入账号' }]}
         >
-          <Input autoComplete="username" size="large" />
+          <Input autoComplete="username" placeholder="输入账号" />
         </Form.Item>
         <Form.Item
           label="密码"
           name="password"
           rules={[{ required: true, message: '请输入密码' }]}
         >
-          <Input.Password autoComplete="current-password" size="large" />
+          <Input.Password autoComplete="current-password" placeholder="输入密码" />
         </Form.Item>
         <Button
           htmlType="submit"
-          type="primary"
+          className="auth-btn-primary"
           block
           loading={loading}
-          style={{ marginTop: 4, height: 40 }}
+          style={{ marginTop: 6 }}
         >
           登 录
         </Button>
-        <div style={{ display: 'flex', justifyContent: 'center', marginTop: 14 }}>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            <Button
-              type="link"
-              data-auth-switch="register"
-              onClick={onSwitchRegister}
-              style={{ paddingInline: 6, color: 'rgba(15, 23, 42, 0.62)' }}
-            >
-              注 册
-            </Button>
-          </Text>
+        <div style={{ display: 'flex', justifyContent: 'center', marginTop: 20 }}>
+          <Button
+            type="link"
+            className="auth-switch-link"
+            data-auth-switch="register"
+            onClick={onSwitchRegister}
+            style={{ paddingInline: 0 }}
+          >
+            没有账号？注 册
+          </Button>
         </div>
       </Form>
     </div>

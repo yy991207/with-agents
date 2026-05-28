@@ -967,17 +967,18 @@ class MotorMongoStorage:
 
     # =============================================================== Agents CRUD
     async def list_agents(self, *, owner_user_id: str | None = None) -> list[AgentRecord]:
-        """按 name 升序列出 agent  owner_user_id 为 None 时列出全部（内部用）"""
+        """按 name 升序列出 agent  owner_user_id 为 None 时列出全部（仅内部任务/系统调用使用）
+
+        过滤规则：严格按 owner_user_id 命中当前登录用户或 system 共享账号。
+        历史上没有 owner_user_id 字段的脏数据不再返回，避免越权读取。
+        """
         if owner_user_id is None:
             cursor = self._db["agents"].find({}, {"_id": 0}).sort("name", ASCENDING)
         else:
             cursor = (
                 self._db["agents"]
                 .find(
-                    {"$or": [
-                        {"owner_user_id": {"$in": [owner_user_id, "system"]}},
-                        {"owner_user_id": {"$exists": False}},
-                    ]},
+                    {"owner_user_id": {"$in": [owner_user_id, "system"]}},
                     {"_id": 0},
                 )
                 .sort("name", ASCENDING)
@@ -988,11 +989,12 @@ class MotorMongoStorage:
         return out
 
     async def get_agent(self, name: str, *, owner_user_id: str) -> AgentRecord | None:
+        # 严格按 owner_user_id 过滤，不再放行没有 owner_user_id 字段的脏数据
         doc = await self._db["agents"].find_one(
-            {"name": name, "$or": [
-                {"owner_user_id": {"$in": [owner_user_id, "system"]}},
-                {"owner_user_id": {"$exists": False}},
-            ]},
+            {
+                "name": name,
+                "owner_user_id": {"$in": [owner_user_id, "system"]},
+            },
             {"_id": 0},
         )
         if doc is None:

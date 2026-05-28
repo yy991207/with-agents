@@ -379,6 +379,9 @@ class McpServerConfig(BaseModel):
     name: str
     """服务器唯一标识 用户自定义 如 playwright / tencentcloud-sdk-mcp"""
 
+    owner_user_id: str = ""
+    """所属用户 严格隔离 非系统共享"""
+
     transport: Literal["stdio", "sse", "streamable_http"] = "stdio"
     """传输方式: 本地进程启动 / SSE 长连接 / Streamable HTTP"""
 
@@ -405,6 +408,14 @@ class McpServerConfig(BaseModel):
 
     updated_at: datetime = Field(default_factory=_utcnow)
 
+    # 运行时加载状态 不持久化到 DB 由 tools.py 写回
+    last_load_status: str = ""
+    """工具加载状态 空串/loaded/failed"""
+    last_load_error: str = ""
+    """加载失败时的错误信息"""
+    last_loaded_at: str = ""
+    """最近一次加载时间 ISO 格式"""
+
 
 # ============================================================ Skills 配置
 class SkillConfig(BaseModel):
@@ -425,6 +436,9 @@ class SkillConfig(BaseModel):
 
     name: str
     """skill 唯一标识 如 brainstorming / systematic-debugging"""
+
+    owner_user_id: str = ""
+    """所属用户 严格隔离 非系统共享"""
 
     description: str = ""
     """skill 的一句话描述 前端列表展示用"""

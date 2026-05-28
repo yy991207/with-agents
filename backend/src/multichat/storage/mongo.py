@@ -30,6 +30,7 @@ from ..core.models import (
     Round,
     Session,
     SessionMeta,
+    SkillConfig,
     TaskState,
     UserRecord,
 )
@@ -249,10 +250,25 @@ class MotorMongoStorage:
             name="idx_agent_history_name_version_desc",
         )
 
-        # mcp_servers 集合 name 唯一
+        # mcp_servers 集合 索引迁移: 从旧的单字段 unique 改为复合 unique
+        try:
+            await self._db["mcp_servers"].drop_index("uniq_mcp_server_name")
+        except Exception:
+            # 索引不存在时忽略 (新部署或已迁移)
+            pass
         await self._db["mcp_servers"].create_index(
-            [("name", ASCENDING)], unique=True, name="uniq_mcp_server_name"
+            [("name", ASCENDING), ("owner_user_id", ASCENDING)],
+            unique=True, name="uniq_mcp_server_name_owner",
         )
+
+        # skills 集合 (name, owner_user_id) 复合唯一
+        await self._db["skills"].create_index(
+            [("name", ASCENDING), ("owner_user_id", ASCENDING)],
+            unique=True, name="uniq_skill_name_owner",
+        )
+
+        # 数据迁移: settings 集合旧全局配置 → 新 per-user 集合
+        await self._migrate_global_mcp_and_skills()
 
     # ================================================================ Auth
     async def create_user(
@@ -969,8 +985,7 @@ class MotorMongoStorage:
     async def list_agents(self, *, owner_user_id: str | None = None) -> list[AgentRecord]:
         """按 name 升序列出 agent  owner_user_id 为 None 时列出全部（仅内部任务/系统调用使用）
 
-        过滤规则：严格按 owner_user_id 命中当前登录用户或 system 共享账号。
-        历史上没有 owner_user_id 字段的脏数据不再返回，避免越权读取。
+        过滤规则：严格按 owner_user_id == 当前用户 不做 system 共享。
         """
         if owner_user_id is None:
             cursor = self._db["agents"].find({}, {"_id": 0}).sort("name", ASCENDING)
@@ -978,7 +993,7 @@ class MotorMongoStorage:
             cursor = (
                 self._db["agents"]
                 .find(
-                    {"owner_user_id": {"$in": [owner_user_id, "system"]}},
+                    {"owner_user_id": owner_user_id},
                     {"_id": 0},
                 )
                 .sort("name", ASCENDING)
@@ -989,11 +1004,11 @@ class MotorMongoStorage:
         return out
 
     async def get_agent(self, name: str, *, owner_user_id: str) -> AgentRecord | None:
-        # 严格按 owner_user_id 过滤，不再放行没有 owner_user_id 字段的脏数据
+        # 严格按 owner_user_id 过滤 只返回属于当前用户的 agent
         doc = await self._db["agents"].find_one(
             {
                 "name": name,
-                "owner_user_id": {"$in": [owner_user_id, "system"]},
+                "owner_user_id": owner_user_id,
             },
             {"_id": 0},
         )
@@ -1285,33 +1300,107 @@ class MotorMongoStorage:
         return migrated
 
     # ------------------------------------------------------------- MCP Servers
-    async def list_mcp_servers(self) -> list[McpServerConfig]:
-        """列出所有 MCP 服务器配置 按 name 升序"""
-        cursor = self._db["mcp_servers"].find({}, {"_id": 0}).sort("name", ASCENDING)
+    async def list_mcp_servers(self, *, owner_user_id: str) -> list[McpServerConfig]:
+        """列出当前用户的 MCP 服务器配置 按 name 升序"""
+        cursor = self._db["mcp_servers"].find(
+            {"owner_user_id": owner_user_id}, {"_id": 0}
+        ).sort("name", ASCENDING)
         out: list[McpServerConfig] = []
         async for doc in cursor:
             out.append(McpServerConfig.model_validate(doc))
         return out
 
-    async def upsert_mcp_server(self, server: McpServerConfig) -> McpServerConfig:
-        """创建或全量覆盖单个 MCP 服务器配置 name 唯一
+    async def get_mcp_server(self, name: str, *, owner_user_id: str) -> McpServerConfig | None:
+        """获取单个 MCP 服务器 严格按 owner_user_id 过滤"""
+        doc = await self._db["mcp_servers"].find_one(
+            {"name": name, "owner_user_id": owner_user_id}, {"_id": 0}
+        )
+        if doc is None:
+            return None
+        return McpServerConfig.model_validate(doc)
 
-        全量覆盖意味着传过来的 McpServerConfig 就是最终存储态
-        前端已是完整表单提交 不需要局部 merge
-        """
+    async def upsert_mcp_server(self, server: McpServerConfig, *, owner_user_id: str) -> McpServerConfig:
+        """创建或全量覆盖单个 MCP 服务器配置 (name, owner_user_id) 唯一"""
         now = _utcnow()
         doc = server.model_dump(mode="json")
+        doc["owner_user_id"] = owner_user_id
         doc["updated_at"] = now
         await self._db["mcp_servers"].replace_one(
-            {"name": server.name}, doc, upsert=True
+            {"name": server.name, "owner_user_id": owner_user_id}, doc, upsert=True
         )
         return McpServerConfig.model_validate(doc)
 
-    async def delete_mcp_server(self, name: str) -> None:
-        """删除 MCP 服务器 不存在抛 KeyError"""
-        result = await self._db["mcp_servers"].delete_one({"name": name})
+    async def delete_mcp_server(self, name: str, *, owner_user_id: str) -> None:
+        """删除 MCP 服务器 不存在或不属于当前用户抛 KeyError"""
+        result = await self._db["mcp_servers"].delete_one(
+            {"name": name, "owner_user_id": owner_user_id}
+        )
         if result.deleted_count == 0:
-            raise KeyError(f"MCP server 不存在 name={name}")
+            raise KeyError(f"MCP server 不存在或不属于当前用户 name={name}")
+
+    # ------------------------------------------------------------- Skills
+    async def list_skills(self, *, owner_user_id: str) -> list[SkillConfig]:
+        """列出当前用户的 Skill 配置 按 name 升序"""
+        cursor = self._db["skills"].find(
+            {"owner_user_id": owner_user_id}, {"_id": 0}
+        ).sort("name", ASCENDING)
+        out: list[SkillConfig] = []
+        async for doc in cursor:
+            out.append(SkillConfig.model_validate(doc))
+        return out
+
+    async def get_skill(self, name: str, *, owner_user_id: str) -> SkillConfig | None:
+        """获取单个 Skill 严格按 owner_user_id 过滤"""
+        doc = await self._db["skills"].find_one(
+            {"name": name, "owner_user_id": owner_user_id}, {"_id": 0}
+        )
+        if doc is None:
+            return None
+        return SkillConfig.model_validate(doc)
+
+    async def upsert_skill(self, skill: SkillConfig, *, owner_user_id: str) -> SkillConfig:
+        """创建或全量覆盖单个 Skill 配置 (name, owner_user_id) 唯一"""
+        now = _utcnow()
+        doc = skill.model_dump(mode="json")
+        doc["owner_user_id"] = owner_user_id
+        doc["updated_at"] = now
+        await self._db["skills"].replace_one(
+            {"name": skill.name, "owner_user_id": owner_user_id}, doc, upsert=True
+        )
+        return SkillConfig.model_validate(doc)
+
+    async def delete_skill(self, name: str, *, owner_user_id: str) -> None:
+        """删除 Skill 不存在或不属于当前用户抛 KeyError"""
+        result = await self._db["skills"].delete_one(
+            {"name": name, "owner_user_id": owner_user_id}
+        )
+        if result.deleted_count == 0:
+            raise KeyError(f"skill 不存在或不属于当前用户 name={name}")
+
+    # ------------------------------------------------------------- 数据迁移
+    async def _migrate_global_mcp_and_skills(self) -> None:
+        """将 settings 集合中旧全局 mcp_config / skills_config 迁移到新集合
+
+        幂等: 目标集合已有数据则跳过
+        旧全局配置直接丢弃 (不做 system 级共享) 用户需自行创建
+        """
+        # MCP 迁移: 如果 mcp_servers 集合为空 则把旧全局配置迁过来作为首个用户的资源
+        # 但由于不做 system 级共享 旧全局配置无法归属到某个具体用户 直接丢弃
+        # 只清理旧文档防止下次再检查
+        mcp_count = await self._db["mcp_servers"].count_documents({})
+        if mcp_count == 0:
+            _logger.info("mcp_servers 集合为空 旧全局配置将被丢弃 用户需自行创建")
+            # 删除旧的 settings mcp_config 文档 (可选 保守起见保留)
+            # await self._db["settings"].delete_one({"_id": "mcp_config"})
+        else:
+            _logger.info("mcp_servers 集合已有数据 跳过迁移", count=mcp_count)
+
+        # Skills 迁移: 同理 直接丢弃旧全局配置
+        skills_count = await self._db["skills"].count_documents({})
+        if skills_count == 0:
+            _logger.info("skills 集合为空 旧全局配置将被丢弃 用户需自行创建")
+        else:
+            _logger.info("skills 集合已有数据 跳过迁移", count=skills_count)
 
     # --------------------------------------------------------------- Seed 注入
     async def seed_from_yaml(self, settings: Any) -> int:

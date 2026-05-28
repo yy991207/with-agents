@@ -18,6 +18,7 @@ from ..core.models import (
     Round,
     Session,
     SessionMeta,
+    SkillConfig,
     TaskState,
     UserRecord,
 )
@@ -255,14 +256,35 @@ class MongoStorage(Protocol):
     async def seed_from_yaml(self, settings: Any) -> int: ...
 
     # ------------------------------------------------------------- MCP Servers
-    async def list_mcp_servers(self) -> list[McpServerConfig]:
-        """列出所有 MCP 服务器配置 按 name 升序"""
+    async def list_mcp_servers(self, *, owner_user_id: str) -> list[McpServerConfig]:
+        """列出当前用户的 MCP 服务器配置 按 name 升序"""
         ...
 
-    async def upsert_mcp_server(self, server: McpServerConfig) -> McpServerConfig:
-        """创建或全量覆盖单个 MCP 服务器配置 按 name 唯一"""
+    async def get_mcp_server(self, name: str, *, owner_user_id: str) -> McpServerConfig | None:
+        """获取单个 MCP 服务器 严格按 owner_user_id 过滤"""
         ...
 
-    async def delete_mcp_server(self, name: str) -> None:
-        """删除 MCP 服务器 不存在抛 KeyError"""
+    async def upsert_mcp_server(self, server: McpServerConfig, *, owner_user_id: str) -> McpServerConfig:
+        """创建或全量覆盖单个 MCP 服务器配置 按 (name, owner_user_id) 唯一"""
+        ...
+
+    async def delete_mcp_server(self, name: str, *, owner_user_id: str) -> None:
+        """删除 MCP 服务器 不存在或不属于当前用户抛 KeyError"""
+        ...
+
+    # ------------------------------------------------------------- Skills
+    async def list_skills(self, *, owner_user_id: str) -> list[SkillConfig]:
+        """列出当前用户的 Skill 配置 按 name 升序"""
+        ...
+
+    async def get_skill(self, name: str, *, owner_user_id: str) -> SkillConfig | None:
+        """获取单个 Skill 严格按 owner_user_id 过滤"""
+        ...
+
+    async def upsert_skill(self, skill: SkillConfig, *, owner_user_id: str) -> SkillConfig:
+        """创建或全量覆盖单个 Skill 配置 按 (name, owner_user_id) 唯一"""
+        ...
+
+    async def delete_skill(self, name: str, *, owner_user_id: str) -> None:
+        """删除 Skill 不存在或不属于当前用户抛 KeyError"""
         ...

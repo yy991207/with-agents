@@ -110,23 +110,12 @@ async def _build_one(
     *,
     storage: Any | None = None,
     thinking_enabled: bool = False,
+    owner_user_id: str | None = None,
 ) -> CompiledStateGraph:
     """根据 agent 配置构造一个 deep_agent 实例
 
-    think 模式 system_prompt 强约束 不能调工具
-    reply 模式 system_prompt 鼓励规划 + 工具调用 同时打开 streaming
-
-    thinking_enabled 仅在 reply 模式生效  会给 ChatOpenAI 注入
-    model_kwargs={"extra_body":{"thinking":{"type":"enabled"}}}  让 GLM-4.5 等
-    支持思考的模型走深度思考分支  对不支持的模型 LLM 服务通常会忽略 extra_body
-    个别严格 provider 可能 422  上层 _do_reply 已用 try/except 兜底
-
-    base_url + api_key 直接来自 agent_record  不再依赖外部 profile
-    settings 仅提供 runtime.http_timeout_seconds 等运行时参数
-
-    reply 模式工具加载顺序: 先加载内置 2 个共享 tool 再加载 MCP 工具
-    再加载 skills 内容追加到 system_prompt
-    若 storage 传入则从数据库读取 mcp_config 和 skills_config 文档动态加载
+    owner_user_id 用于按用户加载 MCP 工具和 Skills 内容
+    为 None 时跳过 MCP/Skills 加载（系统启动初始化场景）
     """
     suffix = THINK_SYSTEM_SUFFIX if kind == "think" else REPLY_SYSTEM_SUFFIX
     system_prompt = agent_record.prompt + suffix
@@ -163,15 +152,15 @@ async def _build_one(
         from .tools import get_shared_tools, load_mcp_tools_from_db, load_skills_from_db
 
         tools = get_shared_tools()
-        # MCP 工具加载 每个 server 失败独立容错 不阻塞 agent 初始化
-        if storage is not None:
-            mcp_tools, mcp_servers = await load_mcp_tools_from_db(storage)
+        # MCP 工具加载 按 owner_user_id 过滤当前用户的配置
+        if storage is not None and owner_user_id is not None:
+            mcp_tools, mcp_servers = await load_mcp_tools_from_db(storage, owner_user_id=owner_user_id)
             mcp_tool_count = len(mcp_tools)
             if mcp_tools:
                 tools = [*tools, *mcp_tools]
 
             # Skills 内容加载 追加到 system_prompt 不产生 tool
-            skills_text, skill_names = await load_skills_from_db(storage)
+            skills_text, skill_names = await load_skills_from_db(storage, owner_user_id=owner_user_id)
             if skills_text:
                 system_prompt += skills_text
     else:
@@ -215,79 +204,112 @@ class DeepAgentRegistry:
     def __init__(self, settings: Settings, storage: Any | None = None) -> None:
         self._settings = settings
         self._storage = storage
-        # key 格式 {agent_name}-{kind} value 是 deepagents 编译后图
+        # key 格式: 无用户时 {agent_name}-{kind}  有用户时 {user_id}:{agent_name}-{kind}
         self._instances: dict[str, CompiledStateGraph] = {}
+        self._versions: dict[str, int] = {}
+        self._global_version: int = 0
         self._lock = asyncio.Lock()
 
     async def initialize(self, records: list[AgentRecord]) -> None:
-        """启动时一次性 build 所有实例 任意数量都接受 包含 0 条
+        """启动时一次性 build 所有实例 不加载 MCP/Skills (无用户上下文)
 
         records 为空 names() 返回空列表 后续可通过 reload 动态新增
         """
         new_inst: dict[str, CompiledStateGraph] = {}
         for r in records:
             new_inst[f"{r.name}-think"] = await _build_one(
-                r, "think", self._settings, storage=self._storage
+                r, "think", self._settings, storage=self._storage, owner_user_id=None
             )
             new_inst[f"{r.name}-reply"] = await _build_one(
-                r, "reply", self._settings, storage=self._storage
+                r, "reply", self._settings, storage=self._storage, owner_user_id=None
             )
-        # 替换整张表 锁内只做指针赋值 持锁时间极短
         async with self._lock:
             self._instances = new_inst
+            self._global_version += 1
         _logger.info("deep_agents 初始化完成", count=len(new_inst))
 
     async def reload(self, record: AgentRecord) -> None:
-        """热替换 / 新增某个 agent 的 2 个实例
-
-        先在锁外 build 失败也不影响现有实例 只在最终 swap 时持锁
-        若该 agent 此前不在表中 等同于追加新数字员工
-        """
+        """热替换 / 新增某个 agent 的 2 个实例 (系统级 无用户上下文)"""
         new_think = await _build_one(
-            record, "think", self._settings, storage=self._storage
+            record, "think", self._settings, storage=self._storage, owner_user_id=None
         )
         new_reply = await _build_one(
-            record, "reply", self._settings, storage=self._storage
+            record, "reply", self._settings, storage=self._storage, owner_user_id=None
         )
         async with self._lock:
             self._instances[f"{record.name}-think"] = new_think
             self._instances[f"{record.name}-reply"] = new_reply
+            self._global_version += 1
         _logger.info("deep_agents 热替换", name=record.name, version=record.version)
 
     def unregister(self, name: str) -> None:
-        """删除 agent 时同步移除其 think+reply 实例
-
-        说明:
-            - 这是同步方法 因为 dict.pop 在 GIL 下原子 不需要 lock 来保证一致性
-            - 后续如有并发 reload(name) 与 unregister(name) 竞态 由调用方串行
-              路由层 delete 与 update 互斥 不会触发该竞态
-        """
+        """删除 agent 时同步移除其 think+reply 实例及所有按用户缓存"""
+        # 移除系统级实例
         self._instances.pop(f"{name}-think", None)
         self._instances.pop(f"{name}-reply", None)
+        # 移除所有按用户缓存 (key 格式 {user_id}:{name}-{kind})
+        to_remove = [k for k in self._instances if k.endswith(f":{name}-think") or k.endswith(f":{name}-reply")]
+        for k in to_remove:
+            self._instances.pop(k, None)
+            self._versions.pop(k, None)
         _logger.info("deep_agents 注销", name=name)
 
     def get(self, agent_name: str, kind: DeepAgentKind) -> CompiledStateGraph:
-        """读端 不加锁 dict.get 在 CPython GIL 下是原子的"""
+        """读端 不加锁 dict.get 在 CPython GIL 下是原子的 仅用于系统级实例"""
         key = f"{agent_name}-{kind}"
         inst = self._instances.get(key)
         if inst is None:
             raise KeyError(f"deep_agent not found: {key}")
         return inst
 
-    async def build_thinking_reply(self, agent_name: str) -> CompiledStateGraph:
+    async def get_or_build(
+        self, agent_name: str, kind: DeepAgentKind, *, owner_user_id: str | None = None
+    ) -> CompiledStateGraph:
+        """按用户获取或懒构建 agent 实例
+
+        - owner_user_id 为 None: 返回系统级实例 (同 get)
+        - 有值: 缓存 key 为 {user_id}:{name}-{kind}
+          版本过期则重新构建 MCP/Skills 按用户加载
+        """
+        if owner_user_id is None:
+            return self.get(agent_name, kind)
+
+        key = f"{owner_user_id}:{agent_name}-{kind}"
+        cached_version = self._versions.get(key, -1)
+        if cached_version == self._global_version:
+            inst = self._instances.get(key)
+            if inst is not None:
+                return inst
+
+        # 需要构建: 从 DB 拉 agent 配置
+        record = await self._storage.get_agent(agent_name, owner_user_id=owner_user_id)
+        if record is None:
+            # 用户可能看不到该 agent (不属于自己且非 system)
+            # 降级: 尝试系统级实例
+            _logger.warning("get_or_build 降级到系统级实例", agent_name=agent_name, owner_user_id=owner_user_id)
+            return self.get(agent_name, kind)
+
+        inst = await _build_one(
+            record, kind, self._settings,
+            storage=self._storage,
+            owner_user_id=owner_user_id,
+        )
+        async with self._lock:
+            self._instances[key] = inst
+            self._versions[key] = self._global_version
+        _logger.info("get_or_build 按用户构建", key=key)
+        return inst
+
+    async def build_thinking_reply(self, agent_name: str, *, owner_user_id: str | None = None) -> CompiledStateGraph:
         """临时构建一个开启 thinking 模式的 reply deep_agent  本轮一次性使用
 
-        与 reload 不同  这里不写回 self._instances  只返回临时实例
-        每次本轮 reply 调用都会重新走一次 _build_one  代价是 langgraph compile + ChatOpenAI 实例化
-        都是纯本地操作 不发起网络请求  可以接受
-
-        从 DB 重新拉 agent 配置  保证使用的是最新 prompt / model / api_key
+        owner_user_id 用于按用户加载 MCP/Skills
         """
         from ..storage.mongo import MotorMongoStorage
 
-        if not isinstance(self._storage, MotorMongoStorage):
-            raise RuntimeError("build_thinking_reply 需要 MotorMongoStorage 才能拉 agent 配置")
-        record = await self._storage.get_agent(agent_name)
+        if owner_user_id is None:
+            raise RuntimeError("build_thinking_reply 需要 owner_user_id 才能拉 agent 配置")
+        record = await self._storage.get_agent(agent_name, owner_user_id=owner_user_id)
         if record is None:
             raise KeyError(f"agent 不存在 name={agent_name}")
         return await _build_one(
@@ -296,43 +318,31 @@ class DeepAgentRegistry:
             self._settings,
             storage=self._storage,
             thinking_enabled=True,
+            owner_user_id=owner_user_id,
         )
 
-    async def reload_all(self) -> int:
-        """重载所有已注册 agent 的实例 用于 skills 或 MCP 配置变更后生效
+    async def reload_all(self, *, owner_user_id: str | None = None) -> int:
+        """重载 agent 实例缓存 使 skills 或 MCP 配置变更生效
 
-        从 DB 重新读取 agents 配置 调用 _build_one 重新构建每个 agent 的 think+reply 实例
-        返回重载的 agent 数量
+        - owner_user_id 有值: 只清除该用户的缓存 下次请求 get_or_build 自动重建
+        - owner_user_id 为 None: 清除所有用户缓存 (全局重载场景)
+        系统级实例(无 MCP/Skills)不需要重建
+        返回当前注册的 agent 数量
         """
-        from ..storage.mongo import MotorMongoStorage
-
-        # 从 DB 重新拉取 agent 列表 确保用最新配置重建
-        if not isinstance(self._storage, MotorMongoStorage):
-            _logger.warning("storage 非 MotorMongoStorage 跳过 reload_all")
-            return 0
-
-        # 用 registry 已有的 names 对应 DB 中的 agent 记录重建
-        agent_names = self.names()
-        if not agent_names:
-            return 0
-
-        new_inst: dict[str, CompiledStateGraph] = {}
-        for name in agent_names:
-            record = await self._storage.get_agent(name)
-            if record is None:
-                _logger.warning("reload_all 找不到 agent 跳过", name=name)
-                continue
-            new_inst[f"{name}-think"] = await _build_one(
-                record, "think", self._settings, storage=self._storage
-            )
-            new_inst[f"{name}-reply"] = await _build_one(
-                record, "reply", self._settings, storage=self._storage
-            )
-
         async with self._lock:
-            self._instances = new_inst
-        _logger.info("deep_agents 全部重载完成", count=len(new_inst))
-        return len(new_inst) // 2
+            self._global_version += 1
+            if owner_user_id is not None:
+                # 只清除指定用户的缓存 条目
+                stale_keys = [k for k in self._instances if k.startswith(f"{owner_user_id}:")]
+            else:
+                # 全局: 清除所有按用户缓存 条目
+                stale_keys = [k for k in self._instances if ":" in k]
+            for k in stale_keys:
+                self._instances.pop(k, None)
+                self._versions.pop(k, None)
+        count = len(self.names())
+        _logger.info("deep_agents 版本递增 缓存已清除", new_version=self._global_version, owner_user_id=owner_user_id, agent_count=count)
+        return count
 
     def names(self) -> list[str]:
         """返回所有已注册 agent 的名字 去重排序"""

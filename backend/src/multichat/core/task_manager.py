@@ -105,14 +105,14 @@ class TaskManager:
         if input_mode not in ("single", "multi"):
             raise ValueError(f"input_mode 取值非法 {input_mode}")
 
-        # 校验 agents 都是已注册 agent
-        registered = set(self._registry.names())
+        # 校验 agents 都是当前用户可见的已注册 agent
+        visible_agents = await self._storage.list_agents(owner_user_id=owner_user_id)
+        registered = {a.name for a in visible_agents}
         for a in agents:
             if a not in registered:
                 raise ValueError(f"未知 agent: {a}")
 
         # @ 直呼优先级最高  把 agents 覆盖为 [mention]  转单 agent 模式
-        # 即便用户在输入框选了多 agent  也以 @ 直呼为准
         mention = parse_single_mention(user_message, list(registered))
         if mention:
             agents = [mention]
@@ -142,6 +142,7 @@ class TaskManager:
                     user_message,
                     agents,
                     input_mode,
+                    owner_user_id,
                 )
             )
             self._tasks[replace_task_id] = t
@@ -167,7 +168,7 @@ class TaskManager:
         self._hubs[task_id] = hub
         # 后台驱动协程
         t = asyncio.create_task(
-            self._run_task_loop(task_id, session_id, user_message, agents, input_mode)
+            self._run_task_loop(task_id, session_id, user_message, agents, input_mode, owner_user_id)
         )
         self._tasks[task_id] = t
         return task_id
@@ -352,6 +353,7 @@ class TaskManager:
         user_message: str,
         agents: list[str],
         input_mode: Literal["single", "multi"],
+        owner_user_id: str,
     ) -> None:
         """主驱动: PENDING -> REPLYING(并发) -> DONE / CANCELLED
 
@@ -380,7 +382,7 @@ class TaskManager:
             subtasks: list[asyncio.Task[None]] = []
             for name in agents:
                 sub = asyncio.create_task(
-                    self._do_reply_for_agent(task_id, name, user_message, history, hub)
+                    self._do_reply_for_agent(task_id, name, user_message, history, hub, owner_user_id)
                 )
                 self._reply_subtasks[task_id][name] = sub
                 subtasks.append(sub)
@@ -507,6 +509,7 @@ class TaskManager:
         user_message: str,
         history: list[dict[str, Any]],
         hub: TaskEventHub,
+        owner_user_id: str,
     ) -> None:
         """单个 agent 的 reply 流式回答  写 replies.<agent>.* 字段
 
@@ -694,6 +697,7 @@ class TaskManager:
                 registry=self._registry,
                 on_event=on_event,
                 thinking_enabled=thinking_enabled,
+                owner_user_id=owner_user_id,
             )
             # 兜底刷新剩余 chunk 防止丢
             if flush_buf:

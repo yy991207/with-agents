@@ -1,28 +1,30 @@
-"""MCP 配置 API  整份 JSON 的读取与保存 + 单个服务器的 CRUD
+"""MCP 配置 API  单个服务器的 CRUD + 全量 JSON 读写
 
-GET    /api/mcp/config          返回 settings 集合中 mcp_config 文档的原始 JSON
-PUT    /api/mcp/config          全量覆盖 mcp_config
-GET    /api/mcp/servers         列出所有 MCP 服务器（表格管理用）
+GET    /api/mcp/config          返回当前用户的 MCP 配置 JSON
+PUT    /api/mcp/config          全量覆盖当前用户的 MCP 配置
+GET    /api/mcp/servers         列出当前用户的 MCP 服务器（表格管理用）
 POST   /api/mcp/servers         新增一个 MCP 服务器
 PUT    /api/mcp/servers/{name}  修改单个 MCP 服务器
 DELETE /api/mcp/servers/{name}  删除单个 MCP 服务器
 PUT    /api/mcp/servers/{name}/toggle  快捷启停开关
 
-数据格式对齐 mcp_settings.json:
-    {"mcpServers": {"name": {"command":"npx","args":[...],"env":{...},"alwaysAllow":[...],"disabled":false}, ...}}
-JSON 编辑接口（/config）不做结构校验 仅做 JSON parse 检查格式合法性
+数据隔离: 每个 MCP 服务器严格属于创建用户 owner_user_id 过滤
 """
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
+
+from .auth_context import get_current_identity
+from ..core.models import McpServerConfig, RequestIdentity
 
 router = APIRouter(prefix="/api/mcp", tags=["mcp"])
 
-# 固定 _id 用于 settings 集合中的 MCP 配置文档
-_MCP_CONFIG_DOC_ID = "mcp_config"
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 # ====== JSON 全量读写（保留原接口 兼容旧前端） ======
@@ -42,40 +44,66 @@ class McpConfigRequest(BaseModel):
 
 
 @router.get("/config", response_model=McpConfigResponse)
-async def get_mcp_config(request: Request) -> McpConfigResponse:
-    """读取当前 MCP 配置  不存在返回空 {}"""
+async def get_mcp_config(
+    request: Request,
+    identity: RequestIdentity = Depends(get_current_identity),
+) -> McpConfigResponse:
+    """读取当前用户的 MCP 配置  不存在返回空 {}"""
     storage = request.app.state.storage
-    doc = await storage._db["settings"].find_one({"_id": _MCP_CONFIG_DOC_ID})
-    if doc is None:
-        return McpConfigResponse(config={})
-    config = doc.get("config", {})
-    if not isinstance(config, dict):
-        return McpConfigResponse(config={})
-    return McpConfigResponse(config=config)
+    servers = await storage.list_mcp_servers(owner_user_id=identity.user_id)
+    mcp_servers = {}
+    for s in servers:
+        # 还原为 mcpServers map 格式 key 是 name
+        mcp_servers[s.name] = _server_to_storage_dict(s)
+    return McpConfigResponse(config={"mcpServers": mcp_servers})
 
 
 @router.put("/config", response_model=McpConfigResponse)
 async def put_mcp_config(
-    body: McpConfigRequest, request: Request
+    body: McpConfigRequest,
+    request: Request,
+    identity: RequestIdentity = Depends(get_current_identity),
 ) -> McpConfigResponse:
-    """全量覆盖 MCP 配置  前端提交的 JSON 直接落库"""
+    """全量覆盖当前用户的 MCP 配置  前端提交的 JSON 直接落库"""
     storage = request.app.state.storage
-    await storage._db["settings"].update_one(
-        {"_id": _MCP_CONFIG_DOC_ID},
-        {"$set": {"config": body.config}},
-        upsert=True,
-    )
+    config = body.config
+    if not isinstance(config, dict):
+        return McpConfigResponse(config={})
+
+    mcp_servers = config.get("mcpServers", {})
+    if not isinstance(mcp_servers, dict):
+        mcp_servers = {}
+
+    # 先删除当前用户所有旧服务器
+    old_servers = await storage.list_mcp_servers(owner_user_id=identity.user_id)
+    for old in old_servers:
+        await storage.delete_mcp_server(old.name, owner_user_id=identity.user_id)
+
+    # 再写入新服务器
+    for name, srv_data in mcp_servers.items():
+        if not isinstance(srv_data, dict):
+            continue
+        server = McpServerConfig(
+            name=name,
+            transport=srv_data.get("transport", "stdio"),
+            command=srv_data.get("command"),
+            args=srv_data.get("args", []),
+            env=srv_data.get("env", {}),
+            url=srv_data.get("url"),
+            headers=srv_data.get("headers", {}),
+            always_allow=srv_data.get("alwaysAllow", srv_data.get("always_allow", [])),
+            disabled=srv_data.get("disabled", False),
+            owner_user_id=identity.user_id,
+        )
+        await storage.upsert_mcp_server(server, owner_user_id=identity.user_id)
+
     return McpConfigResponse(config=body.config)
 
 
 # ====== 单个服务器 CRUD（表格管理模式） ======
 
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 class McpServerItem(BaseModel):
-    """单个 MCP 服务器的配置视图  字段对齐 models.McpServerConfig"""
+    """单个 MCP 服务器的配置视图"""
 
     name: str
     transport: str = "stdio"
@@ -93,7 +121,7 @@ class McpServerItem(BaseModel):
 
 
 class McpServerUpdate(BaseModel):
-    """PUT /api/mcp/servers/{name} 请求体  全量覆盖除 name 外的字段"""
+    """PUT /api/mcp/servers/{name} 请求体"""
 
     transport: str = "stdio"
     command: str | None = None
@@ -117,131 +145,97 @@ class McpServersListResponse(BaseModel):
     servers: list[McpServerItem]
 
 
-def _config_collection(storage):
-    """返回 settings 集合 封装访问路径"""
-    return storage._db["settings"]
-
-
-async def _ensure_doc(storage):
-    """确保 mcp_config 文档存在 不存在则创建空文档"""
-    col = _config_collection(storage)
-    doc = await col.find_one({"_id": _MCP_CONFIG_DOC_ID})
-    if doc is None:
-        await col.insert_one({"_id": _MCP_CONFIG_DOC_ID, "config": {"mcpServers": {}}})
-        doc = {"_id": _MCP_CONFIG_DOC_ID, "config": {"mcpServers": {}}}
-    # 确保 config.mcpServers 是 dict
-    config = doc.get("config", {})
-    if not isinstance(config, dict):
-        config = {}
-    if "mcpServers" not in config or not isinstance(config.get("mcpServers"), dict):
-        config["mcpServers"] = {}
-        await col.update_one(
-            {"_id": _MCP_CONFIG_DOC_ID},
-            {"$set": {"config": config}},
-        )
-        doc["config"] = config
-    return doc
-
-
-def _server_to_item(server_config: dict) -> McpServerItem:
-    """将 mcpServers 中的原始 dict 转成 McpServerItem 视图"""
+def _server_to_item(s: McpServerConfig) -> McpServerItem:
+    """McpServerConfig → McpServerItem"""
     return McpServerItem(
-        name=server_config.get("name", ""),
-        transport=server_config.get("transport", "stdio"),
-        command=server_config.get("command"),
-        args=server_config.get("args", []),
-        env=server_config.get("env", {}),
-        url=server_config.get("url"),
-        headers=server_config.get("headers", {}),
-        always_allow=server_config.get("alwaysAllow", server_config.get("always_allow", [])),
-        disabled=server_config.get("disabled", False),
-        updated_at=server_config.get("updated_at", ""),
-        last_load_status=server_config.get("last_load_status", ""),
-        last_load_error=server_config.get("last_load_error", ""),
-        last_loaded_at=server_config.get("last_loaded_at", ""),
+        name=s.name,
+        transport=s.transport,
+        command=s.command,
+        args=s.args,
+        env=s.env,
+        url=s.url,
+        headers=s.headers,
+        always_allow=s.always_allow,
+        disabled=s.disabled,
+        updated_at=s.updated_at.isoformat() if s.updated_at else "",
+        last_load_status="",  # 加载状态暂不持久化到模型
+        last_load_error="",
+        last_loaded_at="",
     )
 
 
-def _item_to_server(item: McpServerItem) -> dict:
-    """将 McpServerItem 转回 mcpServers 存储格式"""
+def _server_to_storage_dict(s: McpServerConfig) -> dict:
+    """McpServerConfig → mcpServers map 存储格式 (不含 name key)"""
     return {
-        "name": item.name,
-        "transport": item.transport,
-        "command": item.command,
-        "args": item.args,
-        "env": item.env,
-        "url": item.url,
-        "headers": item.headers,
-        "alwaysAllow": item.always_allow,
-        "always_allow": item.always_allow,
-        "disabled": item.disabled,
-        "updated_at": item.updated_at or _utcnow().isoformat(),
-        "last_load_status": item.last_load_status,
-        "last_load_error": item.last_load_error,
-        "last_loaded_at": item.last_loaded_at,
+        "transport": s.transport,
+        "command": s.command,
+        "args": s.args,
+        "env": s.env,
+        "url": s.url,
+        "headers": s.headers,
+        "alwaysAllow": s.always_allow,
+        "always_allow": s.always_allow,
+        "disabled": s.disabled,
+        "updated_at": s.updated_at.isoformat() if s.updated_at else _utcnow().isoformat(),
     }
 
 
 # ====== 固定路径路由必须在带参数路由之前定义 ======
 
 @router.get("/servers", response_model=McpServersListResponse)
-async def list_mcp_servers(request: Request) -> McpServersListResponse:
-    """列出所有 MCP 服务器"""
-    doc = await _ensure_doc(request.app.state.storage)
-    config = doc.get("config", {})
-    mcp_servers = config.get("mcpServers", {})
-    if not isinstance(mcp_servers, dict):
-        return McpServersListResponse(servers=[])
-
-    servers: list[McpServerItem] = []
-    for name, server_data in mcp_servers.items():
-        if not isinstance(server_data, dict):
-            continue
-        server_data["name"] = name
-        servers.append(_server_to_item(server_data))
-
-    return McpServersListResponse(servers=servers)
+async def list_mcp_servers(
+    request: Request,
+    identity: RequestIdentity = Depends(get_current_identity),
+) -> McpServersListResponse:
+    """列出当前用户的 MCP 服务器"""
+    storage = request.app.state.storage
+    servers = await storage.list_mcp_servers(owner_user_id=identity.user_id)
+    return McpServersListResponse(servers=[_server_to_item(s) for s in servers])
 
 
 @router.post("/servers", response_model=McpServerItem)
-async def create_mcp_server(body: McpServerItem, request: Request) -> McpServerItem:
-    """新增一个 MCP 服务器  name 不可重复"""
+async def create_mcp_server(
+    body: McpServerItem,
+    request: Request,
+    identity: RequestIdentity = Depends(get_current_identity),
+) -> McpServerItem:
+    """新增一个 MCP 服务器  同名抛 409"""
     storage = request.app.state.storage
-    col = _config_collection(storage)
-    doc = await _ensure_doc(storage)
-
-    config = doc.get("config", {})
-    mcp_servers = config.get("mcpServers", {})
-    if not isinstance(mcp_servers, dict):
-        mcp_servers = {}
-
-    if body.name in mcp_servers:
+    # 检查同名是否已存在 (严格按 owner_user_id)
+    existing = await storage.get_mcp_server(body.name, owner_user_id=identity.user_id)
+    if existing is not None:
         raise HTTPException(status_code=409, detail=f"MCP 服务器已存在 name={body.name}")
 
-    body.updated_at = _utcnow().isoformat()
-    mcp_servers[body.name] = _item_to_server(body)
-    del mcp_servers[body.name]["name"]  # mcpServers key 就是 name 不再冗余存
-
-    await col.update_one(
-        {"_id": _MCP_CONFIG_DOC_ID},
-        {"$set": {"config.mcpServers": mcp_servers}},
+    server = McpServerConfig(
+        name=body.name,
+        transport=body.transport,
+        command=body.command,
+        args=body.args,
+        env=body.env,
+        url=body.url,
+        headers=body.headers,
+        always_allow=body.always_allow,
+        disabled=body.disabled,
+        owner_user_id=identity.user_id,
     )
+    await storage.upsert_mcp_server(server, owner_user_id=identity.user_id)
     return body
 
 
 @router.put("/servers/{name}", response_model=McpServerItem)
-async def update_mcp_server(name: str, body: McpServerUpdate, request: Request) -> McpServerItem:
-    """修改单个 MCP 服务器  全量覆盖除 name 外的字段  name 不存在抛 404"""
+async def update_mcp_server(
+    name: str,
+    body: McpServerUpdate,
+    request: Request,
+    identity: RequestIdentity = Depends(get_current_identity),
+) -> McpServerItem:
+    """修改单个 MCP 服务器  全量覆盖  不存在抛 404"""
     storage = request.app.state.storage
-    col = _config_collection(storage)
-    doc = await _ensure_doc(storage)
-
-    config = doc.get("config", {})
-    mcp_servers = config.get("mcpServers", {})
-    if not isinstance(mcp_servers, dict) or name not in mcp_servers:
+    existing = await storage.get_mcp_server(name, owner_user_id=identity.user_id)
+    if existing is None:
         raise HTTPException(status_code=404, detail=f"MCP 服务器不存在 name={name}")
 
-    updated = McpServerItem(
+    server = McpServerConfig(
         name=name,
         transport=body.transport,
         command=body.command,
@@ -251,74 +245,50 @@ async def update_mcp_server(name: str, body: McpServerUpdate, request: Request) 
         headers=body.headers,
         always_allow=body.always_allow,
         disabled=body.disabled,
-        updated_at=_utcnow().isoformat(),
+        owner_user_id=identity.user_id,
     )
-    mcp_servers[name] = _item_to_server(updated)
-    del mcp_servers[name]["name"]
-
-    await col.update_one(
-        {"_id": _MCP_CONFIG_DOC_ID},
-        {"$set": {"config.mcpServers": mcp_servers}},
-    )
-    return updated
+    await storage.upsert_mcp_server(server, owner_user_id=identity.user_id)
+    return _server_to_item(server)
 
 
 @router.put("/servers/{name}/toggle", response_model=McpServerItem)
-async def toggle_mcp_server(name: str, body: McpServerToggle, request: Request) -> McpServerItem:
-    """快捷启停开关  只改 disabled 字段  name 不存在抛 404"""
+async def toggle_mcp_server(
+    name: str,
+    body: McpServerToggle,
+    request: Request,
+    identity: RequestIdentity = Depends(get_current_identity),
+) -> McpServerItem:
+    """快捷启停开关  只改 disabled 字段"""
     storage = request.app.state.storage
-    col = _config_collection(storage)
-    doc = await _ensure_doc(storage)
-
-    config = doc.get("config", {})
-    mcp_servers = config.get("mcpServers", {})
-    if not isinstance(mcp_servers, dict) or name not in mcp_servers:
+    existing = await storage.get_mcp_server(name, owner_user_id=identity.user_id)
+    if existing is None:
         raise HTTPException(status_code=404, detail=f"MCP 服务器不存在 name={name}")
 
-    server_data = mcp_servers[name]
-    if not isinstance(server_data, dict):
-        raise HTTPException(status_code=404, detail=f"MCP 服务器数据异常 name={name}")
-
-    server_data["disabled"] = body.disabled
-    mcp_servers[name] = server_data
-
-    await col.update_one(
-        {"_id": _MCP_CONFIG_DOC_ID},
-        {"$set": {"config.mcpServers": mcp_servers}},
-    )
-
-    server_data["name"] = name
-    return _server_to_item(server_data)
+    existing.disabled = body.disabled
+    await storage.upsert_mcp_server(existing, owner_user_id=identity.user_id)
+    return _server_to_item(existing)
 
 
 @router.delete("/servers/{name}", status_code=204)
-async def delete_mcp_server(name: str, request: Request) -> None:
-    """删除单个 MCP 服务器  name 不存在抛 404"""
+async def delete_mcp_server(
+    name: str,
+    request: Request,
+    identity: RequestIdentity = Depends(get_current_identity),
+) -> None:
+    """删除单个 MCP 服务器"""
     storage = request.app.state.storage
-    col = _config_collection(storage)
-    doc = await _ensure_doc(storage)
-
-    config = doc.get("config", {})
-    mcp_servers = config.get("mcpServers", {})
-    if not isinstance(mcp_servers, dict) or name not in mcp_servers:
-        raise HTTPException(status_code=404, detail=f"MCP 服务器不存在 name={name}")
-
-    del mcp_servers[name]
-
-    await col.update_one(
-        {"_id": _MCP_CONFIG_DOC_ID},
-        {"$set": {"config.mcpServers": mcp_servers}},
-    )
+    try:
+        await storage.delete_mcp_server(name, owner_user_id=identity.user_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/reload")
-async def reload_agents_for_mcp(request: Request) -> dict:
-    """重载所有 agent 让 MCP 配置变更立刻生效
-
-    与 /api/skills/reload 共享同一份 reload_all 入口
-    内部会重新构建 deep_agent 实例  把当前 enabled 的 MCP 工具集挂回去
-    返回 {"reloaded": N}  N = 重新构建的 agent 数
-    """
+async def reload_agents_for_mcp(
+    request: Request,
+    identity: RequestIdentity = Depends(get_current_identity),
+) -> dict:
+    """重载当前用户的 agent 实例让 MCP 配置变更立刻生效"""
     registry = request.app.state.deep_agents
-    count = await registry.reload_all()
+    count = await registry.reload_all(owner_user_id=identity.user_id)
     return {"reloaded": count}

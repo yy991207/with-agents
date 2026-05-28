@@ -80,25 +80,16 @@ async def run_reply(
     registry: DeepAgentRegistry,
     on_event: EventCallback,
     thinking_enabled: bool = False,
+    owner_user_id: str | None = None,
 ) -> str:
     """运行被选中 agent 的 reply 流式调用
 
-    通过 on_event 回调把 token chunk 与 tool 调用推出去
-    thinking_enabled=true 时走 registry.build_thinking_reply 临时构建 deep_agent
-        让 ChatOpenAI 注入 extra_body.thinking 让模型走深度思考分支
-    chunk 里的 reasoning_content 不依赖 thinking_enabled 始终提取  推 reply.thinking 事件
-        deepseek-reasoner / glm 等"自带 reasoning"模型即便不开关也能展示
-    返回最终完整 reply 文本(由 chunk 拼接)
-
-    超时策略:
-        - reply 阶段不再包业务层总时长超时
-        - 仅依赖底层 LLM API 客户端自身的网络请求超时
-          这样模型即使执行十几分钟  只要连接持续正常返回就不会被业务层误杀
+    owner_user_id 用于按用户获取 agent 实例 (含 MCP/Skills)
     """
     if thinking_enabled:
-        deep_agent = await registry.build_thinking_reply(agent_name)
+        deep_agent = await registry.build_thinking_reply(agent_name, owner_user_id=owner_user_id)
     else:
-        deep_agent = registry.get(agent_name, "reply")
+        deep_agent = await registry.get_or_build(agent_name, "reply", owner_user_id=owner_user_id)
     messages = _build_messages(history, user_message)
     full_text_parts: list[str] = []
 

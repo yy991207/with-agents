@@ -44,7 +44,7 @@ export const initialState: ChatState = {
   sessions: [],
   rounds: [],
   activeTaskId: null,
-  taskState: 'PENDING',
+  taskState: 'DONE',
   sseStatus: 'idle',
   settings: initialSettings,
   workbench: initialWorkbench,

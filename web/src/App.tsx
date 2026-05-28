@@ -142,13 +142,26 @@ export default function App() {
     };
   };
 
-  // 首次 mount:读取 localStorage,尝试恢复 session + 重连 SSE
+  // 首次 mount:加载 agent 列表 + 恢复 session + 重连 SSE
   useEffect(() => {
     if (authState !== 'authenticated') return;
     if (bootstrappedRef.current) return;
     bootstrappedRef.current = true;
 
     void (async () => {
+      // 无论有没有历史会话 agent 列表都必须加载 首页选择器依赖它
+      try {
+        const agentsResp = await getAgents();
+        const agents = (agentsResp.agents ?? []).map(convertAgentView);
+        dispatch({
+          type: 'settings.loaded',
+          agents,
+          judgeTarget: agentsResp.judge_target,
+        });
+      } catch {
+        // agent 列表加载失败不阻塞页面
+      }
+
       const { sessionId, activeTaskId } = loadPersisted();
       if (!sessionId) return;
 
@@ -161,18 +174,6 @@ export default function App() {
           contextUsage: snapshot.contextUsage,
           draftMessage: snapshot.draftMessage,
         });
-
-        try {
-          const agentsResp = await getAgents();
-          const agents = (agentsResp.agents ?? []).map(convertAgentView);
-          dispatch({
-            type: 'settings.loaded',
-            agents,
-            judgeTarget: agentsResp.judge_target,
-          });
-        } catch {
-          // agent 列表加载失败不阻塞页面恢复
-        }
 
         const resumableTaskId = findResumableTaskId(snapshot.rounds, activeTaskId);
         if (activeTaskId && !resumableTaskId) {

@@ -157,11 +157,12 @@ def get_shared_tools() -> list[Any]:
     return [current_time, http_get]
 
 
-async def load_mcp_tools_from_db(storage: Any) -> tuple[list[Any], list[str]]:
-    """从数据库 mcp_config 文档读取 MCP 配置并加载工具
+async def load_mcp_tools_from_db(storage: Any, *, owner_user_id: str | None = None) -> tuple[list[Any], list[str]]:
+    """从数据库加载 MCP 工具 owner_user_id 过滤当前用户的配置
 
+    owner_user_id 为 None 时跳过加载（系统启动场景）
+    有值时从 mcp_servers 集合读取当前用户的配置
     返回 (工具列表, 已启用服务器名称列表)
-    工具列表为空时服务器列表也为空
     """
     import structlog
     from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -169,45 +170,37 @@ async def load_mcp_tools_from_db(storage: Any) -> tuple[list[Any], list[str]]:
 
     _mcp_logger = structlog.get_logger(__name__)
 
-    doc = await storage._db["settings"].find_one({"_id": "mcp_config"})
-    if doc is None:
+    if owner_user_id is None:
         return [], []
-    config = doc.get("config", {})
-    if not isinstance(config, dict):
-        return [], []
-    servers = config.get("mcpServers", {})
-    if not isinstance(servers, dict) or len(servers) == 0:
+
+    servers = await storage.list_mcp_servers(owner_user_id=owner_user_id)
+    if not servers:
         return [], []
 
     connections: dict[str, StdioConnection] = {}
     enabled_names: list[str] = []
-    for name, srv in servers.items():
-        if not isinstance(srv, dict):
+    for srv in servers:
+        if srv.disabled:
+            _mcp_logger.info("mcp 跳过已禁用的 server", name=srv.name)
             continue
-        if srv.get("disabled"):
-            _mcp_logger.info("mcp 跳过已禁用的 server", name=name)
-            continue
-        transport = srv.get("transport", "stdio")
-        if transport != "stdio":
-            _mcp_logger.info("mcp 跳过非 stdio server", name=name, transport=transport)
+        if srv.transport != "stdio":
+            _mcp_logger.info("mcp 跳过非 stdio server", name=srv.name, transport=srv.transport)
             continue
 
-        command = srv.get("command", "")
-        args = srv.get("args", [])
-        if not command or not isinstance(command, str):
-            _mcp_logger.warning("mcp server 缺少 command 跳过", name=name)
+        command = srv.command or ""
+        if not command:
+            _mcp_logger.warning("mcp server 缺少 command 跳过", name=srv.name)
             continue
 
         conn: StdioConnection = {
             "transport": "stdio",
             "command": str(command),
-            "args": [str(a) for a in args] if isinstance(args, list) else [],
+            "args": [str(a) for a in srv.args] if isinstance(srv.args, list) else [],
         }
-        env = srv.get("env")
-        if isinstance(env, dict):
-            conn["env"] = {str(k): str(v) for k, v in env.items()}
-        connections[name] = conn
-        enabled_names.append(name)
+        if isinstance(srv.env, dict):
+            conn["env"] = {str(k): str(v) for k, v in srv.env.items()}
+        connections[srv.name] = conn
+        enabled_names.append(srv.name)
 
     if not connections:
         return [], []
@@ -219,92 +212,76 @@ async def load_mcp_tools_from_db(storage: Any) -> tuple[list[Any], list[str]]:
         return [], []
 
     # 逐个 server 拉工具 坏的跳过 好的继续挂载
-    # 这样单个 MCP server 崩掉时 不会把整批可用工具一起拖没
     all_tools: list[Any] = []
     loaded_names: list[str] = []
     for name in enabled_names:
         try:
             server_tools = await client.get_tools(server_name=name)
         except Exception as e:
-            await storage._db["settings"].update_one(
-                {"_id": "mcp_config"},
-                {
-                    "$set": {
-                        f"config.mcpServers.{name}.last_load_status": "failed",
-                        f"config.mcpServers.{name}.last_load_error": str(e),
-                        f"config.mcpServers.{name}.last_loaded_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                },
-            )
+            # 加载状态写回: 标记失败
+            existing = await storage.get_mcp_server(name, owner_user_id=owner_user_id)
+            if existing is not None:
+                existing.last_load_status = "failed"
+                existing.last_load_error = str(e)
+                existing.last_loaded_at = datetime.now(timezone.utc).isoformat()
+                await storage.upsert_mcp_server(existing, owner_user_id=owner_user_id)
             _mcp_logger.warning("mcp 单个 server 工具加载失败 已跳过", name=name, error=str(e))
             continue
         all_tools.extend(server_tools)
         loaded_names.append(name)
-        await storage._db["settings"].update_one(
-            {"_id": "mcp_config"},
-            {
-                "$set": {
-                    f"config.mcpServers.{name}.last_load_status": "loaded",
-                    f"config.mcpServers.{name}.last_load_error": "",
-                    f"config.mcpServers.{name}.last_loaded_at": datetime.now(timezone.utc).isoformat(),
-                }
-            },
-        )
+        # 加载状态写回: 标记成功
+        existing = await storage.get_mcp_server(name, owner_user_id=owner_user_id)
+        if existing is not None:
+            existing.last_load_status = "loaded"
+            existing.last_load_error = ""
+            existing.last_loaded_at = datetime.now(timezone.utc).isoformat()
+            await storage.upsert_mcp_server(existing, owner_user_id=owner_user_id)
 
     if not loaded_names:
         return [], []
 
     _mcp_logger.info(
         "mcp 工具加载完成",
+        owner_user_id=owner_user_id,
         server_count=len(loaded_names),
         tool_count=len(all_tools),
     )
     return all_tools, loaded_names
 
 
-async def load_skills_from_db(storage: Any) -> tuple[str, list[str]]:
-    """从数据库 skills_config 文档读取已启用的 skills 并拼接成一段 system prompt 追加内容
+async def load_skills_from_db(storage: Any, *, owner_user_id: str | None = None) -> tuple[str, list[str]]:
+    """从数据库加载已启用的 skills 拼接成 system prompt 追加内容
 
-    与 MCP 工具加载不同 skills 不产生新的 tool 调用
-    而是把已启用 skill 的正文内容嵌入 system_prompt 让 agent 遵守 skill 定义的流程规范
-
+    owner_user_id 为 None 时跳过加载
+    有值时从 skills 集合读取当前用户的配置
     返回 (拼接后的 system_prompt 文本, 已启用 skill 名称列表)
-    内容为空时返回 ("", [])
     """
     import structlog
 
     _skill_logger = structlog.get_logger(__name__)
 
-    doc = await storage._db["settings"].find_one({"_id": "skills_config"})
-    if doc is None:
+    if owner_user_id is None:
         return "", []
-    skills = doc.get("skills", [])
-    if not isinstance(skills, list) or len(skills) == 0:
+
+    skills = await storage.list_skills(owner_user_id=owner_user_id)
+    if not skills:
         return "", []
 
     enabled_parts: list[str] = []
     enabled_names: list[str] = []
     for s in skills:
-        if not isinstance(s, dict):
+        if not s.enabled:
+            _skill_logger.info("skills 跳过已禁用的 skill", name=s.name)
             continue
-        if not s.get("enabled", True):
-            _skill_logger.info("skills 跳过已禁用的 skill", name=s.get("name", "?"))
+        if not s.name or not s.content:
+            _skill_logger.warning("skills 缺少 name 或 content 跳过", name=s.name)
             continue
-        name = s.get("name", "")
-        content = s.get("content", "")
-        if not name or not content:
-            _skill_logger.warning("skills 缺少 name 或 content 跳过", name=name)
-            continue
-        # 每个 skill 内容用分隔线包裹 让 LLM 能明确知道这是个独立的能力模块
-        enabled_parts.append(
-            f"## Skill: {name}\n\n{content}\n"
-        )
-        enabled_names.append(name)
+        enabled_parts.append(f"## Skill: {s.name}\n\n{s.content}\n")
+        enabled_names.append(s.name)
 
     if not enabled_parts:
         return "", []
 
-    # 追加到 system_prompt 的统一前缀说明
     prefix = (
         "\n\n---\n\n"
         "## Skills（技能模块）\n\n"
@@ -314,6 +291,7 @@ async def load_skills_from_db(storage: Any) -> tuple[str, list[str]]:
     combined = prefix + "\n---\n\n".join(enabled_parts)
     _skill_logger.info(
         "skills 内容加载完成",
+        owner_user_id=owner_user_id,
         enabled_count=len(enabled_names),
         names=enabled_names,
     )

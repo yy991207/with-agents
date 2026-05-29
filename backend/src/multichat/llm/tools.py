@@ -519,14 +519,14 @@ def _build_execute_skill_script_tool(storage: Any, object_store: Any, owner_user
     async def execute_skill_script(
         skill_name: str,
         script_path: str,
-        args: list[str] | None = None,
+        script_args: list[str] | None = None,
     ) -> str:
         """执行 skill 包中的 Python 脚本
 
         Args:
             skill_name: skill 名称 如 "news-skill"
             script_path: 脚本在 skill 包内的相对路径 如 "scripts/fetch.py"
-            args: 传递给脚本的命令行参数列表(可选)
+            script_args: 传递给脚本的命令行参数列表(可选)
 
         Returns:
             脚本的 stdout 输出 如果执行失败返回包含 stderr 的错误信息
@@ -572,11 +572,11 @@ def _build_execute_skill_script_tool(storage: Any, object_store: Any, owner_user
 
             # 6. 构建执行命令
             cmd_args = ["python3", script_full_path]
-            if args:
-                cmd_args.extend(args)
+            if script_args:
+                cmd_args.extend(script_args)
 
             # 7. 子进程执行 设置超时 工作目录为 skill 包根目录(保留相对路径关系)
-            _exec_logger.info("开始执行脚本", skill_name=skill_name, script_path=script_path, args=args)
+            _exec_logger.info("开始执行脚本", skill_name=skill_name, script_path=script_path, args=script_args)
             proc = await asyncio.create_subprocess_exec(
                 *cmd_args,
                 stdout=asyncio.subprocess.PIPE,

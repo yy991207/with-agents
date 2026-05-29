@@ -126,6 +126,25 @@ class TaskManager:
             if session_id and round_to_replace.session_id != session_id:
                 raise ValueError("replace_task_id 不属于当前 session")
             session_id = round_to_replace.session_id
+
+            # 先 cancel 正在跑的旧任务  防止旧 reply 线程继续写脏数据
+            old_task = self._tasks.pop(replace_task_id, None)
+            if old_task is not None and not old_task.done():
+                old_task.cancel()
+                _logger.info("编辑消息 取消旧任务", task_id=replace_task_id)
+                try:
+                    await old_task  # 等待旧任务 CancelledError handler 跑完
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    _logger.exception("旧任务退出异常 忽略", task_id=replace_task_id)
+
+            # 取消该 task_id 下全部 agent 子任务
+            old_subtasks = self._reply_subtasks.pop(replace_task_id, {})
+            for _aname, sub in old_subtasks.items():
+                if not sub.done():
+                    sub.cancel()
+
             await self._truncate_history_for_edit(
                 session_id=session_id,
                 replace_round=round_to_replace,

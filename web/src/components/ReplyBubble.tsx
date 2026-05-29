@@ -19,6 +19,7 @@ import {
 import { getAgentColor } from '../theme/tokens';
 import type { ReplySegment, ReplyView } from '../state/types';
 import type { AgentMetaMap } from '../state/agentLabels';
+import { SafeHtmlRenderer } from './SafeHtmlRenderer';
 
 export interface ReplyBubbleProps {
   reply: ReplyView;
@@ -397,13 +398,7 @@ function ReplyAgentSwitcher({
 }
 
 function TextBlock({ html }: { html: string }) {
-  return (
-    <article
-      className="reply-html lobe-md"
-      // 后端模型直接吐 HTML(见 commit 2074801),所以走 innerHTML 渲染
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
-  );
+  return <SafeHtmlRenderer html={html} />;
 }
 
 // 深度思考块  reasoning model 的 reasoning_content 单独成一段

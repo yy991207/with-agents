@@ -228,12 +228,12 @@ function ToolPayloadView({ label, payload }: ToolPayloadViewProps) {
 // 单个工具调用折叠块  IDE chip 风
 //   折叠态:  ✓ tool_name  key="val"  12.3 KB
 //   展开态:  入参 (JSON 美化) + 结果 (智能识别 HTML / JSON / text)
-function ToolAccordion({ node }: { node: Extract<TimelineNode, { kind: 'tool' }> }) {
+function ToolAccordion({ node, streaming }: { node: Extract<TimelineNode, { kind: 'tool' }>; streaming: boolean }) {
   const [open, setOpen] = useState(false);
-  // finished 时不再渲染绿色对号  保持 chip 干净  仅 loading 状态显示转圈
-  const icon = node.finished ? null : (
+  // 仅流式期间且未完成时显示旋转动画；回复终止后未完成的 tool call 停止 loading
+  const icon = (!node.finished && streaming) ? (
     <LoadingOutlined spin style={{ color: 'var(--ant-color-primary)', fontSize: 13 }} />
-  );
+  ) : null;
   const inputSummary = summarizeInput(node.input);
   const sizeText = node.finished ? formatSize(node.result) : '';
 
@@ -628,7 +628,7 @@ export default function ReplyBubble({
           if (node.kind === 'text') {
             return <TextBlock html={node.content} key={`t-${i}`} />;
           }
-          return <ToolAccordion key={`x-${i}-${node.tool}`} node={node} />;
+          return <ToolAccordion key={`x-${i}-${node.tool}`} node={node} streaming={isStreaming} />;
         })}
         {reply.state === 'cancelled' ? (
           <Typography.Text type="secondary" style={{ fontSize: 13 }}>

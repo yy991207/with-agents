@@ -57,6 +57,11 @@ class RuntimeConfig(BaseModel):
     rate_limit_max_retries: int = 3          # 429 限流最大重试次数
     rate_limit_retry_delay_s: float = 5.0    # 初始重试等待秒数
     rate_limit_retry_max_delay_s: float = 30.0  # 重试等待秒数上限
+    # 上下文压缩参数
+    compact_max_retries: int = 3               # 压缩 LLM 调用失败最大重试次数
+    compact_llm_timeout_s: float = 120.0       # 单次压缩 LLM 调用超时秒数
+    compact_tool_desc_max_chars: int = 200     # 降级裁切时每个 tool schema 描述最大字符数
+    compact_history_min_rounds: int = 1        # 降级裁切时最少保留的历史轮数
 
 
 class ServerConfig(BaseModel):

@@ -9,6 +9,7 @@ import hashlib
 from io import BytesIO
 
 from minio import Minio
+from minio.error import S3Error
 
 from .object_store import ObjectStore, StoredObject
 
@@ -56,7 +57,13 @@ class MinioObjectStore(ObjectStore):
         }
 
     async def get_bytes(self, object_key: str) -> StoredObject:
-        response = self._client.get_object(self._bucket, object_key)
+        self._ensure_bucket()
+        try:
+            response = self._client.get_object(self._bucket, object_key)
+        except S3Error as exc:
+            if exc.code == "NoSuchKey":
+                raise KeyError(object_key) from exc
+            raise
         try:
             content = response.read()
         finally:
@@ -72,4 +79,10 @@ class MinioObjectStore(ObjectStore):
         )
 
     async def delete(self, object_key: str) -> None:
-        self._client.remove_object(self._bucket, object_key)
+        self._ensure_bucket()
+        try:
+            self._client.remove_object(self._bucket, object_key)
+        except S3Error as exc:
+            if exc.code == "NoSuchKey":
+                raise KeyError(object_key) from exc
+            raise

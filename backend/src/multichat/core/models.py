@@ -266,6 +266,22 @@ class ModelCatalogEntry(BaseModel):
     max_input_tokens: int = Field(..., gt=0, description="模型最大输入 token 窗口")
 
 
+class CompactResult(BaseModel):
+    """压缩/裁切后的结果  包含最终喂给 LLM 的全部信息
+
+    history 是经过压缩/裁切后的最终消息列表  直接供 _build_messages 使用
+    used_tokens 是真实总用量  含 system prompt + tools + history + 当前消息
+    used_tokens_before 是压缩前的真实用量  手动压缩接口需要此值展示压缩效果
+    """
+
+    history: list[dict[str, Any]]
+    used_tokens: int = 0
+    max_tokens: int = 200000
+    compacted: bool = False
+    summary_updated: bool = False
+    used_tokens_before: int = 0
+
+
 class UserRecord(BaseModel):
     """用户记录 username 全局唯一"""
 

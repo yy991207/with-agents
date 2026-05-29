@@ -91,6 +91,20 @@ except Exception:
 PY
 }
 
+# 探测 minio 是否可达 用 python 简单 connect 一下
+ping_minio() {
+  "$PYTHON_BIN" - <<'PY' 2>/dev/null
+import socket, sys
+s = socket.socket()
+s.settimeout(1.0)
+try:
+    s.connect(("127.0.0.1", 9000))
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+PY
+}
+
 # 启动前的必要前置 校验 mongo 校验端口 mongo 不可达时尝试自动起
 preflight() {
   if ! ping_mongo; then
@@ -117,6 +131,21 @@ preflight() {
     info "mongo 已就绪"
   fi
 
+  if ! ping_minio; then
+    warn "MinIO (127.0.0.1:9000) 不可达 尝试启动"
+    cmd_minio
+    local j=0
+    while [ "$j" -lt 15 ] && ! ping_minio; do
+      sleep 1
+      j=$((j + 1))
+    done
+    if ! ping_minio; then
+      err "等了 15 秒 minio 仍不可达 请手动检查"
+      return 1
+    fi
+    info "minio 已就绪"
+  fi
+
   local existing
   existing=$(port_pid "$PORT")
   if [ -n "$existing" ]; then
@@ -135,6 +164,59 @@ cmd_mongo() {
 cmd_mongo_stop() {
   info "停 docker compose 中的 mongo"
   docker compose stop mongo
+}
+
+cmd_minio() {
+  # 优先用原生 minio 命令 找不到再走 docker compose
+  if command -v minio >/dev/null 2>&1; then
+    local minio_pid_file=".minio.pid"
+    local existing
+    existing=$(port_pid 9000)
+    if [ -n "$existing" ]; then
+      info "minio 已在运行 PID=$existing"
+      return 0
+    fi
+    info "用原生 minio 起 (数据目录 ~/minio-data 端口 9000/9001)"
+    mkdir -p "$HOME/minio-data"
+    nohup minio server "$HOME/minio-data" --console-address ":9001" > run-minio.log 2>&1 &
+    local pid=$!
+    echo "$pid" > "$minio_pid_file"
+    info "minio 已启动 PID=$pid 日志 run-minio.log"
+    return 0
+  fi
+
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    info "找不到 minio 命令 用 docker compose 起"
+    docker compose up -d minio
+    return 0
+  fi
+
+  err "找不到 minio 命令且 Docker 不可用 请手动安装 minio (brew install minio/stable/minio) 或装 Docker Desktop"
+  return 1
+}
+
+cmd_minio_stop() {
+  local minio_pid_file=".minio.pid"
+  if [ -f "$minio_pid_file" ]; then
+    local pid
+    pid=$(cat "$minio_pid_file")
+    if kill -0 "$pid" 2>/dev/null; then
+      info "停止原生 minio PID=$pid"
+      kill "$pid" 2>/dev/null || true
+      local i=0
+      while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 5 ]; do
+        sleep 1
+        i=$((i + 1))
+      done
+      if kill -0 "$pid" 2>/dev/null; then
+        warn "5 秒未退出 强杀"
+        kill -9 "$pid" 2>/dev/null || true
+      fi
+    fi
+    rm -f "$minio_pid_file"
+  fi
+  docker compose stop minio 2>/dev/null || true
+  info "minio 已停止"
 }
 
 cmd_dev() {
@@ -294,6 +376,8 @@ usage() {
   build       构建前端 web/dist
   mongo       手动用 docker compose 起本地 mongo (up/dev/start 已自动起)
   mongo-stop  停 docker compose 中的 mongo
+  minio       手动用 docker compose 起本地 minio (up/dev/start 已自动起)
+  minio-stop  停 docker compose 中的 minio
 
 环境变量
   CONDA_ENV   默认 multi-chat  自动 activate 该 conda 环境
@@ -310,6 +394,8 @@ case "${1:-}" in
   up)          cmd_up ;;
   mongo)       cmd_mongo ;;
   mongo-stop)  cmd_mongo_stop ;;
+  minio)       cmd_minio ;;
+  minio-stop)  cmd_minio_stop ;;
   dev)         cmd_dev ;;
   build)       cmd_build ;;
   start)       cmd_start ;;

@@ -24,7 +24,7 @@ POST /api/sessions/{session_id}/compact 同步触发会话上下文压缩
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Literal
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -33,8 +33,6 @@ from pydantic import BaseModel, Field
 from .auth_context import get_current_identity
 from ..core.models import RequestIdentity
 from ..core.errors import humanize_llm_error
-from ..llm.summarization import run_session_summary
-from ..llm.token_counter import count_history_tokens, usage_payload
 
 router = APIRouter(prefix="", tags=["history"])
 
@@ -51,14 +49,6 @@ _IN_PROGRESS_STATES = {
     "created",
     "waiting_decision",
 }
-
-# compact 路由内部使用 单条 LLM 摘要超时上限  与 task_manager 自动压缩对齐
-# 用户手动触发可能上下文很长  60s 容易超时  故走 120s
-_COMPACT_LLM_TIMEOUT_S: float = 120.0
-
-# agent.available_models 中找不到当前 model_id 对应 max_input_tokens 时的兜底
-# 与 task_manager._maybe_auto_compact 保持一致  避免两边阈值口径不同
-_DEFAULT_MAX_INPUT_TOKENS: int = 200000
 
 
 class BatchDeleteRequest(BaseModel):
@@ -284,101 +274,37 @@ async def compact_session(
                 agent_name = compaction_agent
 
     if agent_name is None:
-        # 无可用 agent  按 503 抛  detail 给中文提示
         raise HTTPException(
             status_code=503, detail="no agent available for summarization"
         )
 
     record = await storage.get_agent(agent_name, owner_user_id=identity.user_id)
     if record is None:
-        # 拿到 name 但 agent 已被并发删除  极少见  保险起见再判一次
         raise HTTPException(
             status_code=503, detail="no agent available for summarization"
         )
 
-    # 5 取 max_input_tokens  与 task_manager 口径保持一致  缺省走兜底
-    max_input_tokens = next(
-        (
-            m.max_input_tokens
-            for m in record.available_models
-            if m.model_id == record.model
-        ),
-        _DEFAULT_MAX_INPUT_TOKENS,
-    )
-
-    # 6 拼 history  与 _build_history 口径保持一致
-    #     question -> user message
-    #     reply.content -> assistant message
-    history: list[dict[str, Any]] = []
-    for r in done_rounds:
-        history.append({"role": "user", "content": r.question})
-        history.append(
-            {
-                "role": "assistant",
-                "content": (r.reply or {}).get("content", "") or "",
-            }
-        )
-
-    used_tokens_before = int(count_history_tokens(history))
-
-    # 7 调 LLM 摘要  任何异常一律按 503 抛  detail 走 humanize_llm_error
-    old_summary = session.summary or ""
+    # 5 调用统一压缩方法  user_message 传空串(手动压缩没有当前提问)
+    tm = request.app.state.task_manager
     try:
-        new_summary = await run_session_summary(
-            history=history,
-            old_summary=old_summary,
-            agent_record=record,
-            timeout_s=_COMPACT_LLM_TIMEOUT_S,
+        result = await tm._compact_context(
+            session_id, agent_name, user_message="", owner_user_id=identity.user_id
         )
-    except HTTPException:
-        # 上面的逻辑里不会主动抛  保险起见保留原样上抛
-        raise
-    except Exception as e:  # noqa: BLE001
-        # 把底层异常转成中文短提示  避免泄露完整堆栈与敏感 url
+    except Exception as e:
         _logger.exception(
-            "compact_session run_session_summary 失败",
+            "compact_session _compact_context 失败",
             session_id=session_id,
             agent=agent_name,
         )
         raise HTTPException(status_code=503, detail=humanize_llm_error(e))
 
-    # 8 写回 mongo  覆盖式更新  summary_until_round 取最后一条 done round
-    summary_until_round = int(done_rounds[-1].round_index)
-    try:
-        await storage.update_session_summary(
-            session_id,
-            summary=new_summary,
-            summary_until_round=summary_until_round,
-        )
-    except KeyError:
-        # 极少见  写回时 session 已被并发删掉
-        raise HTTPException(
-            status_code=404, detail=f"session not found: {session_id}"
-        )
-
-    # 9 估算压缩后 token  用模拟下次 _build_history 注入摘要后的形态
-    used_tokens_after = int(
-        count_history_tokens([{"role": "system", "content": new_summary}])
-    )
-
-    # 9.5 同步把 context_usage 快照写回 sessions  让前端刷新 / 切会话后能恢复进度条
-    # 写失败仅 log 不阻塞响应  反正下一轮 reply 还会再写一次
-    try:
-        post_payload = usage_payload(
-            used_tokens_after, int(max_input_tokens), model_id=record.model
-        )
-        await storage.update_session_context_usage(session_id, post_payload)
-    except Exception:
-        _logger.exception(
-            "compact 后写 context_usage 失败 忽略", session_id=session_id
-        )
-
-    # 10 取最新 summary_updated_at  以 mongo 写入后回查为准  减少时区误差
+    # 6 取最新 session 信息
     refreshed = await storage.get_session(session_id)
+    summary_text = (refreshed.summary or "") if refreshed else ""
+    summary_until = int(refreshed.summary_until_round or 0) if refreshed else 0
     if refreshed and refreshed.summary_updated_at is not None:
         ts = refreshed.summary_updated_at.isoformat()
     else:
-        # 兜底  极端情况下回查为空  用当前 utc 时间  保证字段可序列化
         ts = datetime.now(timezone.utc).isoformat()
 
     _logger.info(
@@ -386,17 +312,17 @@ async def compact_session(
         session_id=session_id,
         agent=agent_name,
         model_id=record.model,
-        before=used_tokens_before,
-        after=used_tokens_after,
-        summary_until_round=summary_until_round,
+        before=result.used_tokens_before,
+        after=result.used_tokens,
+        summary_until_round=summary_until,
     )
 
     return CompactResponse(
-        summary=new_summary,
-        summary_until_round=summary_until_round,
+        summary=summary_text,
+        summary_until_round=summary_until,
         summary_updated_at=ts,
-        used_tokens_before=used_tokens_before,
-        used_tokens_after=used_tokens_after,
-        max_input_tokens=int(max_input_tokens),
+        used_tokens_before=result.used_tokens_before,
+        used_tokens_after=result.used_tokens,
+        max_input_tokens=result.max_tokens,
         model_id=record.model,
     )

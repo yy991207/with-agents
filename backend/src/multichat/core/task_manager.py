@@ -25,17 +25,18 @@ from typing import Any, Literal
 import structlog
 
 from ..llm.agent_runner import run_reply
-from ..llm.deep_agents import DeepAgentRegistry
+from ..llm.deep_agents import DeepAgentRegistry, REPLY_SYSTEM_SUFFIX, MCP_SYSTEM_PROMPT
 from ..llm.summarization import run_session_summary
 from ..llm.token_counter import (
     count_history_tokens,
     should_trigger_summary,
     usage_payload,
 )
+from ..llm.tools import get_shared_tools, load_mcp_tools_from_db, load_skills_from_db
 from .errors import extract_retry_after, humanize_llm_error, is_rate_limit_error
 from .events import TaskEvent, TaskEventHub
 from .mention_parser import parse_single_mention
-from .models import TaskState
+from .models import CompactResult, TaskState
 
 _logger = structlog.get_logger(__name__)
 
@@ -367,11 +368,13 @@ class TaskManager:
         """
         hub = self._hubs[task_id]
         try:
-            # 请求到来时先静默检查会话上下文 token 是否超阈值
-            # 超了就同步触发一次摘要再继续  失败也不阻塞 task  靠 except 捕获不让 reply 卡住
-            await self._maybe_auto_compact(session_id)
-
-            history = await self._build_history(session_id, current_task_id=task_id)
+            # 用当前轮次第一个 agent 做压缩判断
+            # 多 agent 共享同一份 history 压缩一次就够了
+            compact_agent = agents[0]
+            compact_result = await self._compact_context(
+                session_id, compact_agent, user_message, owner_user_id
+            )
+            history = compact_result.history
 
             # 切 REPLYING  publish 一次 task.state  推所有 agents 名让前端布局
             await self._set_state(task_id, TaskState.REPLYING)
@@ -976,6 +979,319 @@ class TaskManager:
             self._reply_subtasks.pop(task_id, None)
 
     # ============================================================ 上下文压缩与用量
+
+    # ---- 全量 token 估算: 包含 system prompt + tools + history + 当前消息 ----
+
+    async def _estimate_full_tokens(
+        self,
+        agent_name: str,
+        history: list[dict[str, Any]],
+        user_message: str,
+        owner_user_id: str,
+    ) -> tuple[int, int]:
+        """估算发给 LLM 的全部内容 token 数  返回 (used_tokens, max_input_tokens)
+
+        估算范围与实际发给 LLM 的消息结构完全对齐:
+            - agent system prompt (prompt + REPLY_SYSTEM_SUFFIX + skills文本 + MCP说明)
+            - tools schema (共享工具 + MCP工具)
+            - history (摘要system + 历史轮次)
+            - 当前用户消息
+
+        用于 _compact_context / _publish_context_usage / 裁切降级时判断裁切到什么程度
+        """
+        record = await self._storage.get_agent(agent_name, owner_user_id=owner_user_id)
+        if record is None:
+            record = await self._storage.get_agent(agent_name)
+        if record is None:
+            return 0, 200000
+        max_tokens = next(
+            (m.max_input_tokens for m in record.available_models if m.model_id == record.model),
+            200000,
+        )
+
+        # 拼 system prompt: 与 _build_one 对齐
+        system_prompt = record.prompt + REPLY_SYSTEM_SUFFIX
+        skills_text, _ = await load_skills_from_db(
+            self._storage, owner_user_id=owner_user_id
+        )
+        if skills_text:
+            system_prompt += skills_text
+
+        mcp_tools, mcp_servers = await load_mcp_tools_from_db(
+            self._storage, owner_user_id=owner_user_id
+        )
+        mcp_tool_count = len(mcp_tools)
+        if mcp_servers:
+            system_prompt += MCP_SYSTEM_PROMPT.format(
+                server_list=", ".join(mcp_servers),
+                tool_count=str(mcp_tool_count),
+            )
+
+        # 拼 tools 列表: 与 _build_one 对齐
+        shared_tools = get_shared_tools(
+            storage=self._storage,
+            settings=self._settings,
+            owner_user_id=owner_user_id,
+            object_store=self._registry._object_store,
+        )
+        all_tools = [*shared_tools, *mcp_tools] if mcp_tools else shared_tools
+
+        # 拼 messages 列表: 与 _build_messages 对齐
+        messages_for_count: list[dict[str, Any]] = []
+        messages_for_count.append({"role": "system", "content": system_prompt})
+        for h in history:
+            messages_for_count.append(h)
+        if user_message:
+            messages_for_count.append({"role": "user", "content": user_message})
+
+        used = count_history_tokens(messages_for_count, tools=all_tools)
+        return used, max_tokens
+
+    # ---- 统一压缩入口: 自动/手动共用 ----
+
+    async def _compact_context(
+        self,
+        session_id: str,
+        agent_name: str,
+        user_message: str,
+        owner_user_id: str,
+    ) -> CompactResult:
+        """统一压缩入口  确保发给 LLM 的全部内容不超过 max_input_tokens
+
+        核心设计: 压缩后产出的 history + system_prompt + tools + 当前消息
+        就是最终喂给 LLM 的全部内容  不再二次拼装
+
+        流程:
+            1 构建当前 history 估算完整 token (含 system_prompt + tools + history + 当前消息)
+            2 如果不超阈值(max * 0.8) 直接返回 不压缩
+            3 如果超阈值 触发 LLM 摘要压缩 (最多重试 compact_max_retries 次)
+            4 压缩后重新估算 如果仍然超 max_input_tokens 裁切 history 从最老轮次开始删
+            5 如果压缩全部失败 走降级裁切: 裁切 history + 保留最新提问
+
+        自动压缩(_run_task_loop)和手动压缩(compact路由)都走这个方法
+        """
+        # 1 构建当前 history 估算完整 token
+        history = await self._build_history(session_id, current_task_id="")
+        used_before, max_tokens = await self._estimate_full_tokens(
+            agent_name, history, user_message, owner_user_id
+        )
+
+        # 2 不超阈值 直接返回
+        if not should_trigger_summary(used_before, max_tokens):
+            return CompactResult(
+                history=history,
+                used_tokens=used_before,
+                max_tokens=max_tokens,
+                used_tokens_before=used_before,
+            )
+
+        # 3 超阈值 触发压缩 (最多重试 compact_max_retries 次)
+        record = await self._storage.get_agent(agent_name, owner_user_id=owner_user_id)
+        if record is None:
+            record = await self._storage.get_agent(agent_name)
+        if record is None:
+            # 无可用 agent 跳过压缩 走裁切降级
+            _logger.warning("compact_context 无可用agent 跳过压缩 走裁切", session_id=session_id)
+            return await self._truncate_and_build_result(
+                session_id, agent_name, user_message, owner_user_id, used_before, max_tokens
+            )
+
+        session = await self._storage.get_session(session_id)
+        compacted = False
+        summary_updated = False
+        max_retries = self._settings.runtime.compact_max_retries
+        timeout_s = self._settings.runtime.compact_llm_timeout_s
+
+        for attempt in range(max_retries):
+            try:
+                summary = (session.summary or "") if session is not None else ""
+                summary_until = (
+                    int(session.summary_until_round or 0) if session is not None else 0
+                )
+                all_rounds = await self._storage.list_rounds(session_id)
+                usable = []
+                for r in all_rounds:
+                    eff_agent, eff_content = TaskManager._effective_reply_for_round(r)
+                    if eff_agent and eff_content:
+                        usable.append(r)
+                uncovered = [r for r in usable if r.round_index > summary_until]
+                if not uncovered:
+                    break
+
+                comp_history: list[dict[str, Any]] = []
+                for r in uncovered:
+                    _, eff_content = TaskManager._effective_reply_for_round(r)
+                    comp_history.append({"role": "user", "content": r.question})
+                    comp_history.append({"role": "assistant", "content": eff_content})
+
+                _logger.info(
+                    "compact_context 触发压缩",
+                    session_id=session_id,
+                    attempt=attempt + 1,
+                    used_tokens=used_before,
+                    max_tokens=max_tokens,
+                    agent=agent_name,
+                    uncovered_rounds=len(uncovered),
+                )
+
+                new_summary = await run_session_summary(
+                    history=comp_history,
+                    old_summary=summary,
+                    agent_record=record,
+                    timeout_s=timeout_s,
+                )
+                new_until = int(uncovered[-1].round_index)
+                await self._storage.update_session_summary(
+                    session_id, summary=new_summary, summary_until_round=new_until
+                )
+                compacted = True
+                summary_updated = True
+                # 刷新 session 对象  下次循环不会重复压缩同一范围
+                session = await self._storage.get_session(session_id)
+                _logger.info(
+                    "compact_context 压缩成功",
+                    session_id=session_id,
+                    summary_until=new_until,
+                    new_summary_len=len(new_summary),
+                )
+                break
+            except Exception:
+                _logger.warning(
+                    "compact_context 压缩失败 正在重试",
+                    session_id=session_id,
+                    attempt=attempt + 1,
+                    max_retries=max_retries,
+                )
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(min(5.0 * (2 ** attempt), 30.0))
+                else:
+                    _logger.exception(
+                        "compact_context 压缩全部失败 走裁切降级",
+                        session_id=session_id,
+                    )
+
+        # 4 压缩后重新构建 history 并估算
+        history = await self._build_history(session_id, current_task_id="")
+        used, max_tokens = await self._estimate_full_tokens(
+            agent_name, history, user_message, owner_user_id
+        )
+
+        # 5 如果仍然超 max_input_tokens 裁切 history
+        if used > max_tokens:
+            history = await self._truncate_history_to_fit(
+                session_id, agent_name, user_message, owner_user_id, max_tokens
+            )
+            used, max_tokens = await self._estimate_full_tokens(
+                agent_name, history, user_message, owner_user_id
+            )
+
+        return CompactResult(
+            history=history,
+            used_tokens=used,
+            max_tokens=max_tokens,
+            compacted=compacted,
+            summary_updated=summary_updated,
+            used_tokens_before=used_before,
+        )
+
+    # ---- 裁切降级: 压缩失败或压缩后仍超限 ----
+
+    async def _truncate_history_to_fit(
+        self,
+        session_id: str,
+        agent_name: str,
+        user_message: str,
+        owner_user_id: str,
+        max_tokens: int,
+    ) -> list[dict[str, Any]]:
+        """裁切 history 使其 + system_prompt + tools + 当前消息 <= max_input_tokens
+
+        裁切策略:
+            从最老的轮次开始逐对删 (摘要始终保留)
+            直到估算总 token <= max_input_tokens
+            保底至少保留 compact_history_min_rounds 轮
+        """
+        history = await self._build_history(session_id, current_task_id="")
+        min_rounds = self._settings.runtime.compact_history_min_rounds
+
+        # 解析 history: 摘要system + (user, assistant) 对
+        summary_msg = None
+        conversation_pairs: list[list[dict[str, Any]]] = []
+        i = 0
+        if history and history[0].get("is_summary"):
+            summary_msg = history[0]
+            i = 1
+        while i < len(history):
+            pair: list[dict[str, Any]] = []
+            if i < len(history) and history[i].get("role") == "user":
+                pair.append(history[i])
+                i += 1
+            if i < len(history) and history[i].get("role") == "assistant":
+                pair.append(history[i])
+                i += 1
+            if pair:
+                conversation_pairs.append(pair)
+
+        # 逐对从最老开始删
+        for remove_count in range(len(conversation_pairs)):
+            remaining_pairs = conversation_pairs[remove_count:]
+            if len(remaining_pairs) < min_rounds and len(conversation_pairs) > min_rounds:
+                remaining_pairs = conversation_pairs[-min_rounds:]
+            test_history: list[dict[str, Any]] = []
+            if summary_msg:
+                test_history.append(summary_msg)
+            for pair in remaining_pairs:
+                test_history.extend(pair)
+            used, _ = await self._estimate_full_tokens(
+                agent_name, test_history, user_message, owner_user_id
+            )
+            if used <= max_tokens:
+                _logger.info(
+                    "truncate_history_to_fit 裁切完成",
+                    session_id=session_id,
+                    removed_pairs=remove_count,
+                    remaining_pairs=len(remaining_pairs),
+                    used_tokens=used,
+                )
+                return test_history
+
+        # 全删了还是超限 保底只留 min_rounds 轮
+        last_pairs = conversation_pairs[-min_rounds:] if conversation_pairs else []
+        fallback: list[dict[str, Any]] = []
+        if summary_msg:
+            fallback.append(summary_msg)
+        for pair in last_pairs:
+            fallback.extend(pair)
+        _logger.warning(
+            "truncate_history_to_fit 降级裁切 保留最少轮数",
+            session_id=session_id,
+            remaining_pairs=len(last_pairs),
+        )
+        return fallback
+
+    async def _truncate_and_build_result(
+        self,
+        session_id: str,
+        agent_name: str,
+        user_message: str,
+        owner_user_id: str,
+        used_before: int,
+        max_tokens: int,
+    ) -> CompactResult:
+        """压缩不可用(无agent)时直接走裁切降级  构建 CompactResult"""
+        history = await self._truncate_history_to_fit(
+            session_id, agent_name, user_message, owner_user_id, max_tokens
+        )
+        used, max_tokens = await self._estimate_full_tokens(
+            agent_name, history, user_message, owner_user_id
+        )
+        return CompactResult(
+            history=history,
+            used_tokens=used,
+            max_tokens=max_tokens,
+            used_tokens_before=used_before,
+        )
+
     @staticmethod
     def _effective_reply_for_round(r: Any) -> tuple[str, str]:
         """取一个 round 中用于上下文的有效回复  返回 (agent_name, content)
@@ -1017,129 +1333,38 @@ class TaskManager:
             eff_agent, _ = TaskManager._effective_reply_for_round(r)
             if eff_agent in registered:
                 return eff_agent
-                return cand
         return None
 
     async def _maybe_auto_compact(self, session_id: str) -> None:
-        """请求到来时静默检查并按需压缩  失败不阻塞主流"""
-        try:
-            lock = self._compact_locks.setdefault(session_id, asyncio.Lock())
-            async with lock:
-                session = await self._storage.get_session(session_id)
-                if session is None:
-                    return
-
-                all_rounds = await self._storage.list_rounds(session_id)
-                # 有有效回复内容的 round 都纳入(包括被取消/失败的)
-                usable_rounds = []
-                for r in all_rounds:
-                    eff_agent, eff_content = TaskManager._effective_reply_for_round(r)
-                    if eff_agent and eff_content:
-                        usable_rounds.append(r)
-                if not usable_rounds:
-                    return
-
-                summary = session.summary or ""
-                summary_until = int(session.summary_until_round or 0)
-                uncovered = [r for r in usable_rounds if r.round_index > summary_until]
-                if not uncovered:
-                    return
-
-                agent_name = self._resolve_compaction_agent_name(usable_rounds)
-                if agent_name is None:
-                    try:
-                        compaction_agent = await self._storage.get_compaction_agent_target()
-                        if compaction_agent in self._registry.names():
-                            agent_name = compaction_agent
-                    except KeyError:
-                        agent_name = None
-                if agent_name is None:
-                    return
-
-                record = await self._storage.get_agent(agent_name)
-                if record is None:
-                    return
-                max_tokens = next(
-                    (
-                        m.max_input_tokens
-                        for m in record.available_models
-                        if m.model_id == record.model
-                    ),
-                    200000,
-                )
-
-                history_dicts: list[dict[str, Any]] = []
-                if summary:
-                    history_dicts.append(
-                        {"role": "system", "content": f"[会话摘要]\n{summary}"}
-                    )
-                for r in uncovered:
-                    _, eff_content = TaskManager._effective_reply_for_round(r)
-                    history_dicts.append({"role": "user", "content": r.question})
-                    history_dicts.append({"role": "assistant", "content": eff_content})
-
-                used = count_history_tokens(history_dicts)
-                if not should_trigger_summary(used, max_tokens):
-                    return
-
-                comp_history: list[dict[str, Any]] = []
-                for r in uncovered:
-                    _, eff_content = TaskManager._effective_reply_for_round(r)
-                    comp_history.append({"role": "user", "content": r.question})
-                    comp_history.append({"role": "assistant", "content": eff_content})
-                _logger.info(
-                    "auto_compact 触发  开始 LLM 摘要",
-                    session_id=session_id,
-                    used_tokens=used,
-                    max_tokens=max_tokens,
-                    agent=agent_name,
-                    uncovered_rounds=len(uncovered),
-                )
-                new_summary = await run_session_summary(
-                    history=comp_history,
-                    old_summary=summary,
-                    agent_record=record,
-                    timeout_s=120.0,
-                )
-                new_until = int(uncovered[-1].round_index)
-                await self._storage.update_session_summary(
-                    session_id,
-                    summary=new_summary,
-                    summary_until_round=new_until,
-                )
-                _logger.info(
-                    "auto_compact 完成",
-                    session_id=session_id,
-                    summary_until=new_until,
-                    new_summary_len=len(new_summary),
-                )
-        except Exception:
-            _logger.exception("auto_compact 失败 忽略", session_id=session_id)
+        """旧接口兼容  压缩逻辑已迁移到 _compact_context
+        此方法仅作为占位保留  不再主动使用
+        """
 
     async def _publish_context_usage(
         self, task_id: str, agent_name: str, hub: TaskEventHub
     ) -> None:
-        """每轮 reply 完成后推一次 context.usage  让前端进度条同步"""
+        """每轮 reply 完成后推一次 context.usage  让前端进度条同步
+
+        估算范围与 _estimate_full_tokens 对齐:
+            system prompt + tools + history + 当前消息 = 模型消耗的真实总量
+        """
         try:
             round_obj = await self._storage.get_round(task_id)
             if round_obj is None:
                 return
             session_id = round_obj.session_id
-            history = await self._build_history(session_id, current_task_id="")
+            history = await self._build_history(session_id, current_task_id=task_id)
+            user_message = round_obj.question
 
-            record = await self._storage.get_agent(agent_name)
-            if record is None:
-                return
-            max_tokens = next(
-                (
-                    m.max_input_tokens
-                    for m in record.available_models
-                    if m.model_id == record.model
-                ),
-                200000,
+            session = await self._storage.get_session(session_id)
+            owner_user_id = (session.owner_user_id if session else None) or "system"
+
+            used, max_tokens = await self._estimate_full_tokens(
+                agent_name, history, user_message, owner_user_id
             )
-            used = count_history_tokens(history)
-            payload = usage_payload(used, max_tokens, model_id=record.model)
+            record = await self._storage.get_agent(agent_name, owner_user_id=owner_user_id)
+            model_id = record.model if record else ""
+            payload = usage_payload(used, max_tokens, model_id=model_id)
             await hub.publish(TaskEvent(type="context.usage", data=payload))
             try:
                 await self._storage.update_session_context_usage(session_id, payload)
@@ -1161,22 +1386,15 @@ class TaskManager:
             history_session = await self._storage.get_session(session_id)
             if history_session is None:
                 return
-            # 简化做法 直接复用 _build_history 拿到含本轮的 history
-            # current_task_id 给空串  list_rounds 返回的全部 done round 都进来
             history = await self._build_history(session_id, current_task_id="")
-            record = await self._storage.get_agent(agent_name)
-            if record is None:
-                return
-            max_tokens = next(
-                (
-                    m.max_input_tokens
-                    for m in record.available_models
-                    if m.model_id == record.model
-                ),
-                200000,
+            owner_user_id = (history_session.owner_user_id if history_session else None) or "system"
+
+            used, max_tokens = await self._estimate_full_tokens(
+                agent_name, history, user_message="", owner_user_id=owner_user_id
             )
-            used = count_history_tokens(history)
-            payload = usage_payload(used, max_tokens, model_id=record.model)
+            record = await self._storage.get_agent(agent_name, owner_user_id=owner_user_id)
+            model_id = record.model if record else ""
+            payload = usage_payload(used, max_tokens, model_id=model_id)
             await self._storage.update_session_context_usage(session_id, payload)
         except Exception:
             _logger.exception(

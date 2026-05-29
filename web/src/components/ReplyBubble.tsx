@@ -575,35 +575,7 @@ export default function ReplyBubble({
         </span>
       </Flexbox>
     );
-  } else if (reply.retrying) {
-    // 限流重试中  展示重试状态
-    const { attempt, maxRetries, delayS } = reply.retrying;
-    body = (
-      <Flexbox horizontal align="center" gap={10} style={{ minWidth: 0 }}>
-        <LoadingOutlined style={{ fontSize: 13, flexShrink: 0 }} />
-        <span
-          style={{
-            color: 'rgba(15, 23, 42, 0.86)',
-            fontSize: 13,
-            fontWeight: 500,
-            flexShrink: 0,
-          }}
-        >
-          限流重试中
-        </span>
-        <span
-          style={{
-            color: 'rgba(71, 85, 105, 0.7)',
-            fontSize: 12,
-            flexShrink: 0,
-          }}
-        >
-          第 {attempt}/{maxRetries} 次
-          {delayS > 0 ? `，约 ${delayS < 1 ? '<1' : Math.round(delayS)} 秒后重试` : ''}
-        </span>
-      </Flexbox>
-    );
-  } else if (timeline.length === 0 && !reply.content) {
+  } else if (timeline.length === 0 && !reply.content && !reply.retrying) {
     body = (
       <Typography.Text type="secondary">
         {isStreaming ? '正在生成…' : '(无内容)'}
@@ -611,8 +583,9 @@ export default function ReplyBubble({
     );
   } else {
     // 有 segments 走时间线;否则把整段 content 当一个文本节点
+    // 限流重试时保留已有内容,追加重试提示而非覆盖
     const nodes: TimelineNode[] =
-      timeline.length > 0 ? timeline : [{ kind: 'text', content: reply.content }];
+      timeline.length > 0 ? timeline : (reply.content ? [{ kind: 'text', content: reply.content }] : []);
     body = (
       <Flexbox gap={8}>
         {nodes.map((node, i) => {
@@ -630,12 +603,40 @@ export default function ReplyBubble({
           }
           return <ToolAccordion key={`x-${i}-${node.tool}`} node={node} streaming={isStreaming} />;
         })}
+        {reply.retrying ? (() => {
+          const { attempt, maxRetries, delayS } = reply.retrying;
+          return (
+            <Flexbox horizontal align="center" gap={10} style={{ minWidth: 0 }}>
+              <LoadingOutlined style={{ fontSize: 13, flexShrink: 0 }} />
+              <span
+                style={{
+                  color: 'rgba(15, 23, 42, 0.86)',
+                  fontSize: 13,
+                  fontWeight: 500,
+                  flexShrink: 0,
+                }}
+              >
+                限流重试中
+              </span>
+              <span
+                style={{
+                  color: 'rgba(71, 85, 105, 0.7)',
+                  fontSize: 12,
+                  flexShrink: 0,
+                }}
+              >
+                第 {attempt}/{maxRetries} 次
+                {delayS > 0 ? `，约 ${delayS < 1 ? '<1' : Math.round(delayS)} 秒后重试` : ''}
+              </span>
+            </Flexbox>
+          );
+        })() : null}
         {reply.state === 'cancelled' ? (
           <Typography.Text type="secondary" style={{ fontSize: 13 }}>
             cancelled
           </Typography.Text>
         ) : null}
-        {isStreaming ? (
+        {isStreaming && !reply.retrying ? (
           <span
             aria-hidden
             style={{

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -152,9 +153,194 @@ async def web_search(query: str, max_results: int = 5) -> str:
     return "\n".join(out_lines)
 
 
-def get_shared_tools() -> list[Any]:
-    """返回供 reply 阶段 deep_agent 挂载的共享 tool 列表"""
-    return [current_time, http_get]
+def _build_backend_info_tool(settings: Any | None) -> Any:
+    """构建后端信息查询工具 返回当前服务运行的地址和端口
+
+    模型调用此工具获取后端 URL 后再用 http_request 调用具体接口
+    闭包注入 settings 使工具能返回动态地址 不硬编码
+    """
+    from ..config import Settings
+
+    real_settings: Settings | None = None
+    if settings is not None and isinstance(settings, Settings):
+        real_settings = settings
+
+    @tool
+    def backend_info() -> str:
+        """查询当前后端服务运行地址
+
+        返回后端 base URL 和端口等信息 用于 http_request 调用时拼接完整 URL
+        也可以直接传相对路径给 http_request 如 /api/agents 工具会自动拼接
+
+        返回 JSON 字符串 包含 base_url host port
+        """
+        if real_settings is None:
+            return json.dumps({
+                "base_url": "未配置",
+                "host": "未知",
+                "port": "未知",
+                "hint": "当前未注入服务配置 请使用相对路径调用 http_request",
+            })
+        host = real_settings.server.host
+        # 0.0.0.0 是监听所有网卡 对外访问用 127.0.0.1
+        access_host = "127.0.0.1" if host == "0.0.0.0" else host
+        port = real_settings.server.port
+        base_url = f"http://{access_host}:{port}"
+        return json.dumps({
+            "base_url": base_url,
+            "host": access_host,
+            "port": port,
+        })
+
+    return backend_info
+
+
+def _build_http_request_tool(
+    storage: Any | None,
+    settings: Any | None,
+    owner_user_id: str | None,
+) -> Any:
+    """构建通用 HTTP 请求工具 自动注入本地后端鉴权 cookie
+
+    闭包注入 storage/settings/owner_user_id 使工具内部无需 RunnableConfig 即可
+    获取鉴权信息和后端端口配置
+
+    支持相对路径: url 以 / 开头时自动拼接后端 base_url 如 /api/agents
+    """
+    from ..config import Settings
+
+    # 类型窄化: settings 实际类型为 Settings 或 None
+    real_settings: Settings | None = None
+    if settings is not None and isinstance(settings, Settings):
+        real_settings = settings
+
+    @tool
+    async def http_request(
+        url: str,
+        method: str = "GET",
+        body: str = "",
+        headers: str = "",
+        timeout_s: float = _HTTP_TIMEOUT_S,
+    ) -> str:
+        """发起 HTTP 请求 支持 GET/POST/PUT/DELETE/PATCH 方法
+
+        可用于调用后端 API 或访问外部 URL 调用本地后端时自动注入鉴权
+        url 支持两种格式:
+            - 相对路径: /api/agents 自动拼接后端地址并注入鉴权
+            - 完整 URL: http://127.0.0.1:8002/api/agents
+
+        先调用 backend_info 工具查看后端地址 或直接用相对路径调用更方便
+
+        入参
+            url 目标地址 支持相对路径(/api/agents)或完整 URL(http://...)
+            method HTTP 方法 默认 GET 支持 GET/POST/PUT/DELETE/PATCH
+            body 请求体 JSON 字符串 POST/PUT/PATCH 时使用
+            headers 额外请求头 JSON 对象字符串 如 {"X-Custom": "value"}
+            timeout_s 超时秒数 默认 10
+
+        返回 响应状态码 + 正文 最大 100KB 超出截断
+        安全 调用本地后端跳过 SSRF 防护 外部请求拒绝内网地址
+        """
+        # 1. 相对路径自动拼接后端 URL
+        if url.startswith("/") and real_settings is not None:
+            host = real_settings.server.host
+            access_host = "127.0.0.1" if host == "0.0.0.0" else host
+            port = real_settings.server.port
+            url = f"http://{access_host}:{port}{url}"
+
+        # 2. 校验 URL
+        if not url.startswith(("http://", "https://")):
+            return f"[错误] URL 格式不正确 支持相对路径(/api/xxx)或完整 URL(http://...) 收到 {url}"
+
+        method = method.upper()
+        if method not in {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}:
+            return f"[错误] 不支持的 HTTP 方法: {method}"
+
+        # 3. 判断是否为本地后端请求
+        is_local_backend = False
+        if real_settings is not None:
+            server_port = real_settings.server.port
+            local_hosts = {"localhost", "127.0.0.1", "::1"}
+            parsed = urlparse(url)
+            host = parsed.hostname or ""
+            port = parsed.port
+            # URL 没有显式端口时 http 默认 80 https 默认 443
+            # 后端默认端口 8002 不匹配 80/443 所以必须显式写端口
+            if host in local_hosts and port == server_port:
+                is_local_backend = True
+
+        # 3. SSRF 防护 本地后端请求跳过 外部请求仍做检查
+        if not is_local_backend and _is_internal_url(url):
+            return f"[错误] 拒绝访问内网地址 {url}"
+
+        # 4. 构建请求头
+        req_headers: dict[str, str] = {"User-Agent": _USER_AGENT}
+        if headers:
+            try:
+                extra = json.loads(headers)
+                if isinstance(extra, dict):
+                    for k, v in extra.items():
+                        req_headers[str(k)] = str(v)
+            except json.JSONDecodeError:
+                return f"[错误] headers 不是合法 JSON: {headers[:100]}"
+
+        # 5. 本地后端请求自动注入鉴权 cookie
+        if is_local_backend and storage is not None and owner_user_id and real_settings is not None:
+            try:
+                cookie_name = real_settings.auth.session_cookie_name
+                session = await storage.create_auth_session(
+                    owner_user_id,
+                    expires_in_hours=real_settings.auth.session_ttl_hours,
+                )
+                req_headers["Cookie"] = f"{cookie_name}={session.session_id}"
+            except Exception as e:
+                _logger.warning("http_request 自动鉴权失败", error=str(e))
+                return f"[错误] 自动鉴权失败: {type(e).__name__}: {e}"
+
+        # 6. 发送请求
+        try:
+            async with httpx.AsyncClient(
+                timeout=timeout_s,
+                follow_redirects=True,
+            ) as client:
+                req_kwargs: dict[str, Any] = {"headers": req_headers}
+                if method in {"POST", "PUT", "PATCH"} and body:
+                    req_kwargs["content"] = body
+                    if "Content-Type" not in req_headers:
+                        req_headers["Content-Type"] = "application/json"
+
+                resp = await client.request(method, url, **req_kwargs)
+                text = resp.text
+                if len(text) > _HTTP_MAX_BYTES:
+                    text = text[:_HTTP_MAX_BYTES] + "\n...(已截断)"
+                return f"[HTTP {resp.status_code}]\n{text}"
+        except httpx.TimeoutException:
+            return f"[错误] 请求超时 {timeout_s} 秒"
+        except httpx.HTTPStatusError as e:
+            resp_body = e.response.text[:200] if e.response is not None else ""
+            return f"[错误] HTTP {e.response.status_code}: {resp_body}"
+        except Exception as e:
+            return f"[错误] {type(e).__name__}: {e}"
+
+    return http_request
+
+
+def get_shared_tools(
+    storage: Any | None = None,
+    settings: Any | None = None,
+    owner_user_id: str | None = None,
+) -> list[Any]:
+    """返回供 reply 阶段 deep_agent 挂载的共享 tool 列表
+
+    storage/settings/owner_user_id 用于构建 HTTP 工具的鉴权上下文
+    为 None 时构建无鉴权版本 仅支持外部 URL 请求 不支持本地后端调用
+    """
+    tools: list[Any] = [current_time]
+    # 后端信息查询工具: 返回服务运行地址 模型先用此工具获取 URL
+    tools.append(_build_backend_info_tool(settings))
+    # 通用 HTTP 请求工具: 支持相对路径和完整 URL 自动注入鉴权
+    tools.append(_build_http_request_tool(storage, settings, owner_user_id))
+    return tools
 
 
 async def load_mcp_tools_from_db(storage: Any, *, owner_user_id: str | None = None) -> tuple[list[Any], list[str]]:

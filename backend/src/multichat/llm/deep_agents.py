@@ -129,7 +129,11 @@ async def _build_one(
     skill_names: list[str] = []
     from .tools import get_shared_tools, load_mcp_tools_from_db, load_skills_from_db
 
-    tools = get_shared_tools()
+    tools = get_shared_tools(
+        storage=storage,
+        settings=settings,
+        owner_user_id=owner_user_id,
+    )
     # MCP 工具加载 按 owner_user_id 过滤当前用户的配置
     if storage is not None and owner_user_id is not None:
         mcp_tools, mcp_servers = await load_mcp_tools_from_db(storage, owner_user_id=owner_user_id)

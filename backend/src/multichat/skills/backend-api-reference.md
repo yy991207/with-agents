@@ -143,7 +143,13 @@ http_request(url="/api/agents/{name}/avatar", method="DELETE")  # 删除
 ```
 http_request(url="/api/skills")
 ```
-响应: {"skills": [{"name": "...", "description": "...", "content": "...", "enabled": true}]}
+响应: {"skills": [{"name": "...", "description": "...", "content": "...", "enabled": true, "files": [...]}]}
+
+每个 skill 现在包含 `files` 字段 列出附带的文件包(Python 脚本等) 文件内容存对象存储(MinIO) 元数据引用如下:
+```json
+{"path": "scripts/fetch.py", "object_key": "users/{uid}/skills/{name}/scripts/fetch.py", "size": 256, "sha256": "abc123"}
+```
+`path` 是文件在 skill 包内的相对路径 保留原始目录结构不改变
 
 ### POST /api/skills — 创建 skill
 ```
@@ -153,7 +159,7 @@ http_request(
   body='{"name": "skill_name", "description": "简介", "content": "完整内容", "enabled": true}'
 )
 ```
-同名已存在返回 409
+同名已存在返回 409 创建后再通过文件上传接口添加附带文件
 
 ### PUT /api/skills/{name} — 更新 skill
 ```
@@ -174,14 +180,45 @@ http_request(url="/api/skills/{name}/toggle", method="PUT", body='{"enabled": fa
 ```
 http_request(url="/api/skills/{name}", method="DELETE")
 ```
-返回 204
+返回 204 删除时同步清理该 skill 在对象存储(MinIO)中的所有附带文件
 
 ### POST /api/skills/reload — 重载让变更生效
 ```
 http_request(url="/api/skills/reload", method="POST")
 ```
 响应: {"reloaded": N}
-创建/更新/删除 skill 后必须调用此接口让变更生效
+创建/更新/删除 skill 或上传/删除文件后必须调用此接口让变更生效
+
+### POST /api/skills/{name}/files — 上传 skill 文件包
+上传附带文件(Python 脚本、配置文件等)到已有 skill 文件内容存入对象存储(MinIO) 保留原始目录结构
+
+请求格式: multipart/form-data
+- `files`: 多个文件(与 paths 一一对应)
+- `paths`: 多个字符串(每个文件的相对路径 如 SKILL.md / scripts/fetch.py)
+
+路径规则:
+- 必须是相对路径 禁止绝对路径(/xxx)和路径穿越(..)
+- 同路径文件会覆盖旧版本(先删旧 MinIO 对象再存新)
+
+**注意**: http_request 工具暂不支持 multipart/form-data 文件上传 需通过前端 UI 操作
+
+### GET /api/skills/{name}/files — 列出 skill 附带文件
+```
+http_request(url="/api/skills/{name}/files")
+```
+响应: {"files": [{"path": "scripts/fetch.py", "object_key": "...", "size": 256, "sha256": "abc123"}]}
+
+### GET /api/skills/{name}/files/{path} — 下载 skill 单个文件
+```
+http_request(url="/api/skills/{name}/files/scripts/fetch.py")
+```
+返回文件原始内容(Content-Type 根据扩展名推断 如 .py → text/x-python)
+
+### DELETE /api/skills/{name}/files/{path} — 删除 skill 单个文件
+```
+http_request(url="/api/skills/{name}/files/scripts/fetch.py", method="DELETE")
+```
+返回 204 同步清理对象存储中的文件 删除后需调用 reload 让变更生效
 
 ### GET /api/skills/marketplace — 浏览 skill 市场
 ```
@@ -260,6 +297,8 @@ http_request(url="/select_reply", method="POST", body='{"task_id": "xxx", "agent
 
 1. 调用前先用 backend_info() 确认后端地址 或直接用相对路径调用更方便
 2. POST/PUT 请求的 body 必须是合法 JSON 字符串
-3. 创建/更新/删除 skill 或 MCP 后必须调用 reload 让变更生效
+3. 创建/更新/删除 skill 或上传/删除文件后必须调用 reload 让变更生效
 4. 不要盲目调用接口 先想清楚目的
 5. 相对路径 `/api/xxx` 会自动拼接后端地址和鉴权 优先使用这种方式
+6. skill 的附带文件(Python 脚本等)可通过 GET /api/skills/{name}/files/{path} 下载 内容存对象存储(MinIO)
+7. 删除 skill 时附带文件会同步清理 无需单独删除文件

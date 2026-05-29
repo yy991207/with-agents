@@ -418,6 +418,28 @@ class McpServerConfig(BaseModel):
 
 
 # ============================================================ Skills 配置
+class SkillFileMeta(BaseModel):
+    """Skill 包中单个文件的元数据 文件内容存对象存储(MinIO) MongoDB 只存引用
+
+    path 是文件在 skill 包内的相对路径 如 "scripts/fetch.py"
+    上传时保留原始目录结构 禁止改变相对路径 确保模型执行脚本时能正确找到文件
+    """
+
+    path: str
+    """文件在 skill 包内的相对路径 如 SKILL.md / scripts/fetch.py / config.json"""
+
+    object_key: str
+    """MinIO 对象 key 格式 users/{uid}/skills/{skill_name}/{path}"""
+
+    size: int = Field(..., ge=0)
+    """文件大小(字节)"""
+
+    sha256: str
+    """文件内容 SHA256 哈希 用于完整性校验"""
+
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
 class SkillConfig(BaseModel):
     """单个 Skill 的完整配置 持久化在 settings 集合 skills_config 文档中
 
@@ -429,6 +451,7 @@ class SkillConfig(BaseModel):
         - description: skill 简介 对应 SKILL.md 中的 description frontmatter
         - content: SKILL.md 完整正文 包含所有指令与示例
         - enabled: 控制是否注入到 agent 的 system prompt
+        - files: 附带文件列表(Python 脚本等) 文件内容存对象存储
 
     被注入的 skill 内容会追加到 reply agent 的 system_prompt 尾部
     让 agent 在执行任务时遵守 skill 定义的流程与规范
@@ -448,5 +471,8 @@ class SkillConfig(BaseModel):
 
     enabled: bool = True
     """false 表示禁用 该 skill 内容不注入 system prompt"""
+
+    files: list[SkillFileMeta] = []
+    """附带文件列表 Python 脚本等附件 内容存对象存储(MinIO)"""
 
     updated_at: datetime = Field(default_factory=_utcnow)

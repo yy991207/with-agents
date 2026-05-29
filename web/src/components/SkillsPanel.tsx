@@ -1,20 +1,24 @@
 // Skills 配置面板: 以表格形式管理已安装的 skill
 // 后端 API: GET/POST /api/skills, PUT/DELETE /api/skills/{name}, PUT /api/skills/{name}/toggle
+// POST /api/skills/{name}/files 上传文件包, GET/DELETE /api/skills/{name}/files/{path}
 // POST /api/skills/reload 重载 agent 使 skills 变更生效
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import {
+  Badge,
   Button,
   Input,
   Modal,
   Space,
   Switch,
   Table,
+  Tag,
   Tooltip,
   Typography,
   message,
+  Progress,
 } from 'antd';
-import { PlusOutlined, DeleteOutlined, EditOutlined, ReloadOutlined } from '@ant-design/icons';
-import type { SkillView, SkillEditDraft } from '../state/types';
+import { PlusOutlined, DeleteOutlined, EditOutlined, ReloadOutlined, UploadOutlined, PaperClipOutlined, FolderOpenOutlined } from '@ant-design/icons';
+import type { SkillView, SkillEditDraft, SkillFileMeta } from '../state/types';
 import {
   listSkills,
   createSkill,
@@ -22,10 +26,31 @@ import {
   deleteSkill,
   toggleSkill,
   reloadAgents,
+  uploadSkillFiles,
+  deleteSkillFile,
 } from '../api/http';
 
 const { Title, Paragraph, Text } = Typography;
 const { TextArea } = Input;
+
+/** 解析 SKILL.md 的 YAML frontmatter 返回 { name, description, body }
+ *  格式: ---\nname: xxx\ndescription: xxx\n---\n正文...
+ *  如果没有 frontmatter 则 name/description 为空 body 为原文
+ */
+function parseSkillFrontmatter(content: string): { name: string; description: string; body: string } {
+  if (!content.startsWith('---')) return { name: '', description: '', body: content };
+  const parts = content.split('---', 3);
+  if (parts.length < 3) return { name: '', description: '', body: content };
+  const metaText = parts[1];
+  let name = '';
+  let description = '';
+  const nameMatch = metaText.match(/name:\s*(.+)/);
+  if (nameMatch) name = nameMatch[1].trim();
+  const descMatch = metaText.match(/description:\s*(.+)/);
+  if (descMatch) description = descMatch[1].trim();
+  const body = parts[2].trim();
+  return { name, description, body };
+}
 
 const DEFAULT_SKILLS: SkillView[] = [
   {
@@ -55,6 +80,32 @@ export default function SkillsPanel() {
   const [editingSkill, setEditingSkill] = useState<SkillEditDraft | null>(null);
   const [editingOriginal, setEditingOriginal] = useState<SkillEditDraft | null>(null);
 
+  // 导入 Skill 包状态
+  const [importing, setImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState(0);
+  const importInputRef = useRef<HTMLInputElement>(null);
+
+  // 编辑模式中上传文件的 input ref
+  const editFileInputRef = useRef<HTMLInputElement>(null);
+
+  // 挂载时给导入 input 设置 webkitdirectory 属性(支持选择目录) 绕过 TS 类型限制
+  useEffect(() => {
+    const importInput = importInputRef.current;
+    if (importInput) {
+      importInput.setAttribute('webkitdirectory', '');
+      importInput.setAttribute('directory', '');
+    }
+  }, []);
+
+  // Modal 打开时给编辑模式的文件上传 input 设置属性
+  useEffect(() => {
+    const editInput = editFileInputRef.current;
+    if (editInput && editOpen) {
+      editInput.setAttribute('webkitdirectory', '');
+      editInput.setAttribute('directory', '');
+    }
+  }, [editOpen]);
+
   const loadSkills = useCallback(async () => {
     setLoading(true);
     try {
@@ -66,6 +117,7 @@ export default function SkillsPanel() {
           description: s.description || '',
           content: s.content,
           enabled: s.enabled,
+          files: s.files || [],
           dirty: false,
           isNew: false,
         })));
@@ -80,6 +132,112 @@ export default function SkillsPanel() {
   }, []);
 
   useEffect(() => { loadSkills(); }, []);
+
+  // ========== 导入 Skill 包: 一键选择目录 → 自动解析 → 创建 + 上传 ==========
+
+  const handleImportPackage = async () => {
+    // 触发目录选择
+    importInputRef.current?.click();
+  };
+
+  const handleImportInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+
+    setImporting(true);
+    setImportProgress(10);
+
+    try {
+      // 1. 从文件包中提取 SKILL.md 和其他文件
+      const filesToUpload: File[] = [];
+      const pathsToUpload: string[] = [];
+      let skillMdContent: string | null = null;
+      let skillName: string = '';
+
+      for (let i = 0; i < fileList.length; i++) {
+        const file = fileList[i];
+        const relativePath = file.webkitRelativePath
+          ? file.webkitRelativePath.split('/').slice(1).join('/')
+          : file.name;
+        if (!relativePath) continue;
+
+        // 自动解析 SKILL.md
+        if (relativePath === 'SKILL.md') {
+          try {
+            skillMdContent = await file.text();
+            const parsed = parseSkillFrontmatter(skillMdContent);
+            if (parsed.name) skillName = parsed.name;
+          } catch {
+            // 读取失败不阻断流程
+          }
+        }
+
+        // SKILL.md 不再作为附带文件上传 它的内容直接存到 SkillConfig.content
+        if (relativePath !== 'SKILL.md') {
+          filesToUpload.push(file);
+          pathsToUpload.push(relativePath);
+        }
+      }
+
+      // 2. 确定 skill 名称: SKILL.md frontmatter > 目录名 > 第一个文件名
+      if (!skillName && fileList.length > 0) {
+        const topDir = fileList[0].webkitRelativePath.split('/')[0];
+        skillName = topDir || 'imported-skill';
+      }
+      if (!skillName) {
+        message.error('无法确定 skill 名称');
+        return;
+      }
+
+      // 3. 检查是否已存在同名 skill
+      const duplicate = skills.find((s) => s.name === skillName);
+      if (duplicate) {
+        message.warning(`已存在同名 skill: ${skillName}，请先删除或使用其他名称`);
+        return;
+      }
+
+      setImportProgress(30);
+
+      // 4. 解析 SKILL.md 内容
+      let content = '# Imported Skill\n\n请手动补充 skill 内容';
+      let description = '';
+      if (skillMdContent) {
+        const parsed = parseSkillFrontmatter(skillMdContent);
+        content = parsed.body || content;
+        description = parsed.description || '';
+      }
+
+      // 5. 创建 skill (先入库)
+      setImportProgress(50);
+      await createSkill({
+        name: skillName,
+        description,
+        content,
+        enabled: true,
+      });
+      message.success(`skill "${skillName}" 已创建`);
+
+      // 6. 上传附带文件到已有 skill
+      if (filesToUpload.length > 0) {
+        setImportProgress(70);
+        await uploadSkillFiles(skillName, filesToUpload, pathsToUpload);
+        message.success(`${filesToUpload.length} 个文件已上传`);
+      }
+
+      setImportProgress(100);
+      message.success(`Skill 包 "${skillName}" 导入完成`);
+      await loadSkills();
+    } catch (e) {
+      message.error(`导入失败: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setImporting(false);
+      setImportProgress(0);
+      // reset input 允许重复选择
+      e.target.value = '';
+    }
+  };
+
+  // ========== 基本操作 ==========
 
   const handleAdd = () => {
     setEditingSkill({ name: '', description: '', content: '', enabled: true, dirty: true, isNew: true });
@@ -130,7 +288,7 @@ export default function SkillsPanel() {
   const handleDelete = (record: SkillEditDraft) => {
     Modal.confirm({
       title: `确认删除 skill ${record.name}`,
-      content: '删除后该 skill 不再注入到 agent 的 system prompt',
+      content: '删除后该 skill 不再注入到 agent 的 system prompt，附带文件也会被清理',
       okText: '删除', okButtonProps: { danger: true }, cancelText: '取消',
       onOk: async () => {
         try { await deleteSkill(record.name); message.success(`skill "${record.name}" 已删除`); await loadSkills(); }
@@ -177,7 +335,57 @@ export default function SkillsPanel() {
     } finally { setSaving(false); }
   };
 
-  // 描述列只显示前 10 个字  超出按 ... 截断  Tooltip 悬浮显示完整内容
+  // ========== 编辑模式中上传文件 ==========
+
+  const handleEditFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!editingSkill) return;
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+
+    const filesToUpload: File[] = [];
+    const pathsToUpload: string[] = [];
+
+    for (let i = 0; i < fileList.length; i++) {
+      const file = fileList[i];
+      const relativePath = file.webkitRelativePath
+        ? file.webkitRelativePath.split('/').slice(1).join('/')
+        : file.name;
+      if (!relativePath) continue;
+      filesToUpload.push(file);
+      pathsToUpload.push(relativePath);
+    }
+    if (filesToUpload.length === 0) return;
+
+    setSaving(true);
+    try {
+      const result = await uploadSkillFiles(editingSkill.name, filesToUpload, pathsToUpload);
+      message.success(`${filesToUpload.length} 个文件已上传`);
+      setEditingSkill({ ...editingSkill, files: result.files || [], dirty: true });
+    } catch (err) {
+      message.error(`文件上传失败: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setSaving(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleEditFileDelete = async (filePath: string) => {
+    if (!editingSkill) return;
+    try {
+      await deleteSkillFile(editingSkill.name, filePath);
+      message.success(`文件 ${filePath} 已删除`);
+      const resp = await listSkills();
+      const updated = resp.skills.find((s) => s.name === editingSkill.name);
+      if (updated) {
+        setEditingSkill({ ...editingSkill, files: updated.files || [], dirty: true });
+      }
+    } catch (e) {
+      message.error(`删除文件失败: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  // ========== 渲染 ==========
+
   const renderDescription = (text: string) => {
     const safe = text || '';
     const truncated = safe.length > 10 ? safe.slice(0, 10) + '...' : safe;
@@ -192,9 +400,16 @@ export default function SkillsPanel() {
     { title: '名称', dataIndex: 'name' as const, key: 'name', width: 140, render: (name: string) => <Text strong>{name}</Text> },
     {
       title: '描述', dataIndex: 'description' as const, key: 'description',
-      // 宽度按 10 个汉字 + 省略 排版  约 140px
       width: 140,
       render: renderDescription,
+    },
+    {
+      title: '文件', dataIndex: 'files' as const, key: 'files', width: 60,
+      render: (files: SkillFileMeta[]) => {
+        const count = files?.length ?? 0;
+        if (count === 0) return <Text type="secondary">-</Text>;
+        return <Badge count={count} size="small" color="blue" />;
+      },
     },
     {
       title: '状态', dataIndex: 'enabled' as const, key: 'enabled', width: 80,
@@ -232,12 +447,34 @@ export default function SkillsPanel() {
 
   return (
     <div>
+      {/* 隐藏的导入 input 支持 webkitdirectory 选择目录 */}
+      <input
+        ref={importInputRef}
+        type="file"
+        multiple
+        style={{ display: 'none' }}
+        onChange={handleImportInputChange}
+      />
+
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
         <Title level={5} style={{ margin: 0 }}>Skills 配置</Title>
         <Space>
           {skills.length === 0 && !loading && (
             <Button onClick={handleInstallDefaults} loading={saving}>安装默认 Skills</Button>
           )}
+          {/* 导入 Skill 包按钮: 一键选择目录完成创建+上传+解析 */}
+          <Tooltip title="导入 Skill 包(选择目录自动解析)">
+            <Button
+              aria-label="导入 Skill 包"
+              icon={<FolderOpenOutlined />}
+              loading={importing}
+              disabled={saving || loading || importing}
+              onClick={handleImportPackage}
+            >
+              导入 Skill 包
+            </Button>
+          </Tooltip>
+          {importing && <Progress percent={importProgress} size="small" style={{ width: 80 }} />}
           <Tooltip title="重载应用">
             <Button
               aria-label="重载应用"
@@ -249,9 +486,9 @@ export default function SkillsPanel() {
               disabled={saving || loading}
             />
           </Tooltip>
-          <Tooltip title="新增 Skill">
+          <Tooltip title="手动新增 Skill">
             <Button
-              aria-label="新增 Skill"
+              aria-label="手动新增 Skill"
               type="text"
               shape="circle"
               icon={<PlusOutlined />}
@@ -262,7 +499,7 @@ export default function SkillsPanel() {
         </Space>
       </div>
       <Paragraph type="secondary" style={{ marginTop: 4 }}>
-        管理 agent 的技能模块(skill)。每个 skill 是一段可复用的提示词片段，定义特定场景下的标准操作流程。
+        管理 agent 的技能模块(skill)。点击"导入 Skill 包"可选择完整目录一键导入(SKILL.md 自动解析，目录结构完整保留)。
         已启用的 skill 会注入到所有 reply agent 的 system prompt 中。
       </Paragraph>
       <div style={{ marginBottom: 12 }}>
@@ -275,9 +512,8 @@ export default function SkillsPanel() {
         columns={columns} dataSource={skills} rowKey="name"
         loading={loading} size="small" pagination={false}
         scroll={{ x: 'max-content' }}
-        // width: fit-content 让表格按列宽合计撑开  不再被父容器拉满  避免右侧大块空白
         style={{ marginBottom: 12, width: 'fit-content', maxWidth: '100%' }}
-        locale={{ emptyText: '暂无 skill，点击"新增 Skill"添加或点击"安装默认 Skills"' }}
+        locale={{ emptyText: '暂无 skill，点击"导入 Skill 包"或"新增 Skill"添加' }}
       />
 
       <Modal
@@ -304,6 +540,49 @@ export default function SkillsPanel() {
                 style={{ fontFamily: 'Menlo, Monaco, "Courier New", monospace', fontSize: 13 }}
                 onChange={(e) => handleFieldChange('content', e.target.value)} />
             </div>
+            {/* 编辑已有 skill 时: 展示文件管理区域 */}
+            {!editingSkill.isNew && editingSkill.name.trim() && (
+              <div>
+                <Text type="secondary" style={{ fontSize: 12, marginBottom: 4, display: 'block' }}>
+                  附带文件 (Python 脚本等，目录结构完整保留)
+                </Text>
+                {/* 已上传文件列表 */}
+                {editingSkill.files && editingSkill.files.length > 0 && (
+                  <div style={{ marginBottom: 8, maxHeight: 120, overflowY: 'auto', border: '1px solid #d9d9d9', borderRadius: 6, padding: 8 }}>
+                    {editingSkill.files.map((f) => (
+                      <div key={f.path} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 0' }}>
+                        <Space size="small">
+                          <PaperClipOutlined style={{ color: '#8c8c8c' }} />
+                          <Text style={{ fontSize: 12 }}>{f.path}</Text>
+                          <Tag color={f.path.endsWith('.py') ? 'green' : 'default'} style={{ fontSize: 11 }}>
+                            {(f.size / 1024).toFixed(1)}KB
+                          </Tag>
+                        </Space>
+                        <Button
+                          type="link" size="small" danger icon={<DeleteOutlined />}
+                          onClick={() => handleEditFileDelete(f.path)}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {/* 上传按钮 */}
+                <input
+                  ref={editFileInputRef}
+                  type="file"
+                  multiple
+                  style={{ display: 'none' }}
+                  onChange={handleEditFileUpload}
+                />
+                <Button
+                  icon={<UploadOutlined />}
+                  loading={saving}
+                  onClick={() => editFileInputRef.current?.click()}
+                >
+                  上传文件包
+                </Button>
+              </div>
+            )}
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <Switch checked={editingSkill.enabled} onChange={(v) => handleFieldChange('enabled', v)} />
               <Text>启用（关闭后该 skill 不会注入 system prompt）</Text>

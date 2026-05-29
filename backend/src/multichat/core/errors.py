@@ -20,6 +20,9 @@ _FRIENDLY_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\b429\b|rate.?limit|too\s*many", re.I), "调用频率过高 已被限流 请稍后再试"),
     (re.compile(r"\b401\b|unauthor|invalid.?api.?key", re.I), "API key 无效或已过期"),
     (re.compile(r"\b403\b|forbidden", re.I), "无访问权限 请检查凭证"),
+    # 模型参数校验错误 如通义 InternalError.Algo.InvalidParameter: Range of input length should be [1, 260096]
+    # 比 context.?length 更精准 优先匹配 避免被兜底截断成 "调用失败 InternalError..."
+    (re.compile(r"InvalidParameter|input.?length|maximum.?context", re.I), "对话上下文过长 请新建会话或缩短输入"),
     (re.compile(r"context.?length|too.?many.?tokens", re.I), "对话上下文过长 请新建会话或缩短输入"),
     (re.compile(r"\b5\d\d\b|server\s*error|service\s*unavailable", re.I), "LLM 服务暂时不可用"),
     (re.compile(r"connection|network|dns", re.I), "网络连接失败 请检查网络或稍后重试"),

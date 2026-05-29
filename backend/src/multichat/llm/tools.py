@@ -329,10 +329,12 @@ def get_shared_tools(
     storage: Any | None = None,
     settings: Any | None = None,
     owner_user_id: str | None = None,
+    object_store: Any | None = None,
 ) -> list[Any]:
     """返回供 reply 阶段 deep_agent 挂载的共享 tool 列表
 
     storage/settings/owner_user_id 用于构建 HTTP 工具的鉴权上下文
+    object_store 用于构建 skill 脚本执行工具
     为 None 时构建无鉴权版本 仅支持外部 URL 请求 不支持本地后端调用
     """
     tools: list[Any] = [current_time]
@@ -340,6 +342,9 @@ def get_shared_tools(
     tools.append(_build_backend_info_tool(settings))
     # 通用 HTTP 请求工具: 支持相对路径和完整 URL 自动注入鉴权
     tools.append(_build_http_request_tool(storage, settings, owner_user_id))
+    # skill 脚本执行工具: 执行 skill 包中的 Python 脚本
+    if object_store is not None and owner_user_id is not None:
+        tools.append(_build_execute_skill_script_tool(storage, object_store, owner_user_id))
     return tools
 
 
@@ -462,7 +467,16 @@ async def load_skills_from_db(storage: Any, *, owner_user_id: str | None = None)
         if not s.name or not s.content:
             _skill_logger.warning("skills 缺少 name 或 content 跳过", name=s.name)
             continue
-        enabled_parts.append(f"## Skill: {s.name}\n\n{s.content}\n")
+        # 有附带文件时追加可用脚本清单说明 引导模型调用 execute_skill_script 工具
+        if s.files:
+            file_list = "\n".join([f"- {f.path}" for f in s.files])
+            enabled_parts.append(
+                f"## Skill: {s.name}\n\n{s.content}\n\n"
+                f"**可用脚本文件**:\n{file_list}\n\n"
+                f"使用 `execute_skill_script(skill_name=\"{s.name}\", script_path=\"xxx\")` 工具执行脚本\n"
+            )
+        else:
+            enabled_parts.append(f"## Skill: {s.name}\n\n{s.content}\n")
         enabled_names.append(s.name)
 
     if not enabled_parts:
@@ -482,3 +496,123 @@ async def load_skills_from_db(storage: Any, *, owner_user_id: str | None = None)
         names=enabled_names,
     )
     return combined, enabled_names
+
+
+def _build_execute_skill_script_tool(storage: Any, object_store: Any, owner_user_id: str) -> Any:
+    """构建 skill 脚本执行工具闭包
+
+    工具从 DB 加载 skill 配置 → 在 files 列表中查找脚本 → 从 MinIO 读内容
+    → 写入临时目录保留原始目录结构 → asyncio 子进程执行 → 返回 stdout/stderr
+    """
+    import asyncio
+    import os
+    import tempfile
+
+    import structlog
+
+    _exec_logger = structlog.get_logger(__name__)
+
+    # 脚本执行超时(秒)
+    _SCRIPT_TIMEOUT_S = 30
+
+    @tool
+    async def execute_skill_script(
+        skill_name: str,
+        script_path: str,
+        args: list[str] | None = None,
+    ) -> str:
+        """执行 skill 包中的 Python 脚本
+
+        Args:
+            skill_name: skill 名称 如 "news-skill"
+            script_path: 脚本在 skill 包内的相对路径 如 "scripts/fetch.py"
+            args: 传递给脚本的命令行参数列表(可选)
+
+        Returns:
+            脚本的 stdout 输出 如果执行失败返回包含 stderr 的错误信息
+        """
+        # 1. 从 DB 加载 skill 校验存在且已启用
+        skill = await storage.get_skill(skill_name, owner_user_id=owner_user_id)
+        if skill is None:
+            return f"错误: skill 不存在 skill_name={skill_name}"
+        if not skill.enabled:
+            return f"错误: skill 已禁用 skill_name={skill_name}"
+
+        # 2. 在 files 列表中查找脚本
+        file_meta = None
+        for f in skill.files:
+            if f.path == script_path:
+                file_meta = f
+                break
+        if file_meta is None:
+            return f"错误: 脚本不存在 script_path={script_path} 可用文件: {[f.path for f in skill.files]}"
+
+        # 3. 校验文件扩展名 只允许执行 .py 文件
+        if not script_path.endswith(".py"):
+            return f"错误: 只允许执行 .py 文件 script_path={script_path}"
+
+        # 4. 从 MinIO 读取脚本内容
+        try:
+            stored = await object_store.get_bytes(file_meta.object_key)
+            script_content = stored.content
+        except Exception as e:
+            _exec_logger.error("脚本读取失败", skill_name=skill_name, script_path=script_path, error=str(e))
+            return f"错误: 脚本文件读取失败 {e}"
+
+        # 5. 写入临时目录 保留原始目录结构确保相对路径引用正确
+        # 临时目录格式: /tmp/skill_exec_{skill_name}_{random}
+        tmp_dir = tempfile.mkdtemp(prefix=f"skill_exec_{skill_name}_")
+        script_full_path = os.path.join(tmp_dir, script_path)
+        script_dir = os.path.dirname(script_full_path)
+        os.makedirs(script_dir, exist_ok=True)
+
+        try:
+            with open(script_full_path, "wb") as f:
+                f.write(script_content)
+
+            # 6. 构建执行命令
+            cmd_args = ["python3", script_full_path]
+            if args:
+                cmd_args.extend(args)
+
+            # 7. 子进程执行 设置超时 工作目录为 skill 包根目录(保留相对路径关系)
+            _exec_logger.info("开始执行脚本", skill_name=skill_name, script_path=script_path, args=args)
+            proc = await asyncio.create_subprocess_exec(
+                *cmd_args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=tmp_dir,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_SCRIPT_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                _exec_logger.warning("脚本执行超时", skill_name=skill_name, script_path=script_path)
+                return f"错误: 脚本执行超时({_SCRIPT_TIMEOUT_S}秒)"
+
+            stdout_text = stdout.decode("utf-8", errors="replace")
+            stderr_text = stderr.decode("utf-8", errors="replace")
+
+            if proc.returncode != 0:
+                _exec_logger.warning(
+                    "脚本执行失败",
+                    skill_name=skill_name,
+                    script_path=script_path,
+                    returncode=proc.returncode,
+                    stderr=stderr_text[:500],
+                )
+                return f"脚本执行失败(退出码={proc.returncode})\nstderr:\n{stderr_text}\nstdout:\n{stdout_text}"
+
+            _exec_logger.info("脚本执行成功", skill_name=skill_name, script_path=script_path, output_len=len(stdout_text))
+            return stdout_text
+
+        finally:
+            # 8. 清理临时目录
+            try:
+                import shutil
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            except Exception:
+                pass
+
+    return execute_skill_script

@@ -93,11 +93,13 @@ async def _build_one(
     storage: Any | None = None,
     thinking_enabled: bool = False,
     owner_user_id: str | None = None,
+    object_store: Any | None = None,
 ) -> CompiledStateGraph:
     """根据 agent 配置构造一个 deep_agent reply 实例
 
     owner_user_id 用于按用户加载 MCP 工具和 Skills 内容
-    为 None 时跳过 MCP/Skills 加载（系统启动初始化场景）
+    object_store 用于构建 skill 脚本执行工具
+    为 None 时跳过 MCP/Skills/脚本工具 加载（系统启动初始化场景）
     """
     system_prompt = agent_record.prompt + REPLY_SYSTEM_SUFFIX
     # 深度思考模式开启时注入 extra_body 让模型输出 reasoning_content
@@ -133,6 +135,7 @@ async def _build_one(
         storage=storage,
         settings=settings,
         owner_user_id=owner_user_id,
+        object_store=object_store,
     )
     # MCP 工具加载 按 owner_user_id 过滤当前用户的配置
     if storage is not None and owner_user_id is not None:
@@ -173,14 +176,16 @@ class DeepAgentRegistry:
     新增 agent 也走 reload 追加 删除 agent 赑 unregister 移除
     读端不加锁 写端用 asyncio.Lock 串行化
 
-    内部持有 settings 与 storage 引用:
+    内部持有 settings / storage / object_store 引用:
         - settings 传给 _build_one 用于 ChatOpenAI 超时等运行时参数
-        - storage 传给 _build_one 用于从 DB 加载 MCP 工具
+        - storage 传给 _build_one 用于从 DB 加载 MCP 工具和 Skills
+        - object_store 传给 _build_one 用于构建 skill 脚本执行工具
     """
 
-    def __init__(self, settings: Settings, storage: Any | None = None) -> None:
+    def __init__(self, settings: Settings, storage: Any | None = None, object_store: Any | None = None) -> None:
         self._settings = settings
         self._storage = storage
+        self._object_store = object_store
         # key 格式: 系统级 {agent_name}  用户级 {user_id}:{agent_name}
         self._instances: dict[str, CompiledStateGraph] = {}
         self._versions: dict[str, int] = {}
@@ -195,7 +200,8 @@ class DeepAgentRegistry:
         new_inst: dict[str, CompiledStateGraph] = {}
         for r in records:
             new_inst[r.name] = await _build_one(
-                r, self._settings, storage=self._storage, owner_user_id=None
+                r, self._settings, storage=self._storage,
+                owner_user_id=None, object_store=self._object_store,
             )
         async with self._lock:
             self._instances = new_inst
@@ -205,7 +211,8 @@ class DeepAgentRegistry:
     async def reload(self, record: AgentRecord) -> None:
         """热替换 / 新增某个 agent 实例 (系统级 无用户上下文)"""
         new_inst = await _build_one(
-            record, self._settings, storage=self._storage, owner_user_id=None
+            record, self._settings, storage=self._storage,
+            owner_user_id=None, object_store=self._object_store,
         )
         async with self._lock:
             self._instances[record.name] = new_inst
@@ -261,6 +268,7 @@ class DeepAgentRegistry:
             record, self._settings,
             storage=self._storage,
             owner_user_id=owner_user_id,
+            object_store=self._object_store,
         )
         async with self._lock:
             self._instances[key] = inst
@@ -284,6 +292,7 @@ class DeepAgentRegistry:
             storage=self._storage,
             thinking_enabled=True,
             owner_user_id=owner_user_id,
+            object_store=self._object_store,
         )
 
     async def reload_all(self, *, owner_user_id: str | None = None) -> int:
@@ -314,9 +323,10 @@ class DeepAgentRegistry:
         return sorted({k.split(":")[-1] for k in self._instances.keys()})
 
 
-def build_registry(settings: Settings, storage: Any | None = None) -> DeepAgentRegistry:
-    """工厂函数 用 settings 和可选的 storage 创建 registry
+def build_registry(settings: Settings, storage: Any | None = None, object_store: Any | None = None) -> DeepAgentRegistry:
+    """工厂函数 用 settings 和可选的 storage/object_store 创建 registry
 
     storage 为 None 时不加载 MCP 工具(用于测试环境)
+    object_store 为 None 时不构建 skill 脚本执行工具
     """
-    return DeepAgentRegistry(settings, storage=storage)
+    return DeepAgentRegistry(settings, storage=storage, object_store=object_store)

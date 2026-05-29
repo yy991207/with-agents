@@ -536,11 +536,12 @@ export default function ReplyBubble({
   const timeline = useMemo(() => buildTimeline(reply.segments), [reply.segments]);
 
   let body: ReactNode;
-  if (reply.state === 'failed') {
-    // 失败态  纯文字风  无背景容器
-    //   保留错误提示和错误摘要
-    //   重新回答按钮复用头部 toolbar 的通用位置逻辑
-    //   头部不再重复显示一份失败状态图标
+  // 失败/超时时  如果已有内容则追加错误提示, 不覆盖已有输出
+  const hasContent = timeline.length > 0 || !!reply.content;
+  const showFailedAppend = reply.state === 'failed' && hasContent;
+
+  if (reply.state === 'failed' && !hasContent) {
+    // 失败态且无任何内容时, 仍然只展示错误信息
     const errorText = reply.error || '未知错误';
     body = (
       <Flexbox horizontal align="center" gap={10} style={{ minWidth: 0 }}>
@@ -627,6 +628,42 @@ export default function ReplyBubble({
               >
                 第 {attempt}/{maxRetries} 次
                 {delayS > 0 ? `，约 ${delayS < 1 ? '<1' : Math.round(delayS)} 秒后重试` : ''}
+              </span>
+            </Flexbox>
+          );
+        })() : null}
+        {showFailedAppend ? (() => {
+          const errorText = reply.error || '未知错误';
+          return (
+            <Flexbox horizontal align="center" gap={10} style={{ minWidth: 0 }}>
+              <CloseCircleOutlined
+                style={{ color: 'var(--ant-color-error)', fontSize: 13, flexShrink: 0 }}
+              />
+              <span
+                style={{
+                  color: 'rgba(15, 23, 42, 0.86)',
+                  fontSize: 13,
+                  fontWeight: 500,
+                  flexShrink: 0,
+                }}
+              >
+                回答失败
+              </span>
+              <span
+                title={errorText}
+                style={{
+                  color: 'rgba(71, 85, 105, 0.7)',
+                  fontFamily:
+                    'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+                  fontSize: 12,
+                  flex: 1,
+                  minWidth: 0,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {errorText}
               </span>
             </Flexbox>
           );

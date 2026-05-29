@@ -1377,6 +1377,13 @@ class MotorMongoStorage:
         if result.deleted_count == 0:
             raise KeyError(f"skill 不存在或不属于当前用户 name={name}")
 
+    async def get_skill_file_keys(self, name: str, *, owner_user_id: str) -> list[str]:
+        """获取 skill 所有文件的 object_key 列表 用于删除时清理对象存储"""
+        skill = await self.get_skill(name, owner_user_id=owner_user_id)
+        if skill is None:
+            return []
+        return [f.object_key for f in skill.files]
+
     # ------------------------------------------------------------- 数据迁移
     async def _migrate_global_mcp_and_skills(self) -> None:
         """将 settings 集合中旧全局 mcp_config / skills_config 迁移到新集合

@@ -59,7 +59,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 从 DB 加载已有 agents 启动 deep_agent 注册表
     # 任意数量 agent 都接受 含 0 条(纯空环境也允许启动 由前端先创建)
     records = await storage.list_agents()
-    registry = build_registry(settings, storage=storage)
+    registry = build_registry(settings, storage=storage, object_store=object_store)
     await registry.initialize(records)
 
     # H2 启动孤儿清理

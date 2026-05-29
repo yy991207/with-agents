@@ -480,6 +480,14 @@ export interface SkillItem {
   description: string;
   content: string;
   enabled: boolean;
+  files?: SkillFileMeta[];
+}
+
+export interface SkillFileMeta {
+  path: string;
+  object_key: string;
+  size: number;
+  sha256: string;
 }
 
 export interface SkillsListResponse {
@@ -540,5 +548,42 @@ export interface SkillsReloadResponse {
 export function reloadAgents(): Promise<SkillsReloadResponse> {
   return request<SkillsReloadResponse>('/api/skills/reload', {
     method: 'POST',
+  });
+}
+
+// POST /api/skills/{name}/files 上传 skill 文件包
+export async function uploadSkillFiles(
+  skillName: string,
+  files: File[],
+  paths: string[]
+): Promise<SkillItem> {
+  const form = new FormData();
+  files.forEach((f) => form.append('files', f, f.name));
+  paths.forEach((p) => form.append('paths', p));
+  const resp = await fetch(`${BASE}/api/skills/${encodeURIComponent(skillName)}/files`, {
+    method: 'POST',
+    body: form,
+    credentials: 'include',
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+    throw new Error(err.detail || `上传失败 ${resp.status}`);
+  }
+  return resp.json();
+}
+
+// GET /api/skills/{name}/files 列出 skill 附带文件
+export interface SkillFilesListResponse {
+  files: SkillFileMeta[];
+}
+
+export function listSkillFiles(skillName: string): Promise<SkillFilesListResponse> {
+  return request<SkillFilesListResponse>(`/api/skills/${encodeURIComponent(skillName)}/files`);
+}
+
+// DELETE /api/skills/{name}/files/{path} 删除 skill 单个文件
+export function deleteSkillFile(skillName: string, filePath: string): Promise<void> {
+  return requestNoContent(`/api/skills/${encodeURIComponent(skillName)}/files/${encodeURIComponent(filePath)}`, {
+    method: 'DELETE',
   });
 }

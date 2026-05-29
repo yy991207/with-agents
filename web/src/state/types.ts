@@ -399,6 +399,15 @@ export interface SkillView {
   description: string;
   content: string;
   enabled: boolean;
+  files?: SkillFileMeta[];
+}
+
+// skill 文件元数据 (对齐后端 SkillFileMeta)
+export interface SkillFileMeta {
+  path: string;
+  object_key: string;
+  size: number;
+  sha256: string;
 }
 
 // GET /api/skills/config 响应
@@ -419,4 +428,5 @@ export interface SkillEditDraft {
   enabled: boolean;
   dirty: boolean;
   isNew: boolean;
+  files?: SkillFileMeta[];
 }

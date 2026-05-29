@@ -288,3 +288,10 @@ class MongoStorage(Protocol):
     async def delete_skill(self, name: str, *, owner_user_id: str) -> None:
         """删除 Skill 不存在或不属于当前用户抛 KeyError"""
         ...
+
+    async def get_skill_file_keys(self, name: str, *, owner_user_id: str) -> list[str]:
+        """获取 skill 所有文件的 object_key 列表 用于删除时清理对象存储
+
+        不存在或不属于当前用户时返回空列表(不抛 KeyError 允许无文件 skill)
+        """
+        ...

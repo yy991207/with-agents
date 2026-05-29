@@ -37,9 +37,9 @@ from ..core.models import (
 
 _logger = structlog.get_logger(__name__)
 
-# settings 集合中存放 judge 指针的固定文档 _id 与字段名
-_JUDGE_POINTER_DOC_ID = "judge_pointer"
-_JUDGE_POINTER_FIELD = "target_agent_name"
+# settings 集合中存放 compaction agent 指针的固定文档 _id 与字段名
+_COMPACTION_POINTER_DOC_ID = "compaction_pointer"
+_COMPACTION_POINTER_FIELD = "target_agent_name"
 
 
 def _utcnow() -> datetime:
@@ -1059,7 +1059,7 @@ class MotorMongoStorage:
         return _agent_doc_to_record(doc)
 
     async def delete_agent(self, name: str, *, owner_user_id: str) -> None:
-        """删除 agent  若该 name 是当前 judge_target 抛 ValueError 路由层映射 409
+        """删除 agent  若该 name 是当前 compaction_agent_target 抛 ValueError 路由层映射 409
 
         不存在或不属于当前用户抛 KeyError 路由层映射 404
         system agent 不可删除
@@ -1074,10 +1074,10 @@ class MotorMongoStorage:
         if existing_owner != owner_user_id:
             raise KeyError(f"agent 不存在 name={name}")
 
-        # 校验是否被 judge 指针引用
-        judge_doc = await self._db["settings"].find_one({"_id": _JUDGE_POINTER_DOC_ID})
-        if judge_doc is not None and judge_doc.get(_JUDGE_POINTER_FIELD) == name:
-            raise ValueError(f"agent {name} 仍是当前 judge target 无法删除 请先切换 judge")
+        # 校验是否被 compaction agent 指针引用
+        compaction_doc = await self._db["settings"].find_one({"_id": _COMPACTION_POINTER_DOC_ID})
+        if compaction_doc is not None and compaction_doc.get(_COMPACTION_POINTER_FIELD) == name:
+            raise ValueError(f"agent {name} 仍是当前 compaction agent target 无法删除 请先切换")
 
         await self._db["agents"].delete_one({"name": name})
 
@@ -1211,22 +1211,22 @@ class MotorMongoStorage:
         )
         return dict(doc) if doc is not None else None
 
-    # ------------------------------------------------------------- Judge 指针
-    async def get_judge_target(self) -> str:
-        """从 settings 集合读取 judge 指针 缺失则抛 KeyError 让上层提示先 seed"""
-        doc = await self._db["settings"].find_one({"_id": _JUDGE_POINTER_DOC_ID})
-        if doc is None or _JUDGE_POINTER_FIELD not in doc:
-            raise KeyError("judge 指针未初始化 请先调用 seed_from_yaml 或 set_judge_target")
-        return str(doc[_JUDGE_POINTER_FIELD])
+    # ------------------------------------------------------------- Compaction agent 指针
+    async def get_compaction_agent_target(self) -> str:
+        """从 settings 集合读取 compaction agent 指针 缺失则抛 KeyError 让上层提示先 seed"""
+        doc = await self._db["settings"].find_one({"_id": _COMPACTION_POINTER_DOC_ID})
+        if doc is None or _COMPACTION_POINTER_FIELD not in doc:
+            raise KeyError("compaction agent 指针未初始化 请先调用 seed_from_yaml 或 set_compaction_agent_target")
+        return str(doc[_COMPACTION_POINTER_FIELD])
 
-    async def set_judge_target(self, agent_name: str) -> None:
-        """设置 judge 指针 校验 agent_name 必须是已存在的 agent"""
+    async def set_compaction_agent_target(self, agent_name: str) -> None:
+        """设置 compaction agent 指针 校验 agent_name 必须是已存在的 agent"""
         existing = await self._db["agents"].find_one({"name": agent_name}, {"_id": 0})
         if existing is None:
             raise KeyError(f"目标 agent 不存在 agent_name={agent_name}")
         await self._db["settings"].update_one(
-            {"_id": _JUDGE_POINTER_DOC_ID},
-            {"$set": {_JUDGE_POINTER_FIELD: agent_name, "updated_at": _utcnow()}},
+            {"_id": _COMPACTION_POINTER_DOC_ID},
+            {"$set": {_COMPACTION_POINTER_FIELD: agent_name, "updated_at": _utcnow()}},
             upsert=True,
         )
 
@@ -1406,7 +1406,7 @@ class MotorMongoStorage:
     async def seed_from_yaml(self, settings: Any) -> int:
         """首次启动从 yaml 注入种子 agents collection 已有数据时直接跳过
 
-        参数 settings 形如 multichat.config.Settings 含 agents 字典与 judge 指针
+        参数 settings 形如 multichat.config.Settings 含 agents 字典
         返回值是写入的 agent 条数 0 表示已 seed 过
 
         逻辑:
@@ -1416,8 +1416,7 @@ class MotorMongoStorage:
             4. available_models 默认池 = yaml.agents 中所有 model 去重 + 4 条扩展
 
         注意:
-            judge 指针即便已经存在也不在这里覆盖 完全由用户后续通过 set_judge_target 调
-            首次种子默认值用 settings.judge.agent
+            compaction agent 指针不在这里写入 完全由用户通过 API 设置
         """
         # 数据迁移 仅对老 profile_name 数据生效 不影响新数据
         await self._migrate_legacy_agents()
@@ -1426,7 +1425,6 @@ class MotorMongoStorage:
             getattr(settings, "key", None)
             and getattr(settings, "base_url", None)
             and getattr(settings, "agents", None)
-            and getattr(settings, "judge", None)
         )
         if not has_seed_config:
             _logger.info("未提供 yaml 种子配置 跳过 seed")
@@ -1477,19 +1475,6 @@ class MotorMongoStorage:
         if docs:
             await self._db["agents"].insert_many(docs)
 
-        # 同步写 judge 指针 仅当此前未设置时写入 避免误覆盖管理员后改的值
-        # 这里走 update_one upsert 确保首次启动一定有指针可读
-        await self._db["settings"].update_one(
-            {"_id": _JUDGE_POINTER_DOC_ID},
-            {
-                "$setOnInsert": {
-                    _JUDGE_POINTER_FIELD: settings.judge.agent,
-                    "created_at": now,
-                },
-                "$set": {"updated_at": now},
-            },
-            upsert=True,
-        )
-
-        _logger.info("seed 注入完成", agents_written=len(docs), judge=settings.judge.agent)
+        _logger.info("seed 注入完成", agents_written=len(docs))
+        return len(docs)
         return len(docs)

@@ -20,13 +20,11 @@ from typing import Any
 class TaskEvent:
     """SSE 事件 payload 结构
 
-    type 与 spec §6.2 严格对齐 取值参考:
+    type 取值参考:
         snapshot
         task.state
-        think.start | think.done | think.failed | think.cancelled
-        judge.start | judge.done
         reply.start | reply.chunk | reply.tool_call | reply.tool_result
-        reply.done | reply.error
+        reply.thinking | reply.done | reply.error
         task.unrecoverable
     data 是结构化 payload 直接 json.dumps 写到 SSE data 行
     """

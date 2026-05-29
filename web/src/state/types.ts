@@ -49,6 +49,8 @@ export interface ReplyView {
   error?: string;
   // reply 写完时的 ISO8601  用于在 reply 头部显示完成时间  没值就不显示
   finishedAt?: string;
+  // 限流重试时前端需要展示"正在重试"状态  null 表示不在重试
+  retrying?: { attempt: number; maxRetries: number; delayS: number } | null;
 }
 
 // 一轮完整对话(用户消息 + N 个并发 agent 回答 + 选答)

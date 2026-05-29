@@ -117,15 +117,32 @@ export function useChatTask() {
   );
 
   // 重答单个 agent  会清空 selected_reply_agent 让用户重新选答
+  // 重答后需要重新建立 SSE 连接 接收流式事件(reply.start/reply.chunk/reply.done 等)
   const retryReplyAgent = useCallback(
     async (taskId: string, agent: AgentName): Promise<void> => {
       try {
         await retryReply({ task_id: taskId, agent });
+        // 重新建立 SSE 连接接收重答的流式事件
+        const ctrl = new AbortController();
+        registerSSEController(ctrl);
+        void openTaskStream(taskId, dispatch, {
+          signal: ctrl.signal,
+          onFatal: (err) => {
+            const reason = isFatalSSEError(err)
+              ? '任务在服务端不可恢复'
+              : `连接异常 ${describeError(err)}`;
+            dispatch({
+              type: 'sse.event',
+              taskId,
+              event: { type: 'task.unrecoverable', data: { reason } },
+            });
+          },
+        });
       } catch (e) {
         message.error(`重答 ${agent} 失败:${describeError(e)}`);
       }
     },
-    [],
+    [dispatch, registerSSEController],
   );
 
   // 用户从多 agent 候选中选定一个作为正式回答

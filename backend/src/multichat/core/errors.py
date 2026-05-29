@@ -50,3 +50,52 @@ def humanize_llm_error(err: BaseException | str) -> str:
     # 兜底 防止用户看到完整堆栈或敏感 url
     short = text[:_FALLBACK_MAX_LEN]
     return f"调用失败 {short}"
+
+
+# 限流错误检测用的正则 与 _FRIENDLY_PATTERNS 中的 429 pattern 对齐
+_RATE_LIMIT_PATTERN = re.compile(r"\b429\b|rate.?limit|too\s*many", re.I)
+
+
+def is_rate_limit_error(err: BaseException) -> bool:
+    """判断异常是否为 429 限流错误 用于决定是否自动重试
+
+    检测优先级:
+        1. OpenAI SDK v2 的 RateLimitError 有 status_code 属性
+        2. httpx HTTPStatusError 有 response.status_code
+        3. 兜底走文本匹配 与 humanize_llm_error 的 429 pattern 一致
+    """
+    # 优先看属性值 兼容 OpenAI SDK 和 httpx 两类常见异常
+    code = getattr(err, "status_code", None)
+    if code is None:
+        resp = getattr(err, "response", None)
+        code = getattr(resp, "status_code", None) if resp is not None else None
+    if code == 429:
+        return True
+
+    # 兜底 文本匹配
+    text = f"{type(err).__name__}: {err}"
+    return bool(_RATE_LIMIT_PATTERN.search(text))
+
+
+def extract_retry_after(err: BaseException) -> float | None:
+    """从异常中提取 Retry-After 值(秒) 用于指导重试等待时间
+
+    部分模型 API 在 429 响应的 header 中携带 Retry-After
+    OpenAI SDK 的 RateLimitError 会把它挂到 response.headers 上
+    httpx HTTPStatusError 同理
+
+    返回 None 表示未提供 Retry-After 调用方应使用默认退避间隔
+    """
+    resp = getattr(err, "response", None)
+    if resp is None:
+        return None
+    headers = getattr(resp, "headers", None)
+    if headers is None:
+        return None
+    raw = headers.get("retry-after")
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        return None

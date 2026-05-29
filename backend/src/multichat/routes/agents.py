@@ -1,10 +1,10 @@
 """agents 配置 CRUD API 前端 SettingsDrawer 使用
 
-GET    /api/agents                 列出全部 agent 配置 + 当前 judge 指针
+GET    /api/agents                 列出全部 agent 配置 + 当前 compaction agent 指针
 POST   /api/agents                 新增 agent  自动生成内部稳定 name
 PUT    /api/agents/{name}          局部更新某个 agent 内部触发热替换
-DELETE /api/agents/{name}          删除 agent  judge target 不允许删
-PUT    /api/judge                  更新 judge 指针(选哪个 agent 当裁判)
+DELETE /api/agents/{name}          删除 agent  compaction agent target 不允许删
+PUT    /api/compaction-agent       更新 compaction agent 指针(选哪个 agent 做压缩)
 GET    /api/agents/{name}/history  列出 agent 历史版本
 POST   /api/agents/{name}/revert   回滚到指定历史版本
 
@@ -15,7 +15,7 @@ POST   /api/agents/{name}/revert   回滚到指定历史版本
     - PUT 的写入顺序: DB upsert 成功后再触发 registry.reload
       reload 失败必须回滚 DB 否则会出现 DB 与内存版本不一致
     - 乐观锁可选 expected_version 不传则默认强制覆盖
-    - judge 指针不需要热替换 LLM 调用时按名字现取
+    - compaction agent 指针不需要热替换 LLM 调用时按名字现取
     - api_key 接口返回前端时直接返回原文 (前端要求"全量显示"以便用户核对/复制)
       _mask_key 函数保留备用 需要回退时 把 _to_view / list_history_agents 里的
       record.api_key / h.get("api_key", "") 改回 _mask_key(...) 即可
@@ -80,10 +80,10 @@ class AgentView(BaseModel):
 
 
 class AgentsListResponse(BaseModel):
-    """GET /api/agents 响应 agents 数组 + 当前 judge 指针"""
+    """GET /api/agents 响应 agents 数组 + 当前 compaction agent 指针"""
 
     agents: list[AgentView]
-    judge_target: str
+    compaction_agent_target: str
 
 
 class CreateAgentRequest(BaseModel):
@@ -123,8 +123,8 @@ class UpdateAgentResponse(BaseModel):
     reloaded: bool
 
 
-class UpdateJudgeRequest(BaseModel):
-    """PUT /api/judge 请求体 target 必须是已知 agent 内部 name"""
+class UpdateCompactionAgentRequest(BaseModel):
+    """PUT /api/compaction-agent 请求体 target 必须是已知 agent 内部 name"""
 
     target: str
 
@@ -308,17 +308,17 @@ async def list_agents(
     request: Request,
     identity: RequestIdentity = Depends(get_current_identity),
 ) -> AgentsListResponse:
-    """列出当前用户可见的 agent 配置与当前 judge 指针 给前端 SettingsDrawer 初始化用"""
+    """列出当前用户可见的 agent 配置与当前 compaction agent 指针 给前端 SettingsDrawer 初始化用"""
     storage = request.app.state.storage
     records = await storage.list_agents(owner_user_id=identity.user_id)
     try:
-        judge = await storage.get_judge_target()
+        compaction_agent = await storage.get_compaction_agent_target()
     except KeyError:
         # 极端情况 settings 集合为空 暴露空字符串 让前端先选一个再设置
-        judge = ""
+        compaction_agent = ""
     return AgentsListResponse(
         agents=[_to_view(r) for r in records],
-        judge_target=judge,
+        compaction_agent_target=compaction_agent,
     )
 
 
@@ -423,7 +423,7 @@ async def delete_agent(
     request: Request,
     identity: RequestIdentity = Depends(get_current_identity),
 ) -> None:
-    """删除 agent  若该 name 是当前 judge target 返回 409  不存在返回 404"""
+    """删除 agent  若该 name 是当前 compaction agent target 返回 409  不存在返回 404"""
     storage = request.app.state.storage
     registry = request.app.state.deep_agents
     try:
@@ -540,12 +540,12 @@ async def update_agent(
     )
 
 
-@router.put("/judge", status_code=204)
-async def update_judge(body: UpdateJudgeRequest, request: Request) -> None:
-    """更新 judge 指针 target 必须是已知 agent 之一 否则 400"""
+@router.put("/compaction-agent", status_code=204)
+async def update_compaction_agent(body: UpdateCompactionAgentRequest, request: Request) -> None:
+    """更新 compaction agent 指针 target 必须是已知 agent 之一 否则 400"""
     storage = request.app.state.storage
     try:
-        await storage.set_judge_target(body.target)
+        await storage.set_compaction_agent_target(body.target)
     except KeyError as exc:
         raise HTTPException(400, f"unknown agent: {body.target}") from exc
 

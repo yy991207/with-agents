@@ -2,9 +2,8 @@
 
 字段对齐项目根 config.example.yaml 主要包含:
     - key/base_url: LLM 服务凭据与地址
-    - agents: 4 个参与者 LLM 的种子配置 名称 模型 prompt
+    - agents: 参与者 LLM 的种子配置 名称 模型 prompt
         注意 运行时不再读这一段 仅作为首次启动 seed 注入到 MongoDB 之用
-    - judge: 评判 agent 指针 仅作为 yaml 种子默认值 运行时以 DB 中 settings 集合为准
     - mongo: MongoDB 连接信息
     - runtime: 运行时调优参数
     - server: HTTP 服务监听端口与跨域设置
@@ -41,16 +40,6 @@ class AgentConfig(BaseModel):
     prompt: str
 
 
-class JudgeConfig(BaseModel):
-    """裁判段配置 仅作 yaml 种子默认值
-
-    agent 字段必须出现在同 yaml 的 agents 段中 校验在 Settings 上层完成
-    """
-
-    agent: str
-    prompt: str
-
-
 class MongoConfig(BaseModel):
     """MongoDB 连接配置"""
 
@@ -64,6 +53,10 @@ class RuntimeConfig(BaseModel):
     history_max_rounds: int = 10
     reply_flush_interval_ms: int = 200
     http_timeout_seconds: int = 30
+    # 429 限流自动重试参数
+    rate_limit_max_retries: int = 3          # 429 限流最大重试次数
+    rate_limit_retry_delay_s: float = 5.0    # 初始重试等待秒数
+    rate_limit_retry_max_delay_s: float = 30.0  # 重试等待秒数上限
 
 
 class ServerConfig(BaseModel):
@@ -94,7 +87,7 @@ class MinioConfig(BaseModel):
 
 
 class Settings(BaseSettings):
-    """应用总配置 顶层字段直接对齐 yaml 9 个 key"""
+    """应用总配置 顶层字段直接对齐 yaml key"""
 
     model_config = SettingsConfigDict(
         env_prefix="MULTICHAT_",
@@ -102,12 +95,11 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # 以下 4 项现在只用于"首次空库 seed"兼容老流程
-    # 运行时 agent 配置与 judge 指针都从 MongoDB 读取
+    # 以下 3 项只用于"首次空库 seed"兼容老流程
+    # 运行时 agent 配置与 compaction agent 指针都从 MongoDB 读取
     key: str | None = None
     base_url: str | None = None
     agents: dict[str, AgentConfig] | None = None
-    judge: JudgeConfig | None = None
     mongo: MongoConfig = Field(default_factory=MongoConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
@@ -115,29 +107,21 @@ class Settings(BaseSettings):
     minio: MinioConfig = Field(default_factory=MinioConfig)
 
     @model_validator(mode="after")
-    def _validate_judge_in_agents(self) -> "Settings":
+    def _validate_seed_config(self) -> "Settings":
         """yaml 种子合法性校验
 
         规则:
-            - key/base_url/agents/judge 要么全不配
-            - 要么 4 项一起配齐 当作首次空库种子配置
-            - judge.agent 必须出现在 agents 段中
+            - key/base_url/agents 要么全不配
+            - 要么 3 项一起配齐 当作首次空库种子配置
         """
         seed_flags = [
             self.key is not None,
             self.base_url is not None,
             self.agents is not None,
-            self.judge is not None,
         ]
         if any(seed_flags) and not all(seed_flags):
             raise ValueError(
-                "key/base_url/agents/judge 如需保留种子配置 必须 4 项同时提供"
-            )
-        if self.judge is None or self.agents is None:
-            return self
-        if self.judge.agent not in self.agents:
-            raise ValueError(
-                f"judge.agent={self.judge.agent!r} 不在 agents 段中 候选: {sorted(self.agents.keys())}"
+                "key/base_url/agents 如需保留种子配置 必须 3 项同时提供"
             )
         return self
 
@@ -190,6 +174,5 @@ def load_settings(path: str | Path | None = None) -> Settings:
         server_port=settings.server.port,
         llm_key_tail=_mask_key(settings.key or ""),
         agents=sorted((settings.agents or {}).keys()),
-        judge_agent=(settings.judge.agent if settings.judge else None),
     )
     return settings

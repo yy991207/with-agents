@@ -1,13 +1,13 @@
-"""简易令牌桶 / 滑动窗口计数器 用于 judge 等场景的软限流
+"""简易令牌桶 / 滑动窗口计数器 用于 compaction 等场景的软限流
 
 设计目标:
     - 进程内不持久化 仅做软限流 不做精确分布式控制
-    - 单 RateLimiter 实例对应一个限流维度  比如全局 judge 调用
+    - 单 RateLimiter 实例对应一个限流维度  比如全局 compaction 调用
     - 超额时 raise RateLimitExceeded 路由层捕获后返 429
 
 使用方式:
-    limiter = RateLimiter("judge", RateLimit(capacity=10, window_s=60))
-    await limiter.check()  # 命中阈值则抛 RateLimitExceeded
+    limiter = RateLimiter("compaction", RateLimit(capacity=10, window_s=60))
+    await limiter.check()  # 呯中阈值则抛 RateLimitExceeded
 """
 
 from __future__ import annotations

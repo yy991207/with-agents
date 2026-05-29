@@ -1,13 +1,12 @@
 """真实 LLM 调用封装
 
 把 deepagents 流式事件桥接到 TaskManager 的 TaskEvent 流
-think 阶段非流式拿到完整 50 字理由 reply 阶段流式吐 token
-judge 阶段在 4 个 think agent 中选一个跑 ainvoke 走非流式
+reply 阶段流式吐 token 支持深度思考(reasoning)模式
 
 约束:
     - 全部以协程形式实现 配合 asyncio.gather 并发触发
     - 通过外部传入的 on_event 回调把中间事件推到 TaskEventHub 不在本模块持有 hub 引用
-    - 异常向上抛 由 TaskManager 捕获并落到 think.failed / reply.error 事件
+    - 异常向上抛 由 TaskManager 捕获并落到 reply.error 事件
     - 异步 LLM 客户端在 deep_agents 模块创建 这里只持引用 不会跨 loop 复用对象
 """
 
@@ -89,7 +88,7 @@ async def run_reply(
     if thinking_enabled:
         deep_agent = await registry.build_thinking_reply(agent_name, owner_user_id=owner_user_id)
     else:
-        deep_agent = await registry.get_or_build(agent_name, "reply", owner_user_id=owner_user_id)
+        deep_agent = await registry.get_or_build(agent_name, owner_user_id=owner_user_id)
     messages = _build_messages(history, user_message)
     full_text_parts: list[str] = []
 

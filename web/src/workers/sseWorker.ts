@@ -120,12 +120,18 @@ function pushEvent(
   };
   rt.events.push(evt);
   // 终态识别 让重连逻辑不要傻乎乎再连
+  // CANCELLED 后用户可能重答 需要重置 terminalReached 让 SSE 能继续接收重答事件
+  // 当收到 task.state REPLYING 事件时 重置标记 表示新一轮回答正在进行
   if (
     type === 'task.state' &&
-    typeof data.state === 'string' &&
-    (data.state === 'DONE' || data.state === 'CANCELLED')
+    typeof data.state === 'string'
   ) {
-    rt.terminalReached = true;
+    if (data.state === 'REPLYING') {
+      // 重答触发 round.state 切回 REPLYING  重置终态标记 允许后续事件流通
+      rt.terminalReached = false;
+    } else if (data.state === 'DONE' || data.state === 'CANCELLED') {
+      rt.terminalReached = true;
+    }
   }
   if (type === 'task.unrecoverable') {
     rt.terminalReached = true;

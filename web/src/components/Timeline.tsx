@@ -41,6 +41,7 @@ export default function Timeline({ onEditRound, onBranchRound }: TimelineProps) 
       {state.rounds.map((round, idx) => {
         // 锁定:  下一轮已经发起  即本 round 之后还有 round  此时本轮 chips 不可改
         const locked = idx < state.rounds.length - 1;
+        const isLatestRound = idx === state.rounds.length - 1;
         return (
           <RoundBlock
             key={round.taskId}
@@ -53,7 +54,7 @@ export default function Timeline({ onEditRound, onBranchRound }: TimelineProps) 
             onBranchRound={onBranchRound}
             onFullscreen={handleFullscreen}
             onCancelReply={(agent) => void cancelReplyAgent(round.taskId, agent)}
-            onRetryReply={(agent) => void retryReplyAgent(round.taskId, agent)}
+            onRetryReply={isLatestRound ? ((agent) => void retryReplyAgent(round.taskId, agent)) : undefined}
           />
         );
       })}
@@ -75,7 +76,7 @@ interface RoundBlockProps {
   }) => void;
   onFullscreen: (taskId: string, agent: AgentName) => void;
   onCancelReply: (agent: AgentName) => void;
-  onRetryReply: (agent: AgentName) => void;
+  onRetryReply?: (agent: AgentName) => void;
 }
 
 function RoundBlock({
@@ -146,7 +147,7 @@ function RoundBlock({
                 agentLabel={agentLabelOf(agentLabels, agent)}
                 avatarUrl={agentAvatarOf(agentMetas, agent)}
                 onCancel={inProgress ? () => onCancelReply(agent) : undefined}
-                onRetry={!inProgress ? () => onRetryReply(agent) : undefined}
+                onRetry={(!inProgress && onRetryReply) ? () => onRetryReply(agent) : undefined}
                 onFullscreen={() => onFullscreen(round.taskId, agent)}
                 onBranch={
                   !inProgress &&

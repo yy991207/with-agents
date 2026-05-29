@@ -575,6 +575,34 @@ export default function ReplyBubble({
         </span>
       </Flexbox>
     );
+  } else if (reply.retrying) {
+    // 限流重试中  展示重试状态
+    const { attempt, maxRetries, delayS } = reply.retrying;
+    body = (
+      <Flexbox horizontal align="center" gap={10} style={{ minWidth: 0 }}>
+        <LoadingOutlined style={{ fontSize: 13, flexShrink: 0 }} />
+        <span
+          style={{
+            color: 'rgba(15, 23, 42, 0.86)',
+            fontSize: 13,
+            fontWeight: 500,
+            flexShrink: 0,
+          }}
+        >
+          限流重试中
+        </span>
+        <span
+          style={{
+            color: 'rgba(71, 85, 105, 0.7)',
+            fontSize: 12,
+            flexShrink: 0,
+          }}
+        >
+          第 {attempt}/{maxRetries} 次
+          {delayS > 0 ? `，约 ${delayS < 1 ? '<1' : Math.round(delayS)} 秒后重试` : ''}
+        </span>
+      </Flexbox>
+    );
   } else if (timeline.length === 0 && !reply.content) {
     body = (
       <Typography.Text type="secondary">

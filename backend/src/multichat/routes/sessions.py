@@ -214,7 +214,7 @@ async def compact_session(
         1 取 session 不存在 -> 404
         2 list_rounds 检查进行中 round -> 409
         3 过滤 reply.state == "done" 的 round  没有则 422
-        4 选摘要 agent  优先最近一轮 reply.agent  fallback judge 指针  都没有抛 503
+        4 选摘要 agent  优先最近一轮 reply.agent  fallback compaction agent 指针  都没有抛 503
         5 取 agent.available_models 中当前 model_id 的 max_input_tokens  缺省走兜底
         6 拼 history 估算 used_tokens_before
         7 await run_session_summary  超时 120s
@@ -272,16 +272,16 @@ async def compact_session(
         if cand is not None:
             agent_name = last_agent
 
-    # fallback 到 judge 指针
+    # fallback 到 compaction agent 指针
     if agent_name is None:
         try:
-            judge = await storage.get_judge_target()
+            compaction_agent = await storage.get_compaction_agent_target()
         except KeyError:
-            judge = ""
-        if judge:
-            cand = await storage.get_agent(judge, owner_user_id=identity.user_id)
+            compaction_agent = ""
+        if compaction_agent:
+            cand = await storage.get_agent(compaction_agent, owner_user_id=identity.user_id)
             if cand is not None:
-                agent_name = judge
+                agent_name = compaction_agent
 
     if agent_name is None:
         # 无可用 agent  按 503 抛  detail 给中文提示

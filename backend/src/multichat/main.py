@@ -3,7 +3,7 @@
 启动 lifespan 顺序:
     1. load_settings 读取 yaml
     2. MotorMongoStorage.connect 建立 motor 客户端 并 ensure_indexes
-    3. seed_from_yaml 首次注入 agents 与 judge 指针 已存在则跳过
+    3. seed_from_yaml 首次注入 agents 已存在则跳过
     4. 从 DB 列出 agents 用 settings 构造 DeepAgentRegistry 并 initialize 8 个实例
     5. 实例化 TaskManager(storage registry settings) 挂到 app.state
     6. 把 storage settings registry task_manager 挂到 app.state 路由层共享
@@ -119,7 +119,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
 
     # 路由挂载
     app.include_router(auth_router)
-    # M1: agents/judge CRUD
+    # M1: agents/compaction-agent CRUD
     app.include_router(agents_router)
     # M3: 对话核心 + 历史
     app.include_router(ask_router)

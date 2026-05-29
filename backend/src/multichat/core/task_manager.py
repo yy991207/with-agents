@@ -32,7 +32,7 @@ from ..llm.token_counter import (
     should_trigger_summary,
     usage_payload,
 )
-from .errors import humanize_llm_error
+from .errors import extract_retry_after, humanize_llm_error, is_rate_limit_error
 from .events import TaskEvent, TaskEventHub
 from .mention_parser import parse_single_mention
 from .models import TaskState
@@ -274,11 +274,11 @@ class TaskManager:
                 )
 
     async def retry_reply(self, task_id: str, agent_name: str) -> None:
-        """重答单个 agent  在 DONE 状态下重启该 agent 的 reply 子任务
+        """重答单个 agent  在 DONE 或 CANCELLED 状态下重启该 agent 的 reply 子任务
 
         约束:
             - round 不存在抛 KeyError  路由层映射 404
-            - round.state 必须是 DONE  避免和正在跑的子任务冲突
+            - round.state 必须是 DONE 或 CANCELLED  避免和正在跑的子任务冲突
             - agent_name 必须在 round.agents 内
             - 用户已选答的 agent 也允许重答  重答完会清空 selected_reply_agent
               逼用户重新确认  避免引用一个已经被覆盖的内容
@@ -291,14 +291,18 @@ class TaskManager:
         round_obj = await self._storage.get_round(task_id)
         if round_obj is None:
             raise KeyError(f"round 不存在 task_id={task_id}")
-        if round_obj.state != TaskState.DONE:
+        if round_obj.state not in (TaskState.DONE, TaskState.CANCELLED):
             raise ValueError(
-                f"round 当前状态 {round_obj.state}  仅 DONE 可重答"
+                f"round 当前状态 {round_obj.state}  仅 DONE 或 CANCELLED 可重答"
             )
         if agent_name not in (round_obj.agents or []):
             raise ValueError(
                 f"agent {agent_name} 不在本轮候选 {round_obj.agents}"
             )
+
+        # 从 session 反查 owner_user_id  用于按用户获取 agent 实例(MCP/Skills)
+        session = await self._storage.get_session(round_obj.session_id)
+        owner_user_id = (session.owner_user_id if session else None) or "system"
 
         hub = self._hubs.get(task_id)
         if hub is None:
@@ -332,7 +336,8 @@ class TaskManager:
         async def _retry_one() -> None:
             try:
                 await self._do_reply_for_agent(
-                    task_id, agent_name, round_obj.question, history, hub
+                    task_id, agent_name, round_obj.question, history, hub,
+                    owner_user_id,
                 )
             finally:
                 # 子任务结束  检查整 round 是否所有 agent 都 done  是则刷 DONE
@@ -462,13 +467,24 @@ class TaskManager:
                     "unrecoverable 阶段写状态失败 忽略", task_id=task_id
                 )
         finally:
-            await hub.close()
-            self._cleanup(task_id)
+            # CANCELLED 状态保留 hub 不关闭 让 SSE 连接保持活跃
+            # 这样 retry_reply 时前端可以继续收到事件而不需要重新建立 SSE 连接
+            # 只有正常结束(DONE)或不可恢复异常才关闭 hub 并清理索引
+            round_obj = await self._storage.get_round(task_id)
+            if round_obj is not None and round_obj.state == TaskState.CANCELLED:
+                # CANCELLED 只清 task 索引  保留 hub 给后续 retry 用
+                self._tasks.pop(task_id, None)
+            else:
+                await hub.close()
+                self._cleanup(task_id)
 
     async def _maybe_finalize_round(
         self, task_id: str, hub: TaskEventHub
     ) -> None:
-        """retry_reply 子任务收尾时调  全 agent 都 done 就刷 round.state DONE 与事件"""
+        """retry_reply 子任务收尾时调  全 agent 都 done 就刷 round.state DONE 与事件
+
+        重试完成后关闭 hub 并清理索引  否则 hub 会一直占内存
+        """
         try:
             round_obj = await self._storage.get_round(task_id)
             if round_obj is None:
@@ -484,6 +500,9 @@ class TaskManager:
             await hub.publish(
                 TaskEvent(type="task.state", data={"state": "DONE"})
             )
+            # 重试成功 round 到 DONE 后 关闭 hub 清理索引  释放内存
+            await hub.close()
+            self._cleanup(task_id)
         except Exception:
             _logger.exception(
                 "_maybe_finalize_round 失败 忽略", task_id=task_id
@@ -689,94 +708,191 @@ class TaskManager:
                     )
                 return
 
-        try:
-            full_text = await run_reply(
-                agent_name=agent_name,
-                user_message=user_message,
-                history=history,
-                registry=self._registry,
-                on_event=on_event,
-                thinking_enabled=thinking_enabled,
-                owner_user_id=owner_user_id,
-            )
-            # 兜底刷新剩余 chunk 防止丢
-            if flush_buf:
-                await self._storage.append_reply_chunk_for_agent(
-                    task_id, agent_name, "".join(flush_buf)
-                )
-                flush_buf.clear()
-            # reply 完成前把尾部残余 reasoning / text 封段  保证 segments 是完整时间线
-            _flush_thinking_segment()
-            _flush_text_segment()
-            finished_at_iso = _now_iso()
-            await self._storage.update_reply_for_agent(
-                task_id,
-                agent_name,
-                {
-                    "state": "done",
-                    "content": full_text,
-                    "started_at": _now_iso(),
-                    "finished_at": finished_at_iso,
-                    "segments": segments_buf,
-                },
-            )
-            await hub.publish(
-                TaskEvent(
-                    type="reply.done",
-                    data={
-                        "agent": agent_name,
-                        "content": full_text,
-                        "finished_at": finished_at_iso,
-                    },
-                )
-            )
-        except asyncio.CancelledError:
-            # 单 agent 被外部 cancel  把对应 reply 标 cancelled  推一次事件
+        # 429 限流重试参数
+        max_retries = self._settings.runtime.rate_limit_max_retries
+        base_delay = self._settings.runtime.rate_limit_retry_delay_s
+        max_delay = self._settings.runtime.rate_limit_retry_max_delay_s
+        full_text: str = ""
+
+        for attempt in range(max_retries + 1):
             try:
-                await self._storage.update_round_field(
-                    task_id, f"replies.{agent_name}.state", "cancelled"
+                full_text = await run_reply(
+                    agent_name=agent_name,
+                    user_message=user_message,
+                    history=history,
+                    registry=self._registry,
+                    on_event=on_event,
+                    thinking_enabled=thinking_enabled,
+                    owner_user_id=owner_user_id,
                 )
+                # 成功 跳出重试循环
+                break
+            except asyncio.CancelledError:
+                # 取消不重试 先刷盘已有内容再上抛
+                _flush_thinking_segment()
+                _flush_text_segment()
+                try:
+                    if flush_buf:
+                        await self._storage.append_reply_chunk_for_agent(
+                            task_id, agent_name, "".join(flush_buf)
+                        )
+                        flush_buf.clear()
+                    if segments_buf:
+                        await self._storage.update_reply_segments_for_agent(
+                            task_id, agent_name, segments_buf
+                        )
+                    partial_text = "".join(current_text_buf)
+                    await self._storage.update_reply_for_agent(
+                        task_id,
+                        agent_name,
+                        {
+                            "state": "cancelled",
+                            "content": partial_text,
+                            "segments": segments_buf,
+                            "finished_at": _now_iso(),
+                        },
+                    )
+                except Exception:
+                    _logger.exception(
+                        "cancel 刷盘失败 忽略",
+                        task_id=task_id,
+                        agent=agent_name,
+                    )
                 await hub.publish(
                     TaskEvent(
                         type="reply.error",
                         data={"agent": agent_name, "error": "cancelled"},
                     )
                 )
-            except Exception:
-                _logger.exception(
-                    "agent reply cancel 阶段写状态失败 忽略",
+                raise
+            except Exception as e:
+                # 判断是否为限流错误且仍有重试机会
+                if is_rate_limit_error(e) and attempt < max_retries:
+                    delay = min(base_delay * (2 ** attempt), max_delay)
+                    retry_after_s = extract_retry_after(e)
+                    if retry_after_s is not None:
+                        delay = max(delay, retry_after_s)
+                    _logger.info(
+                        "agent 限流 自动重试",
+                        task_id=task_id,
+                        agent=agent_name,
+                        attempt=attempt + 1,
+                        max_retries=max_retries,
+                        delay_s=delay,
+                    )
+                    # 推送 SSE 事件告知前端正在重试
+                    await hub.publish(
+                        TaskEvent(
+                            type="reply.retry",
+                            data={
+                                "agent": agent_name,
+                                "attempt": attempt + 1,
+                                "max_retries": max_retries,
+                                "delay_s": delay,
+                                "reason": "rate_limit",
+                            },
+                        )
+                    )
+                    # 重置 reply 状态清空已刷内容 重新开始
+                    await self._storage.update_reply_for_agent(
+                        task_id,
+                        agent_name,
+                        {
+                            "state": "streaming",
+                            "content": "",
+                            "segments": [],
+                            "started_at": _now_iso(),
+                        },
+                    )
+                    # 清空本地 buffer
+                    flush_buf.clear()
+                    segments_buf.clear()
+                    current_text_buf.clear()
+                    current_thinking_buf.clear()
+
+                    await asyncio.sleep(delay)
+                    continue
+
+                # 非限流或重试次数耗尽 先刷盘已有内容再标记 failed
+                friendly = humanize_llm_error(e)
+                _logger.warning(
+                    "agent reply 失败",
                     task_id=task_id,
                     agent=agent_name,
+                    raw_error=str(e),
+                    friendly=friendly,
                 )
-            raise
-        except Exception as e:
-            friendly = humanize_llm_error(e)
-            _logger.warning(
-                "agent reply 失败",
-                task_id=task_id,
-                agent=agent_name,
-                raw_error=str(e),
-                friendly=friendly,
+                _flush_thinking_segment()
+                _flush_text_segment()
+                try:
+                    if flush_buf:
+                        await self._storage.append_reply_chunk_for_agent(
+                            task_id, agent_name, "".join(flush_buf)
+                        )
+                        flush_buf.clear()
+                    if segments_buf:
+                        await self._storage.update_reply_segments_for_agent(
+                            task_id, agent_name, segments_buf
+                        )
+                    partial_text = "".join(current_text_buf)
+                    await self._storage.update_reply_for_agent(
+                        task_id,
+                        agent_name,
+                        {
+                            "state": "failed",
+                            "content": partial_text,
+                            "segments": segments_buf,
+                            "finished_at": _now_iso(),
+                            "error": friendly,
+                        },
+                    )
+                except Exception:
+                    _logger.exception(
+                        "reply 失败写状态二次报错 忽略",
+                        task_id=task_id,
+                        agent=agent_name,
+                    )
+                await hub.publish(
+                    TaskEvent(
+                        type="reply.error",
+                        data={"agent": agent_name, "error": friendly},
+                    )
+                )
+                # failed 是终态 不继续循环
+                return
+
+        # ---- 重试循环结束 如果成功走到这里 full_text 已拿到 ----
+        # 兜底刷新剩余 chunk 防止丢
+        if flush_buf:
+            await self._storage.append_reply_chunk_for_agent(
+                task_id, agent_name, "".join(flush_buf)
             )
-            try:
-                await self._storage.update_round_field(
-                    task_id, f"replies.{agent_name}.state", "failed"
-                )
-                await self._storage.update_round_field(
-                    task_id, f"replies.{agent_name}.error", friendly
-                )
-            except Exception:
-                _logger.exception(
-                    "reply 失败写状态二次报错 忽略",
-                    task_id=task_id,
-                    agent=agent_name,
-                )
-            await hub.publish(
-                TaskEvent(
-                    type="reply.error",
-                    data={"agent": agent_name, "error": friendly},
-                )
+            flush_buf.clear()
+        # reply 完成前把尾部残余 reasoning / text 封段  保证 segments 是完整时间线
+        _flush_thinking_segment()
+        _flush_text_segment()
+        finished_at_iso = _now_iso()
+        await self._storage.update_reply_for_agent(
+            task_id,
+            agent_name,
+            {
+                "state": "done",
+                "content": full_text,
+                "started_at": _now_iso(),
+                "finished_at": finished_at_iso,
+                "segments": segments_buf,
+            },
+        )
+        await hub.publish(
+            TaskEvent(
+                type="reply.done",
+                data={
+                    "agent": agent_name,
+                    "content": full_text,
+                    "finished_at": finished_at_iso,
+                },
             )
+        )
 
     # ============================================================ 状态机辅助
     async def _set_state(self, task_id: str, state: TaskState) -> None:
@@ -786,18 +902,19 @@ class TaskManager:
     async def _build_history(
         self, session_id: str, current_task_id: str
     ) -> list[dict[str, Any]]:
-        """取最近 N 轮已完成 round 转成 langchain 友好格式
+        """取最近 N 轮 round 转成 langchain 友好格式
 
         约束:
             - 当前正在跑的 task 不进 history
-            - round 必须有 selected_reply_agent  且对应 replies[agent].state==done  否则跳过
-              即使有多个 reply 完成  没选答的轮次都不进 history  避免污染下一轮上下文
+            - 有选答且完成的 round  用选答的回复
+            - 无选答的 round(被取消/失败等)  有内容的回复也纳入上下文  选内容最长的
+            - 完全无内容(还没开始流式就取消)的 round 跳过
             - 取最近 history_max_rounds 轮
             - 若 session 已生成摘要 在最前面注入一条 system message 承载摘要
               并跳过 round_index <= summary_until_round 的旧轮次
 
         摘要注入策略:
-            - 摘要文本以 "[会话摘要]\n..." 开头  让 LLM 一眼识别这是浓缩历史
+            - 摘要文本以 "[会话摘要]\\n..." 开头  让 LLM 一眼识别这是浓缩历史
             - 摘要消息不进 history_max_rounds 计数  独立占一条
             - agent_runner._build_messages 必须识别 role=system 转 SystemMessage
         """
@@ -808,21 +925,18 @@ class TaskManager:
         )
 
         all_rounds = await self._storage.list_rounds(session_id)
-        usable: list[Any] = []
+        # (round, effective_agent) 列表  effective_agent 是最终用于 history 的 agent 名
+        usable: list[tuple[Any, str]] = []
         for r in all_rounds:
             if r.task_id == current_task_id:
                 continue
-            picked = r.selected_reply_agent
-            if not picked:
-                continue
-            picked_reply = (r.replies or {}).get(picked) or {}
-            if picked_reply.get("state") != "done":
-                continue
-            usable.append(r)
+            eff_agent, eff_content = TaskManager._effective_reply_for_round(r)
+            if eff_agent and eff_content:
+                usable.append((r, eff_agent))
 
         # 已被摘要覆盖的 round 不再单独喂  避免与摘要内容重复占 token
         if summary_text:
-            usable = [r for r in usable if r.round_index > summary_until]
+            usable = [pair for pair in usable if pair[0].round_index > summary_until]
 
         n = self._settings.runtime.history_max_rounds
         if n > 0:
@@ -838,15 +952,14 @@ class TaskManager:
                     "is_summary": True,
                 }
             )
-        for r in usable:
+        for r, eff_agent in usable:
             out.append({"role": "user", "content": r.question})
-            picked = r.selected_reply_agent or ""
-            picked_reply = (r.replies or {}).get(picked) or {}
+            eff_reply = (r.replies or {}).get(eff_agent) or {}
             out.append(
                 {
                     "role": "assistant",
-                    "content": picked_reply.get("content", "") or "",
-                    "agent": picked,
+                    "content": eff_reply.get("content", "") or "",
+                    "agent": eff_agent,
                 }
             )
         return out
@@ -863,6 +976,31 @@ class TaskManager:
             self._reply_subtasks.pop(task_id, None)
 
     # ============================================================ 上下文压缩与用量
+    @staticmethod
+    def _effective_reply_for_round(r: Any) -> tuple[str, str]:
+        """取一个 round 中用于上下文的有效回复  返回 (agent_name, content)
+
+        有选答且完成的 → 用选答
+        无选答(被取消/失败等) → 用内容最长的回复
+        无任何内容 → 返回 ("", "")
+        """
+        picked = r.selected_reply_agent
+        if picked:
+            picked_reply = (r.replies or {}).get(picked) or {}
+            if picked_reply.get("state") == "done":
+                return (picked, picked_reply.get("content", "") or "")
+        # 无选答  找内容最长的回复
+        best_agent = ""
+        best_len = -1
+        best_content = ""
+        for agent_name, reply in (r.replies or {}).items():
+            content = (reply or {}).get("content", "") or ""
+            if len(content) > best_len:
+                best_agent = agent_name
+                best_len = len(content)
+                best_content = content
+        return (best_agent, best_content)
+
     def _resolve_compaction_agent_name(
         self,
         done_rounds: list[Any],
@@ -870,14 +1008,15 @@ class TaskManager:
         """挑选用作摘要 / 用量评估的 agent 名
 
         策略:
-            1 优先取最近一轮 selected_reply_agent  通常就是用户期望的"当前模型"
-            2 不在 registry 时回退到 judge 指针
+            1 优先取最近一轮有效回复的 agent 名  通常就是用户期望的"当前模型"
+            2 不在 registry 时回退到 compaction agent 指针
             3 都拿不到返回 None  上层判断不可压缩
         """
         registered = set(self._registry.names())
         for r in reversed(done_rounds):
-            cand = getattr(r, "selected_reply_agent", None)
-            if isinstance(cand, str) and cand in registered:
+            eff_agent, _ = TaskManager._effective_reply_for_round(r)
+            if eff_agent in registered:
+                return eff_agent
                 return cand
         return None
 
@@ -891,29 +1030,27 @@ class TaskManager:
                     return
 
                 all_rounds = await self._storage.list_rounds(session_id)
-                done_rounds = [
-                    r
-                    for r in all_rounds
-                    if r.selected_reply_agent
-                    and (r.replies or {})
-                        .get(r.selected_reply_agent, {})
-                        .get("state") == "done"
-                ]
-                if not done_rounds:
+                # 有有效回复内容的 round 都纳入(包括被取消/失败的)
+                usable_rounds = []
+                for r in all_rounds:
+                    eff_agent, eff_content = TaskManager._effective_reply_for_round(r)
+                    if eff_agent and eff_content:
+                        usable_rounds.append(r)
+                if not usable_rounds:
                     return
 
                 summary = session.summary or ""
                 summary_until = int(session.summary_until_round or 0)
-                uncovered = [r for r in done_rounds if r.round_index > summary_until]
+                uncovered = [r for r in usable_rounds if r.round_index > summary_until]
                 if not uncovered:
                     return
 
-                agent_name = self._resolve_compaction_agent_name(done_rounds)
+                agent_name = self._resolve_compaction_agent_name(usable_rounds)
                 if agent_name is None:
                     try:
-                        judge = await self._storage.get_judge_target()
-                        if judge in self._registry.names():
-                            agent_name = judge
+                        compaction_agent = await self._storage.get_compaction_agent_target()
+                        if compaction_agent in self._registry.names():
+                            agent_name = compaction_agent
                     except KeyError:
                         agent_name = None
                 if agent_name is None:
@@ -937,15 +1074,9 @@ class TaskManager:
                         {"role": "system", "content": f"[会话摘要]\n{summary}"}
                     )
                 for r in uncovered:
+                    _, eff_content = TaskManager._effective_reply_for_round(r)
                     history_dicts.append({"role": "user", "content": r.question})
-                    picked = r.selected_reply_agent or ""
-                    picked_reply = (r.replies or {}).get(picked) or {}
-                    history_dicts.append(
-                        {
-                            "role": "assistant",
-                            "content": picked_reply.get("content", "") or "",
-                        }
-                    )
+                    history_dicts.append({"role": "assistant", "content": eff_content})
 
                 used = count_history_tokens(history_dicts)
                 if not should_trigger_summary(used, max_tokens):
@@ -953,15 +1084,9 @@ class TaskManager:
 
                 comp_history: list[dict[str, Any]] = []
                 for r in uncovered:
+                    _, eff_content = TaskManager._effective_reply_for_round(r)
                     comp_history.append({"role": "user", "content": r.question})
-                    picked = r.selected_reply_agent or ""
-                    picked_reply = (r.replies or {}).get(picked) or {}
-                    comp_history.append(
-                        {
-                            "role": "assistant",
-                            "content": picked_reply.get("content", "") or "",
-                        }
-                    )
+                    comp_history.append({"role": "assistant", "content": eff_content})
                 _logger.info(
                     "auto_compact 触发  开始 LLM 摘要",
                     session_id=session_id,

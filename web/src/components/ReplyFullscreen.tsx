@@ -25,6 +25,9 @@ export default function ReplyFullscreen() {
   if (!round) return null;
   const reply = round.replies[fs.agent];
   if (!reply) return null;
+  // 只有最新一轮才允许重试 过往历史不允许
+  const isLatestRound = state.rounds.length > 0 &&
+    state.rounds[state.rounds.length - 1].taskId === round.taskId;
 
   const agentLabels = buildAgentLabelMap(state.settings.drafts);
   const agentMetas = buildAgentMetaMap(state.settings.drafts);
@@ -110,7 +113,7 @@ export default function ReplyFullscreen() {
             agentLabel={agentLabelOf(agentLabels, reply.agent)}
             avatarUrl={agentAvatarOf(agentMetas, reply.agent)}
             onCancel={handleCancel}
-            onRetry={handleRetry}
+            onRetry={isLatestRound ? handleRetry : undefined}
             onBranch={handleBranch}
             replyOptions={round.agents.map((name) => round.replies[name]).filter(Boolean)}
             agentMetas={agentMetas}

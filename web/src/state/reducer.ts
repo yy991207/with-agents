@@ -95,6 +95,22 @@ function readString(data: Record<string, unknown>, ...keys: string[]): string | 
   return undefined;
 }
 
+function readInt(data: Record<string, unknown>, ...keys: string[]): number | undefined {
+  for (const k of keys) {
+    const v = data[k];
+    if (typeof v === 'number' && Number.isInteger(v)) return v;
+  }
+  return undefined;
+}
+
+function readFloat(data: Record<string, unknown>, ...keys: string[]): number | undefined {
+  for (const k of keys) {
+    const v = data[k];
+    if (typeof v === 'number') return v;
+  }
+  return undefined;
+}
+
 function readAgent(data: Record<string, unknown>, ...keys: string[]): AgentName | undefined {
   return readString(data, ...keys);
 }
@@ -237,6 +253,7 @@ function applySSEEvent(
           content: cur.content + chunk,
           segments,
           state: 'streaming',
+          retrying: null,
         }),
       );
     }
@@ -315,6 +332,26 @@ function applySSEEvent(
           state: 'done',
           content: content ?? cur.content,
           finishedAt: finishedAt ?? cur.finishedAt,
+          retrying: null,
+        }),
+      );
+    }
+
+    case 'reply.retry': {
+      const agent = readAgent(data, 'agent');
+      if (!agent) return state;
+      const cur = round.replies[agent];
+      if (!cur) return state;
+      const attempt = readInt(data, 'attempt') ?? 1;
+      const maxRetries = readInt(data, 'max_retries') ?? 3;
+      const delayS = readFloat(data, 'delay_s') ?? 0;
+      return apply(
+        patchReply(round, agent, {
+          state: 'streaming',
+          content: '',
+          segments: [],
+          toolCalls: [],
+          retrying: { attempt, maxRetries, delayS },
         }),
       );
     }
@@ -330,6 +367,7 @@ function applySSEEvent(
         patchReply(round, agent, {
           state: isCancel ? 'cancelled' : 'failed',
           error: isCancel ? undefined : error,
+          retrying: null,
         }),
       );
     }

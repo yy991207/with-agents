@@ -38,6 +38,7 @@ docs/
 *.log
 *.pid
 .run.pid
-
+tests/
 # 本地 MongoDB 数据卷
 docker/mongo-data/
+backend/tests/
